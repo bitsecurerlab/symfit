@@ -34,19 +34,23 @@ static inline void gen_tb_start(TranslationBlock *tb)
         tcg_temp_free_i32(imm);
     }
 
-    tcg_gen_brcondi_i32(TCG_COND_LT, count, 0, tcg_ctx->exitreq_label);
+    TCGv_i32 t0 = tcg_const_i32(0);
+    tcg_gen_brcond_nosym_i32(TCG_COND_LT, count, t0, tcg_ctx->exitreq_label);
+    //tcg_gen_brcondi_i32(TCG_COND_LT, count, 0, tcg_ctx->exitreq_label);
 
     if (tb_cflags(tb) & CF_USE_ICOUNT) {
         tcg_gen_st16_i32(count, cpu_env,
                          offsetof(ArchCPU, neg.icount_decr.u16.low) -
                          offsetof(ArchCPU, env));
     }
-
+    tcg_temp_free_i32(t0);
     tcg_temp_free_i32(count);
 
-    TCGv_i64 block = tcg_const_i64((uint64_t)tb);
-    gen_helper_sym_notify_block(block);
-    tcg_temp_free_i64(block);
+    //TCGv_i64 block = tcg_const_i64((uint64_t)tb);
+    //if(second_ccache_flag) {
+    //gen_helper_sym_notify_block(block);
+    //}
+    //tcg_temp_free_i64(block);
 }
 
 static inline void gen_tb_end(TranslationBlock *tb, int num_insns)

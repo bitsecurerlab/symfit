@@ -21,7 +21,9 @@
 #include "qemu-common.h"
 #include "qemu.h"
 #include "cpu_loop-common.h"
-
+#ifdef CONFIG_2nd_CCACHE
+int noSymbolicData = 1;
+#endif
 /***********************************************************/
 /* CPUX86 core interface */
 
@@ -233,6 +235,8 @@ void cpu_loop(CPUX86State *env)
             break;
         case EXCP_ATOMIC:
             cpu_exec_step_atomic(cs);
+            break;
+        case EXCP_SWITCH:
             break;
         default:
             pc = env->segs[R_CS].base + env->eip;

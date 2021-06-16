@@ -1148,6 +1148,12 @@ typedef struct CPUCaches {
 typedef struct CPUX86State {
     /* standard registers */
     target_ulong regs[CPU_NB_REGS];
+    /* symbolic expr for regs */
+    target_ulong shadow_regs[CPU_NB_REGS];
+    target_ulong shadow_cc_dst;
+    target_ulong shadow_cc_src;
+    target_ulong shadow_cc_src2;
+
     target_ulong eip;
     target_ulong eflags; /* eflags register. During CPU emulation, CC
                         flags and DF are set to zero because they are

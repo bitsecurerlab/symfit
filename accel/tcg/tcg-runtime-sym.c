@@ -16,6 +16,7 @@
 
 #include "qemu/osdep.h"
 #include "cpu.h"
+#include "exec/exec-all.h"
 #include "exec/helper-proto.h"
 #include "exec/cpu_ldst.h"
 #include "qemu/qemu-print.h"
@@ -86,8 +87,8 @@
         BINARY_HELPER_ENSURE_EXPRESSIONS;                                      \
         return _sym_build_##symcc_name(arg1_expr, arg2_expr);                  \
     }
-
-
+/* Pass precise pc as a parameter so we do not need this function */
+#if 0
 /* Architecture-independent way to get the program counter */
 static target_ulong get_pc(CPUArchState *env)
 {
@@ -98,7 +99,7 @@ static target_ulong get_pc(CPUArchState *env)
 
     return pc;
 }
-
+#endif
 
 /* The binary helpers */
 
@@ -297,20 +298,21 @@ void *HELPER(sym_bswap)(void *expr, uint64_t length)
     }
 }
 
-static void *sym_load_guest_internal(CPUArchState *env,
-                                     target_ulong addr, void *addr_expr,
-                                     uint64_t load_length, uint8_t result_length,
-                                     target_ulong mmu_idx)
+static void *sym_load_guest_internal(target_ulong addr, void *addr_expr,
+                                     uint64_t load_length, uint8_t result_length, uint64_t cur_eip)
 {
     /* Try an alternative address */
     if (addr_expr != NULL)
         _sym_push_path_constraint(
             _sym_build_equal(
                 addr_expr, _sym_build_integer(addr, sizeof(addr) * 8)),
-            true, get_pc(env));
-
-    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
+            true, cur_eip);
+    //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
+    void *host_addr = g2h(addr);
     void *memory_expr = _sym_read_memory((uint8_t*)host_addr, load_length, true);
+    //if (!noSymbolicData)
+    //fprintf(stderr, "[memtrace] op: load_guest addr: 0x%lx memory_expr: %p addr_expr: %p mode: symbolic eip: 0x%lx\n",
+    //                addr, memory_expr, addr_expr, cur_eip);
 
     if (load_length == result_length || memory_expr == NULL)
         return memory_expr;
@@ -318,52 +320,49 @@ static void *sym_load_guest_internal(CPUArchState *env,
         return _sym_build_zext(memory_expr, (result_length - load_length) * 8);
 }
 
-void *HELPER(sym_load_guest_i32)(CPUArchState *env,
-                                 target_ulong addr, void *addr_expr,
-                                 uint64_t length, target_ulong mmu_idx)
+void *HELPER(sym_load_guest_i32)(target_ulong addr, void *addr_expr,
+                                 uint64_t length, uint32_t cur_eip)
 {
-    return sym_load_guest_internal(env, addr, addr_expr, length, 4, mmu_idx);
+    return sym_load_guest_internal(addr, addr_expr, length, 4, cur_eip);
 }
 
-void *HELPER(sym_load_guest_i64)(CPUArchState *env,
-                                 target_ulong addr, void *addr_expr,
-                                 uint64_t length, target_ulong mmu_idx)
+void *HELPER(sym_load_guest_i64)(target_ulong addr, void *addr_expr,
+                                 uint64_t length, uint64_t cur_eip)
 {
-    return sym_load_guest_internal(env, addr, addr_expr, length, 8, mmu_idx);
+    return sym_load_guest_internal(addr, addr_expr, length, 8, cur_eip);
 }
 
-static void sym_store_guest_internal(CPUArchState *env,
-                                     uint64_t value, void *value_expr,
+static void sym_store_guest_internal(uint64_t value, void *value_expr,
                                      target_ulong addr, void *addr_expr,
-                                     uint64_t length, target_ulong mmu_idx)
+                                     uint64_t length, uint64_t cur_eip)
 {
     /* Try an alternative address */
     if (addr_expr != NULL)
         _sym_push_path_constraint(
             _sym_build_equal(
                 addr_expr, _sym_build_integer(addr, sizeof(addr) * 8)),
-            true, get_pc(env));
+            true, cur_eip);
+    //if (!noSymbolicData)
+    //fprintf(stderr, "[memtrace] op: store_guest addr: 0x%lx value_expr: %p addr_expr: %p mode: symbolic eip: 0x%lx\n",
+    //                    addr, value_expr, addr_expr, cur_eip);
 
-    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
+    //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
+    void *host_addr = g2h(addr);
     _sym_write_memory((uint8_t*)host_addr, length, value_expr, true);
 }
 
-void HELPER(sym_store_guest_i32)(CPUArchState *env,
-                                 uint32_t value, void *value_expr,
+void HELPER(sym_store_guest_i32)(uint32_t value, void *value_expr,
                                  target_ulong addr, void *addr_expr,
-                                 uint64_t length, target_ulong mmu_idx)
+                                 uint64_t length, uint32_t cur_eip)
 {
-    return sym_store_guest_internal(
-        env, value, value_expr, addr, addr_expr, length, mmu_idx);
+    return sym_store_guest_internal(value, value_expr, addr, addr_expr, length, cur_eip);
 }
 
-void HELPER(sym_store_guest_i64)(CPUArchState *env,
-                                 uint64_t value, void *value_expr,
+void HELPER(sym_store_guest_i64)(uint64_t value, void *value_expr,
                                  target_ulong addr, void *addr_expr,
-                                 uint64_t length, target_ulong mmu_idx)
+                                 uint64_t length, uint64_t cur_eip)
 {
-    return sym_store_guest_internal(
-        env, value, value_expr, addr, addr_expr, length, mmu_idx);
+    return sym_store_guest_internal(value, value_expr, addr, addr_expr, length, cur_eip);
 }
 
 static void *sym_load_host_internal(void *addr, uint64_t offset,
@@ -568,11 +567,10 @@ void *HELPER(sym_deposit_i64)(uint64_t arg1, void *arg1_expr,
             _sym_build_integer(ofs, 64)));
 }
 
-static void *sym_setcond_internal(CPUArchState *env,
-                                  uint64_t arg1, void *arg1_expr,
+static void *sym_setcond_internal(uint64_t arg1, void *arg1_expr,
                                   uint64_t arg2, void *arg2_expr,
                                   int32_t cond, uint64_t result,
-                                  uint8_t result_bits)
+                                  uint8_t result_bits, uint64_t cur_eip)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS;
 
@@ -611,29 +609,28 @@ static void *sym_setcond_internal(CPUArchState *env,
     default:
         g_assert_not_reached();
     }
-
+    //if (!noSymbolicData)
+    //fprintf(stderr, "setcond_i%d push constraint eip: 0x%lx\n", result_bits, cur_eip);
     void *condition = handler(arg1_expr, arg2_expr);
-    _sym_push_path_constraint(condition, result, get_pc(env));
+    //_sym_push_path_constraint(condition, result, get_pc(env));
+    //_sym_notify_basic_block(cur_eip);
+    _sym_push_path_constraint(condition, result, cur_eip);
 
     return _sym_build_bool_to_bits(condition, result_bits);
 }
 
-void *HELPER(sym_setcond_i32)(CPUArchState *env,
-                              uint32_t arg1, void *arg1_expr,
+void *HELPER(sym_setcond_i32)(uint32_t arg1, void *arg1_expr,
                               uint32_t arg2, void *arg2_expr,
-                              int32_t cond, uint32_t result)
+                              int32_t cond, uint32_t result, uint64_t cur_eip)
 {
-    return sym_setcond_internal(
-        env, arg1, arg1_expr, arg2, arg2_expr, cond, result, 32);
+    return sym_setcond_internal(arg1, arg1_expr, arg2, arg2_expr, cond, result, 32, cur_eip);
 }
 
-void *HELPER(sym_setcond_i64)(CPUArchState *env,
-                              uint64_t arg1, void *arg1_expr,
+void *HELPER(sym_setcond_i64)(uint64_t arg1, void *arg1_expr,
                               uint64_t arg2, void *arg2_expr,
-                              int32_t cond, uint64_t result)
+                              int32_t cond, uint64_t result, uint64_t cur_eip)
 {
-    return sym_setcond_internal(
-        env, arg1, arg1_expr, arg2, arg2_expr, cond, result, 64);
+    return sym_setcond_internal(arg1, arg1_expr, arg2, arg2_expr, cond, result, 64, cur_eip);
 }
 
 void HELPER(sym_notify_call)(uint64_t return_address)
@@ -655,3 +652,119 @@ void HELPER(sym_collect_garbage)(void)
 {
     _sym_collect_garbage();
 }
+
+#ifdef CONFIG_2nd_CCACHE
+/* Check the register status at the end of one basic block in symbolic mode
+ * if there is no symbolic registers, switch to concrete mode
+ */
+void HELPER(sym_check_state_switch)(CPUArchState *env) {
+    int symbolic_flag = 0;
+    for (int i=0; i<CPU_NB_REGS;i++) {
+        if (env->shadow_regs[i]){
+            symbolic_flag = 1;
+            break;
+        }
+    }
+    if (symbolic_flag) {
+        second_ccache_flag = 1;
+        //if (!noSymbolicData) fprintf(stderr, "block 0x%lx state symbolic\n", env->eip);
+        return;
+    }
+    if (env->shadow_cc_dst || env->shadow_cc_src || env->shadow_cc_src2) {
+        symbolic_flag = 1;
+    }
+    second_ccache_flag = symbolic_flag;
+    //if (!noSymbolicData) fprintf(stderr, "block 0x%lx state %s\n", env->eip, second_ccache_flag?"symbolic":"concrete");
+    if (second_ccache_flag == 0) {
+        CPUState *cs = env_cpu(env);
+        cpu_loop_exit_noexc(cs);
+    }
+}
+void HELPER(sym_check_state)(CPUArchState *env) {
+    int symbolic_flag = 0;
+    for (int i=0; i<CPU_NB_REGS;i++) {
+        if (env->shadow_regs[i]) {
+            symbolic_flag = 1;
+            break;
+        }
+    }
+    if (symbolic_flag) {
+        second_ccache_flag = 1;
+        return;
+    }
+    if (env->shadow_cc_dst || env->shadow_cc_src || env->shadow_cc_src2) {
+        symbolic_flag = 1;
+    }
+    second_ccache_flag = symbolic_flag;
+}
+/* Monitor load in concrete mode, if load symbolic data, switch to symbolic mode
+ * currently, we do this in the translation backend.
+ */
+void HELPER(sym_check_load_guest)(CPUArchState *env, target_ulong addr, uint64_t length) {
+    void *host_addr = g2h(addr);
+    //void *memory_expr = _sym_read_memory((uint8_t*)host_addr, length, true);
+    void *memory_expr = _sym_read_memory((void*)host_addr, length, true);
+    //if (!noSymbolicData)
+    //fprintf(stderr, "[memtrace] op: check_load_guest addr: 0x%lx memory_expr: %p mode: concrete eip: 0x%lx\n",
+    //                addr, memory_expr, env->eip);
+    if (memory_expr != NULL) {
+        second_ccache_flag = 1;
+        raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
+    }
+}
+
+void HELPER(sym_check_load_host)(CPUArchState *env, void *addr, uint64_t offset, uint64_t load_length)
+{
+    void *memory_expr = _sym_read_memory(
+        (uint8_t*)addr + offset, load_length, true);
+    if (memory_expr != NULL) {
+        second_ccache_flag = 1;
+        raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
+    }
+}
+
+/* Monitor store in concrete mode, always nullify target address.
+ * Currently, we do this in the translation backend.
+ */
+void HELPER(sym_check_store_guest_i32)(CPUArchState *env, target_ulong addr,
+                                 uint64_t length){
+    if (second_ccache_flag) {
+        raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
+    }
+    void *value_expr = NULL;
+    //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
+    void *host_addr = g2h(addr);
+    _sym_write_memory((uint8_t*)host_addr, length, value_expr, true);
+}
+
+void HELPER(sym_check_store_guest_i64)(CPUArchState *env, target_ulong addr,
+                                 uint64_t length){
+
+    if (second_ccache_flag) {
+        raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
+    }
+    void *value_expr = NULL;
+    //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
+    void *host_addr = g2h(addr);
+    //if (!noSymbolicData)
+    //fprintf(stderr, "[memtrace] op: check_store_guest addr: 0x%lx mode: concrete eip: 0x0\n", addr);
+    _sym_write_memory((uint8_t*)host_addr, length, value_expr, true);
+
+}
+void HELPER(sym_check_store_host)(void *addr, uint64_t offset, uint64_t length)
+{
+    void *value_expr = NULL;
+    _sym_write_memory((uint8_t*)addr + offset, length, value_expr, true);
+}
+//void HELPER(sym_test)(void *p, target_ulong arg1, void *p2, target_ulong arg2) {
+void *HELPER(sym_test)(void) {
+    //printf("arg1, arg2: %ld, %ld, %p, %p\n", arg1, arg2, p, p2);
+    printf("arg1, arg2: \n");
+    return NULL;
+}
+
+void HELPER(sym_print)(target_ulong arg) {
+//    if (!noSymbolicData)
+    fprintf(stderr, "pc: 0x%lx mode: %s\n", arg, second_ccache_flag?"symbolic":"concrete");
+}
+#endif

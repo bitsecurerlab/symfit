@@ -469,6 +469,14 @@ typedef TCGv_ptr TCGv_env;
 #error Unhandled TARGET_LONG_BITS value
 #endif
 
+#ifdef CONFIG_2nd_CCACHE
+#define SYM_DEBUG 0
+#define sym_debug_print(fmt, ...) \
+            do { if(SYM_DEBUG) printf(fmt, __VA_ARGS__); } while (0)
+extern int second_ccache_flag;
+extern int noSymbolicData;
+extern int fake_flag;
+#endif
 /* call flags */
 /* Helper does not read globals (either directly or through an exception). It
    implies TCG_CALL_NO_WRITE_GLOBALS. */
@@ -725,6 +733,9 @@ struct TCGContext {
 #ifdef TCG_TARGET_NEED_LDST_LABELS
     QSIMPLEQ_HEAD(, TCGLabelQemuLdst) ldst_labels;
 #endif
+#ifdef CONFIG_2nd_CCACHE
+    QSIMPLEQ_HEAD(, TCGLabelQemuLdst) ldst_labels;
+#endif
 #ifdef TCG_TARGET_NEED_POOL_LABELS
     struct TCGLabelPoolData *pool_labels;
 #endif
@@ -743,6 +754,8 @@ struct TCGContext {
 
     uint16_t gen_insn_end_off[TCG_MAX_INSNS];
     target_ulong gen_insn_data[TCG_MAX_INSNS][TARGET_INSN_START_WORDS];
+    target_ulong *cur_pc;
+    target_ulong *cur_cs_base;
 };
 
 extern TCGContext tcg_init_ctx;
@@ -1346,7 +1359,14 @@ uint64_t dup_const(unsigned vece, uint64_t c);
         : dup_const(VECE, C))                                      \
      : dup_const(VECE, C))
 
-
+/*
+ * define helper functions for symbolic memory check
+ */
+void helper_check_sym_load(CPUArchState *env, target_ulong addr, uint32_t oi,
+                                       uintptr_t retaddr);
+void helper_check_sym_store(CPUArchState *env, target_ulong addr, uint32_t oi);
+tcg_target_ulong helperdebug(target_ulong addr);
+tcg_target_ulong helper_test(void);
 /*
  * Memory helpers that will be used by TCG generated code.
  */

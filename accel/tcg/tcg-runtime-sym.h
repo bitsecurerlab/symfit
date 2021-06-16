@@ -87,12 +87,12 @@ DEF_HELPER_FLAGS_1(sym_trunc_i64_i32, TCG_CALL_NO_RWG_SE, ptr, ptr)
 DEF_HELPER_FLAGS_2(sym_bswap, TCG_CALL_NO_RWG_SE, ptr, ptr, i64)
 
 /* Guest memory */
-DEF_HELPER_FLAGS_5(sym_load_guest_i32, TCG_CALL_NO_RWG, ptr, env, dh_alias_tl, ptr, i64, dh_alias_tl)
-DEF_HELPER_FLAGS_5(sym_load_guest_i64, TCG_CALL_NO_RWG, ptr, env, dh_alias_tl, ptr, i64, dh_alias_tl)
-DEF_HELPER_FLAGS_7(sym_store_guest_i32, TCG_CALL_NO_RWG, void, env, i32, ptr,
-                   dh_alias_tl, ptr, i64, dh_alias_tl)
-DEF_HELPER_FLAGS_7(sym_store_guest_i64, TCG_CALL_NO_RWG, void, env, i64, ptr,
-                   dh_alias_tl, ptr, i64, dh_alias_tl)
+DEF_HELPER_FLAGS_4(sym_load_guest_i32, TCG_CALL_NO_RWG, ptr, dh_alias_tl, ptr, i64, i32)
+DEF_HELPER_FLAGS_4(sym_load_guest_i64, TCG_CALL_NO_RWG, ptr, dh_alias_tl, ptr, i64, i64)
+DEF_HELPER_FLAGS_6(sym_store_guest_i32, TCG_CALL_NO_RWG, void, i32, ptr,
+                   dh_alias_tl, ptr, i64, i32)
+DEF_HELPER_FLAGS_6(sym_store_guest_i64, TCG_CALL_NO_RWG, void, i64, ptr,
+                   dh_alias_tl, ptr, i64, i64)
 
 /* Host memory */
 DEF_HELPER_FLAGS_3(sym_load_host_i32, TCG_CALL_NO_RWG_SE, ptr, ptr, i64, i64)
@@ -113,8 +113,8 @@ DEF_HELPER_FLAGS_6(sym_deposit_i32, TCG_CALL_NO_RWG_SE, ptr, i32, ptr, i32, ptr,
 DEF_HELPER_FLAGS_6(sym_deposit_i64, TCG_CALL_NO_RWG_SE, ptr, i64, ptr, i64, ptr, i64, i64)
 
 /* Conditionals */
-DEF_HELPER_FLAGS_7(sym_setcond_i32, TCG_CALL_NO_RWG, ptr, env, i32, ptr, i32, ptr, s32, i32)
-DEF_HELPER_FLAGS_7(sym_setcond_i64, TCG_CALL_NO_RWG, ptr, env, i64, ptr, i64, ptr, s32, i64)
+DEF_HELPER_FLAGS_7(sym_setcond_i32, TCG_CALL_NO_RWG, ptr, i32, ptr, i32, ptr, s32, i32, i64)
+DEF_HELPER_FLAGS_7(sym_setcond_i64, TCG_CALL_NO_RWG, ptr, i64, ptr, i64, ptr, s32, i64, i64)
 
 /* Context tracking */
 DEF_HELPER_FLAGS_1(sym_notify_call, TCG_CALL_NO_RWG, void, i64)
@@ -124,6 +124,19 @@ DEF_HELPER_FLAGS_1(sym_notify_block, TCG_CALL_NO_RWG, void, i64)
 /* Garbage collection */
 DEF_HELPER_FLAGS_0(sym_collect_garbage, TCG_CALL_NO_RWG, void)
 
+#ifdef CONFIG_2nd_CCACHE
+/* FIXME add flag TCG_CALL_NO_RWG */
+DEF_HELPER_1(sym_check_state, void, env)
+DEF_HELPER_1(sym_check_state_switch, void, env)
+/* check_load_host cannot have flag TCG_CALL_NO_RWG_SE */
+DEF_HELPER_FLAGS_4(sym_check_load_host, TCG_CALL_NO_RWG, void, env, ptr, i64, i64)
+DEF_HELPER_FLAGS_3(sym_check_store_host, TCG_CALL_NO_RWG, void, ptr, i64, i64)
+DEF_HELPER_FLAGS_3(sym_check_load_guest, TCG_CALL_NO_RWG, void, env, dh_alias_tl, i64)
+DEF_HELPER_FLAGS_3(sym_check_store_guest_i32, TCG_CALL_NO_RWG, void, env, dh_alias_tl, i64)
+DEF_HELPER_FLAGS_3(sym_check_store_guest_i64, TCG_CALL_NO_RWG, void, env, dh_alias_tl, i64)
+DEF_HELPER_0(sym_test, ptr)
+DEF_HELPER_1(sym_print, void, i64)
+#endif
 /* TODO clz, ctz, clrsb, ctpop; vector operations; helpers for atomic operations (?) */
 
 /* The extrl and extrh instructions aren't emitted on 64-bit hosts. If we ever

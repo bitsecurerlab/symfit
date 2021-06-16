@@ -644,6 +644,14 @@ bool qht_insert(struct qht *ht, void *p, uint32_t hash, void **existing)
         return true;
     }
     if (existing) {
+#ifdef CONFIG_2nd_CCACHE
+        /*
+            zx012 force insert into hash table.
+            This should be a bug, somehow the tb is already in the hashtable but tb_find cannot find it.
+        */
+        //printf("unlikely, cache hit\n");
+        //prev = NULL;
+#endif
         *existing = prev;
     }
     return false;

@@ -2227,8 +2227,8 @@ static inline void gen_goto_tb(DisasContext *s, int tb_num, target_ulong eip)
 
     if (use_goto_tb(s, pc))  {
         /* jump to same page: we can use a direct jump */
-        tcg_gen_goto_tb(tb_num);
         gen_jmp_im(s, eip);
+        tcg_gen_goto_tb(tb_num);
         tcg_gen_exit_tb(s->base.tb, tb_num);
         s->base.is_jmp = DISAS_NORETURN;
     } else {
@@ -5062,7 +5062,9 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             }
             next_eip = s->pc - s->cs_base;
             tcg_gen_movi_tl(s->T1, next_eip);
-            gen_helper_sym_notify_call(s->T1);
+            //if(second_ccache_flag) {
+                gen_helper_sym_notify_call(s->T1);
+            //}
             gen_push_v(s, s->T1);
             gen_op_jmp_v(s->T0);
             gen_bnd_jmp(s);
@@ -6514,7 +6516,9 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         val = x86_ldsw_code(env, s);
         ot = gen_pop_T0(s);
         gen_stack_update(s, val + (1 << ot));
-        gen_helper_sym_notify_return(s->T0);
+        //if(second_ccache_flag) {
+            gen_helper_sym_notify_return(s->T0);
+        //}
         /* Note that gen_pop_T0 uses a zero-extending load.  */
         gen_op_jmp_v(s->T0);
         gen_bnd_jmp(s);
@@ -6523,7 +6527,9 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     case 0xc3: /* ret */
         ot = gen_pop_T0(s);
         gen_pop_update(s, ot);
-        gen_helper_sym_notify_return(s->T0);
+        //if(second_ccache_flag) {
+            gen_helper_sym_notify_return(s->T0);
+        //}
         /* Note that gen_pop_T0 uses a zero-extending load.  */
         gen_op_jmp_v(s->T0);
         gen_bnd_jmp(s);
@@ -6591,7 +6597,9 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
                 tval &= 0xffffffff;
             }
             tcg_gen_movi_tl(s->T0, next_eip);
-            gen_helper_sym_notify_call(s->T0);
+            //if(second_ccache_flag) {
+                gen_helper_sym_notify_call(s->T0);
+            //}
             gen_push_v(s, s->T0);
             gen_bnd_jmp(s);
             gen_jmp(s, tval);
@@ -8629,7 +8637,8 @@ static const TranslatorOps i386_tr_ops = {
 void gen_intermediate_code(CPUState *cpu, TranslationBlock *tb, int max_insns)
 {
     DisasContext dc;
-
+    tcg_ctx->cur_pc = &dc.pc;
+    tcg_ctx->cur_cs_base = &dc.cs_base;
     translator_loop(&i386_tr_ops, &dc.base, cpu, tb, max_insns);
 }
 

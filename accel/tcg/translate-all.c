@@ -402,12 +402,33 @@ bool cpu_restore_state(CPUState *cpu, uintptr_t host_pc, bool will_exit)
     if (check_offset < tcg_init_ctx.code_gen_buffer_size) {
         tb = tcg_tb_lookup(host_pc);
         if (tb) {
+            //fprintf(stderr, "cpu restore state -> found tb pc: 0x%lx, retaddr: 0x%lx\n", tb->pc, host_pc);
+            //if (cpu_restore_state_from_tb(cpu, tb, host_pc, will_exit)==-1) {
+                //fprintf(stderr, "restore failed: %p\n", tb);
+            //    tcg_abort();
+            //}
             cpu_restore_state_from_tb(cpu, tb, host_pc, will_exit);
-            if (tb_cflags(tb) & CF_NOCACHE) {
+#ifdef CONFIG_2nd_CCACHE
+            if ((tb_cflags(tb) & CF_NOCACHE) || second_ccache_flag) {
+                /* one-shot translation, invalidate it immediately */
+                if (second_ccache_flag){
+                    //fprintf(stderr, "invalidate tb\n");
+                    mmap_lock();
+                    tb_phys_invalidate(tb, -1);
+                    mmap_unlock();
+                } else {
+                    tb_phys_invalidate(tb, -1);
+                }
+
+                tcg_tb_remove(tb);
+            }
+#else
+            if ((tb_cflags(tb) & CF_NOCACHE)) {
                 /* one-shot translation, invalidate it immediately */
                 tb_phys_invalidate(tb, -1);
                 tcg_tb_remove(tb);
             }
+#endif
             r = true;
         }
     }
@@ -1135,7 +1156,9 @@ static bool tb_cmp(const void *ap, const void *bp)
 static void tb_htable_init(void)
 {
     unsigned int mode = QHT_MODE_AUTO_RESIZE;
-
+#ifdef CONFIG_2nd_CCACHE
+    qht_init(&tb_ctx.htable2, tb_cmp, CODE_GEN_HTABLE_SIZE, mode);
+#endif
     qht_init(&tb_ctx.htable, tb_cmp, CODE_GEN_HTABLE_SIZE, mode);
 }
 
@@ -1251,7 +1274,9 @@ static void do_tb_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
     CPU_FOREACH(cpu) {
         cpu_tb_jmp_cache_clear(cpu);
     }
-
+#ifdef CONFIG_2nd_CCACHE
+    qht_reset_size(&tb_ctx.htable2, CODE_GEN_HTABLE_SIZE);
+#endif
     qht_reset_size(&tb_ctx.htable, CODE_GEN_HTABLE_SIZE);
     page_flush_tb();
 
@@ -1299,7 +1324,15 @@ static void do_tb_invalidate_check(void *p, uint32_t hash, void *userp)
 static void tb_invalidate_check(target_ulong address)
 {
     address &= TARGET_PAGE_MASK;
+#ifdef CONFIG_2nd_CCACHE
+    if (second_ccache_flag) {
+        qht_iter(&tb_ctx.htable2, do_tb_invalidate_check, &address);
+    } else {
+        qht_iter(&tb_ctx.htable, do_tb_invalidate_check, &address);
+    }
+#else
     qht_iter(&tb_ctx.htable, do_tb_invalidate_check, &address);
+#endif
 }
 
 static void do_tb_page_check(void *p, uint32_t hash, void *userp)
@@ -1318,7 +1351,15 @@ static void do_tb_page_check(void *p, uint32_t hash, void *userp)
 /* verify that all the pages have correct rights for code */
 static void tb_page_check(void)
 {
+#ifdef CONFIG_2nd_CCACHE
+    if (second_ccache_flag) {
+        qht_iter(&tb_ctx.htable2, do_tb_page_check, NULL);
+    } else {
+        qht_iter(&tb_ctx.htable, do_tb_page_check, NULL);
+    }
+#else
     qht_iter(&tb_ctx.htable, do_tb_page_check, NULL);
+#endif
 }
 
 #endif /* CONFIG_USER_ONLY */
@@ -1443,6 +1484,11 @@ static void do_tb_phys_invalidate(TranslationBlock *tb, bool rm_from_page_list)
     phys_pc = tb->page_addr[0] + (tb->pc & ~TARGET_PAGE_MASK);
     h = tb_hash_func(phys_pc, tb->pc, tb->flags, tb_cflags(tb) & CF_HASH_MASK,
                      tb->trace_vcpu_dstate);
+#ifdef CONFIG_2nd_CCACHE
+    if (!(tb->cflags & CF_NOCACHE)) {
+        qht_remove(&tb_ctx.htable2, tb, h);
+    }
+#endif
     if (!(tb->cflags & CF_NOCACHE) &&
         !qht_remove(&tb_ctx.htable, tb, h)) {
         return;
@@ -1462,6 +1508,13 @@ static void do_tb_phys_invalidate(TranslationBlock *tb, bool rm_from_page_list)
 
     /* remove the TB from the hash list */
     h = tb_jmp_cache_hash_func(tb->pc);
+#ifdef CONFIG_2nd_CCACHE
+        CPU_FOREACH(cpu) {
+        if (atomic_read(&cpu->tb_jmp_2cache[h]) == tb) {
+            atomic_set(&cpu->tb_jmp_2cache[h], NULL);
+        }
+    }
+#endif
     CPU_FOREACH(cpu) {
         if (atomic_read(&cpu->tb_jmp_cache[h]) == tb) {
             atomic_set(&cpu->tb_jmp_cache[h], NULL);
@@ -1639,7 +1692,15 @@ tb_link_page(TranslationBlock *tb, tb_page_addr_t phys_pc,
         /* add in the hash table */
         h = tb_hash_func(phys_pc, tb->pc, tb->flags, tb->cflags & CF_HASH_MASK,
                          tb->trace_vcpu_dstate);
+#ifdef CONFIG_2nd_CCACHE
+        if (second_ccache_flag) {
+            qht_insert(&tb_ctx.htable2, tb, h, &existing_tb);
+        } else {
+            qht_insert(&tb_ctx.htable, tb, h, &existing_tb);
+        }
+#else
         qht_insert(&tb_ctx.htable, tb, h, &existing_tb);
+#endif
 
         /* remove TB from the page(s) if we couldn't insert it */
         if (unlikely(existing_tb)) {
@@ -1735,9 +1796,10 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     tcg_func_start(tcg_ctx);
 
     tcg_ctx->cpu = env_cpu(env);
+    //printf("gen_intermediate_code in %s mode pc: 0x%lx\n", (second_ccache_flag)?"symbolic":"concrete", env->eip);
     gen_intermediate_code(cpu, tb, max_insns);
     tcg_ctx->cpu = NULL;
-
+    //printf("finish gen_intermediate_code\n");
     trace_translate_block(tb, tb->pc, tb->tc.ptr);
 
     /* generate machine code */
@@ -1874,9 +1936,13 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
 
         orig_aligned -= ROUND_UP(sizeof(*tb), qemu_icache_linesize);
         atomic_set(&tcg_ctx->code_gen_ptr, (void *)orig_aligned);
+#ifdef CONFIG_2nd_CCACHE
+        //sym_debug_print("[-]: unlikely! existing tcg tb: %p in %s mode\n", tb, (second_ccache_flag)?"symbolic":"concrete");
+#endif
         return existing_tb;
     }
     tcg_tb_insert(tb);
+    //printf("[-]: inserting tcg tb: %p in %s mode\n", tb, (second_ccache_flag)?"symbolic":"concrete");
     return tb;
 }
 
@@ -2240,7 +2306,12 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
 static void tb_jmp_cache_clear_page(CPUState *cpu, target_ulong page_addr)
 {
     unsigned int i, i0 = tb_jmp_cache_hash_page(page_addr);
-
+#ifdef CONFIG_2nd_CCACHE
+    //This function is for whole system emulation.
+    for (i = 0; i < TB_JMP_PAGE_SIZE; i++) {
+        atomic_set(&cpu->tb_jmp_cache2[i0 + i], NULL);
+    }
+#endif
     for (i = 0; i < TB_JMP_PAGE_SIZE; i++) {
         atomic_set(&cpu->tb_jmp_cache[i0 + i], NULL);
     }
@@ -2328,6 +2399,9 @@ void dump_exec_info(void)
 {
     struct tb_tree_stats tst = {};
     struct qht_stats hst;
+#ifdef CONFIG_2nd_CCACHE
+    struct qht_stats hst2;
+#endif
     size_t nb_tbs, flush_full, flush_part, flush_elide;
 
     tcg_tb_foreach(tb_tree_stats_iter, &tst);
@@ -2356,6 +2430,7 @@ void dump_exec_info(void)
                 tst.direct_jmp2_count,
                 nb_tbs ? (tst.direct_jmp2_count * 100) / nb_tbs : 0);
 
+    // FIXME add the second code cache support
     qht_statistics_init(&tb_ctx.htable, &hst);
     print_qht_statistics(hst);
     qht_statistics_destroy(&hst);

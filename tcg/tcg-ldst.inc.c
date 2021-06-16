@@ -37,10 +37,37 @@ typedef struct TCGLabelQemuLdst {
 /*
  * Generate TB finalization at the end of block
  */
+#ifdef CONFIG_2nd_CCACHE
+#if 0
 
+static bool tcg_out_qemu_check_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
+static bool tcg_out_qemu_check_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
+static int tcg_out_symldst_finalize(TCGContext *s)
+{
+    TCGLabelQemuLdst *lb;
+
+    /* qemu_ld/st slow paths */
+    QSIMPLEQ_FOREACH(lb, &s->ldst_labels, next) {
+        if (lb->is_ld
+            ? !tcg_out_qemu_check_ld_slow_path(s, lb)
+            : !tcg_out_qemu_check_st_slow_path(s, lb)) {
+            return -2;
+        }
+
+        /* Test for (pending) buffer overflow.  The assumption is that any
+           one operation beginning below the high water mark cannot overrun
+           the buffer completely.  Thus we can test for overflow after
+           generating code without having to check during generation.  */
+        if (unlikely((void *)s->code_ptr > s->code_gen_highwater)) {
+            return -1;
+        }
+    }
+    return 0;
+}
+#endif
+#else
 static bool tcg_out_qemu_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
 static bool tcg_out_qemu_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
-
 static int tcg_out_ldst_finalize(TCGContext *s)
 {
     TCGLabelQemuLdst *lb;
@@ -63,6 +90,7 @@ static int tcg_out_ldst_finalize(TCGContext *s)
     }
     return 0;
 }
+#endif
 
 /*
  * Allocate a new TCGLabelQemuLdst entry.

@@ -501,6 +501,7 @@ docker="no"
 debug_mutex="no"
 libpmem=""
 default_devices="yes"
+second_code_cache="no"
 
 # cross compilers defaults, can be overridden with --cross-cc-ARCH
 cross_cc_aarch64="aarch64-linux-gnu-gcc"
@@ -1548,6 +1549,10 @@ for opt do
   --enable-libpmem) libpmem=yes
   ;;
   --disable-libpmem) libpmem=no
+  ;;
+  --enable-2nd-ccache) second_code_cache="yes"
+  ;;
+  --disable-2nd-ccache) second_code_cache="no"
   ;;
   *)
       echo "ERROR: unknown option $opt"
@@ -6576,6 +6581,10 @@ echo "GIT_SUBMODULES=$git_submodules" >> $config_host_mak
 echo "GIT_UPDATE=$git_update" >> $config_host_mak
 
 echo "ARCH=$ARCH" >> $config_host_mak
+
+if test "$second_code_cache" = "yes" ; then
+  echo "CONFIG_2nd_CCACHE=y" >> $config_host_mak
+fi
 
 if test "$default_devices" = "yes" ; then
   echo "CONFIG_MINIKCONF_MODE=--defconfig" >> $config_host_mak

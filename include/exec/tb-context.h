@@ -32,6 +32,9 @@ typedef struct TBContext TBContext;
 struct TBContext {
 
     struct qht htable;
+#ifdef CONFIG_2nd_CCACHE
+    struct qht htable2;
+#endif
 
     /* statistics */
     unsigned tb_flush_count;

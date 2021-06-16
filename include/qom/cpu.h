@@ -395,6 +395,9 @@ struct CPUState {
 
     /* Accessed in parallel; all accesses must be atomic */
     struct TranslationBlock *tb_jmp_cache[TB_JMP_CACHE_SIZE];
+#ifdef CONFIG_2nd_CCACHE
+    struct TranslationBlock *tb_jmp_2cache[TB_JMP_CACHE_SIZE];
+#endif
 
     struct GDBRegisterState *gdb_regs;
     int gdb_num_regs;
@@ -472,6 +475,11 @@ static inline void cpu_tb_jmp_cache_clear(CPUState *cpu)
     for (i = 0; i < TB_JMP_CACHE_SIZE; i++) {
         atomic_set(&cpu->tb_jmp_cache[i], NULL);
     }
+#ifdef CONFIG_2nd_CCACHE
+    for (i = 0; i < TB_JMP_CACHE_SIZE; i++) {
+        atomic_set(&cpu->tb_jmp_2cache[i], NULL);
+    }
+#endif
 }
 
 /**

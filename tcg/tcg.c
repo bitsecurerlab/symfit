@@ -155,7 +155,9 @@ static int tcg_target_const_match(tcg_target_long val, TCGType type,
 #ifdef TCG_TARGET_NEED_LDST_LABELS
 static int tcg_out_ldst_finalize(TCGContext *s);
 #endif
-
+#ifdef CONFIG_2nd_CCACHE
+//static int tcg_out_symldst_finalize(TCGContext *s);
+#endif
 #define TCG_HIGHWATER 1024
 
 static TCGContext **tcg_ctxs;
@@ -1259,7 +1261,22 @@ TCGTemp *tcg_global_mem_new_internal(TCGType type, TCGv_ptr base,
     ts_expr->indirect_reg = indirect_reg;
     ts_expr->mem_allocated = 1;
     ts_expr->mem_base = base_ts;
-    ts_expr->mem_offset = base_ts->sym_offset + expr_idx * sizeof(void *);
+    if (strstart(name, "r", NULL)) {
+        //map ts_expr to shadow_regs
+        ts_expr->mem_offset = offset + CPU_NB_REGS*sizeof(target_ulong);
+    } else if (strstart(name, "cc_d", NULL)) {
+        //map ts_expr to shadow_cc_dst
+        ts_expr->mem_offset = offset - sizeof(target_ulong)*5;
+        //ts_expr->mem_offset = base_ts->sym_offset + expr_idx * sizeof(void *);
+    } else if (strstart(name, "cc_s", NULL)) {
+        //map ts_expr to shadow_cc_src and shadow_cc_src2
+        ts_expr->mem_offset = offset - sizeof(target_ulong)*5;
+    } else if (strstart(name, "global", NULL)) {
+        //map shadow temp for global args
+        ts_expr->mem_offset = offset + sizeof(target_ulong);
+    } else {
+        ts_expr->mem_offset = base_ts->sym_offset + expr_idx * sizeof(void *);
+    }
     pstrcpy(buf, sizeof(buf), name);
     pstrcat(buf, sizeof(buf), "_expr");
     ts_expr->name = strdup(buf);
@@ -1282,12 +1299,21 @@ TCGTemp *tcg_temp_new_internal(TCGType type, bool temp_local)
         ts->temp_allocated = 1;
         tcg_debug_assert(ts->base_type == type);
         tcg_debug_assert(ts->temp_local == temp_local);
-
+#ifdef CONFIG_2nd_CCACHE
+        if (second_ccache_flag) {
         ts_expr = &s->temps[idx+1];
         ts_expr->temp_allocated = 1;
         ts_expr->symbolic_expression = 1;
         tcg_debug_assert(ts_expr->base_type == TCG_TYPE_PTR);
         tcg_debug_assert(ts_expr->temp_local == temp_local);
+        }
+#else
+        ts_expr = &s->temps[idx+1];
+        ts_expr->temp_allocated = 1;
+        ts_expr->symbolic_expression = 1;
+        tcg_debug_assert(ts_expr->base_type == TCG_TYPE_PTR);
+        tcg_debug_assert(ts_expr->temp_local == temp_local);
+#endif
     } else {
         ts = tcg_temp_alloc(s);
         if (TCG_TARGET_REG_BITS == 32 && type == TCG_TYPE_I64) {
@@ -1309,13 +1335,23 @@ TCGTemp *tcg_temp_new_internal(TCGType type, bool temp_local)
             ts->temp_allocated = 1;
             ts->temp_local = temp_local;
         }
-
+#ifdef CONFIG_2nd_CCACHE
+        if (second_ccache_flag) {
         ts_expr = tcg_temp_alloc(s);
         ts_expr->base_type = TCG_TYPE_PTR;
         ts_expr->type = TCG_TYPE_PTR;
         ts_expr->temp_allocated = 1;
         ts_expr->temp_local = temp_local;
         ts_expr->symbolic_expression = 1;
+        }
+#else
+        ts_expr = tcg_temp_alloc(s);
+        ts_expr->base_type = TCG_TYPE_PTR;
+        ts_expr->type = TCG_TYPE_PTR;
+        ts_expr->temp_allocated = 1;
+        ts_expr->temp_local = temp_local;
+        ts_expr->symbolic_expression = 1;
+#endif
     }
 
 #if defined(CONFIG_DEBUG_TCG)
@@ -1363,7 +1399,7 @@ void tcg_temp_free_internal(TCGTemp *ts)
 {
     TCGContext *s = tcg_ctx;
     int k, idx;
-    TCGTemp *ts_expr = temp_expr(ts);
+
 
 #if defined(CONFIG_DEBUG_TCG)
     s->temps_in_use -= 2;
@@ -1375,10 +1411,19 @@ void tcg_temp_free_internal(TCGTemp *ts)
     tcg_debug_assert(ts->temp_global == 0);
     tcg_debug_assert(ts->temp_allocated != 0);
     ts->temp_allocated = 0;
-
+#ifdef CONFIG_2nd_CCACHE
+    if (second_ccache_flag) {
+    TCGTemp *ts_expr = temp_expr(ts);
     tcg_debug_assert(ts_expr->temp_global == 0);
     tcg_debug_assert(ts_expr->temp_allocated != 0);
     ts_expr->temp_allocated = 0;
+    }
+#else
+    TCGTemp *ts_expr = temp_expr(ts);
+    tcg_debug_assert(ts_expr->temp_global == 0);
+    tcg_debug_assert(ts_expr->temp_allocated != 0);
+    ts_expr->temp_allocated = 0;
+#endif
 
     idx = temp_idx(ts);
     k = ts->base_type + (ts->temp_local ? TCG_TYPE_COUNT : 0);
@@ -1731,13 +1776,19 @@ void tcg_gen_callN(void *func, TCGTemp *ret, int nargs, TCGTemp **args)
     unsigned sizemask, flags;
     TCGHelperInfo *info;
     TCGOp *op;
-
+#ifdef CONFIG_2nd_CCACHE
+    if (second_ccache_flag && ret != NULL && ret->symbolic_expression == 0) {
+        /* This is an unhandled helper; we concretize, i.e., the expression for
+         * the result is NULL */
+        tcg_gen_op2i_i64(INDEX_op_movi_i64, temp_tcgv_i64(temp_expr(ret)), 0);
+    }
+#else
     if (ret != NULL && ret->symbolic_expression == 0) {
         /* This is an unhandled helper; we concretize, i.e., the expression for
          * the result is NULL */
         tcg_gen_op2i_i64(INDEX_op_movi_i64, temp_tcgv_i64(temp_expr(ret)), 0);
     }
-
+#endif
     info = g_hash_table_lookup(helper_table, (gpointer)func);
     flags = info->flags;
     sizemask = info->sizemask;
@@ -4088,6 +4139,13 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         qemu_log("\n");
         qemu_log_unlock();
     }
+    //zx012 dump ops
+        /*qemu_log_lock();
+        //qemu_log("OP: %s mode\n", fake_flag?"symbolic":"concrete");
+        qemu_log("OP: before optimization\n");
+        tcg_dump_ops(s, false);
+        qemu_log("\n");
+        qemu_log_unlock();*/
 #endif
 
 #ifdef CONFIG_DEBUG_TCG
@@ -4155,6 +4213,11 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         qemu_log_unlock();
     }
 #endif
+        /*qemu_log_lock();
+        qemu_log("OP after optimization and liveness analysis:\n");
+        tcg_dump_ops(s, true);
+        qemu_log("\n");
+        qemu_log_unlock();*/
 
     tcg_reg_alloc_start(s);
 
@@ -4162,6 +4225,9 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     s->code_ptr = tb->tc.ptr;
 
 #ifdef TCG_TARGET_NEED_LDST_LABELS
+    QSIMPLEQ_INIT(&s->ldst_labels);
+#endif
+#ifdef CONFIG_2nd_CCACHE
     QSIMPLEQ_INIT(&s->ldst_labels);
 #endif
 #ifdef TCG_TARGET_NEED_POOL_LABELS
@@ -4248,6 +4314,12 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     /* Generate TB finalization at the end of block */
 #ifdef TCG_TARGET_NEED_LDST_LABELS
     i = tcg_out_ldst_finalize(s);
+    if (i < 0) {
+        return i;
+    }
+#endif
+#if 0
+    i = tcg_out_symldst_finalize(s);
     if (i < 0) {
         return i;
     }

@@ -331,6 +331,7 @@ _syscall5(int, sys_statx, int, dirfd, const char *, pathname, int, flags,
  * backend. */
 int open_symbolized(const char *ptah, int oflag, mode_t mode);
 ssize_t read_symbolized(int fildes, void *buf, size_t nbyte);
+ssize_t read_flag_symbolized(int fildes, void *buf, size_t nbyte, size_t *isSymbolicPage);
 uint64_t lseek64_symbolized(int fd, uint64_t offset, int whence);
 
 static bitmask_transtbl fcntl_flags_tbl[] = {
@@ -7237,6 +7238,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 {
     CPUState *cpu = env_cpu(cpu_env);
     abi_long ret;
+    size_t isSymbolicPage = 0;
 #if defined(TARGET_NR_stat) || defined(TARGET_NR_stat64) \
     || defined(TARGET_NR_lstat) || defined(TARGET_NR_lstat64) \
     || defined(TARGET_NR_fstat) || defined(TARGET_NR_fstat64) \
@@ -7293,10 +7295,18 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
         } else {
             if (!(p = lock_user(VERIFY_WRITE, arg2, arg3, 0)))
                 return -TARGET_EFAULT;
-            ret = get_errno(read_symbolized(arg1, p, arg3));
+            //ret = get_errno(read_symbolized(arg1, p, arg3));
+            ret = get_errno(read_flag_symbolized(arg1, p, arg3, &isSymbolicPage));
+            /*zx012 if symbolic, clear the corresponding entry in user tlb*/
             if (ret >= 0 &&
                 fd_trans_host_to_target_data(arg1)) {
                 ret = fd_trans_host_to_target_data(arg1)(p, ret);
+            }
+            /* symbolic data is introduced */
+            if (isSymbolicPage && noSymbolicData) {
+                //noSymbolicData = 0;
+                second_ccache_flag = 1;
+                //tb_flush(cpu);
             }
             unlock_user(p, arg2, ret);
         }

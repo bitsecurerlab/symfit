@@ -38,6 +38,10 @@
 #include "sysemu/cpus.h"
 #include "sysemu/replay.h"
 
+#ifdef CONFIG_2nd_CCACHE
+int second_ccache_flag = 0;
+int fake_flag = 1;
+#endif
 /* -icount align implementation. */
 
 typedef struct SyncClocks {
@@ -342,7 +346,15 @@ TranslationBlock *tb_htable_lookup(CPUState *cpu, target_ulong pc,
     }
     desc.phys_page1 = phys_pc & TARGET_PAGE_MASK;
     h = tb_hash_func(phys_pc, pc, flags, cf_mask, *cpu->trace_dstate);
+#ifdef CONFIG_2nd_CCACHE
+    if (second_ccache_flag) {
+        return qht_lookup_custom(&tb_ctx.htable2, &desc, h, tb_lookup_cmp);
+    } else {
+        return qht_lookup_custom(&tb_ctx.htable, &desc, h, tb_lookup_cmp);
+    }
+#else
     return qht_lookup_custom(&tb_ctx.htable, &desc, h, tb_lookup_cmp);
+#endif
 }
 
 void tb_set_jmp_target(TranslationBlock *tb, int n, uintptr_t addr)
@@ -408,8 +420,16 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
         mmap_lock();
         tb = tb_gen_code(cpu, pc, cs_base, flags, cf_mask);
         mmap_unlock();
+#ifdef CONFIG_2nd_CCACHE
+        if (second_ccache_flag) {
+            atomic_set(&cpu->tb_jmp_2cache[tb_jmp_cache_hash_func(pc)], tb);
+        } else {
+            atomic_set(&cpu->tb_jmp_cache[tb_jmp_cache_hash_func(pc)], tb);
+        }
+#else
         /* We add the TB in the virtual pc hash table for the fast lookup */
         atomic_set(&cpu->tb_jmp_cache[tb_jmp_cache_hash_func(pc)], tb);
+#endif
     }
 #ifndef CONFIG_USER_ONLY
     /* We don't take care of direct jumps when address mapping changes in
@@ -485,6 +505,10 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
         if (*ret == EXCP_DEBUG) {
             cpu_handle_debug_exception(cpu);
         }
+        //if (*ret == EXCP_SWITCH) {
+            //second_ccache_flag = 1;
+            //fprintf(stderr, "handle switch exception %d\n", second_ccache_flag);
+        //}
         cpu->exception_index = -1;
         return true;
     } else {
@@ -729,6 +753,8 @@ int cpu_exec(CPUState *cpu)
             }
 
             tb = tb_find(cpu, last_tb, tb_exit, cflags);
+            //if (!noSymbolicData)
+            //    fprintf(stderr, "[blocktrace]: start executing tb 0x%lx\n", tb->pc);
             cpu_loop_exec_tb(cpu, tb, &last_tb, &tb_exit);
             /* Try to align the host and virtual clocks
                if the guest is in advance */
