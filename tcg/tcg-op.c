@@ -418,20 +418,15 @@ void tcg_gen_setcond_i32(TCGCond cond, TCGv_i32 ret,
         tcg_gen_movi_i32(ret, 0);
     } else {
         tcg_gen_op4i_i32(INDEX_op_setcond_i32, ret, arg1, arg2, cond);
-        TCGv_i64 cur_eip = tcg_temp_new_i64();
-        target_ulong eip_value = *tcg_ctx->cur_pc - *tcg_ctx->cur_cs_base;
-        tcg_gen_op2i_i64(INDEX_op_movi_i64, cur_eip, eip_value);
-        gen_helper_sym_notify_block(cur_eip);
         if(second_ccache_flag) {
         TCGv_i32 cond_temp = tcg_const_i32(cond);
-        gen_helper_sym_setcond_i32(
+        gen_helper_sym_setcond_i32(cpu_env,
             tcgv_i32_expr(ret),
             arg1, tcgv_i32_expr(arg1),
             arg2, tcgv_i32_expr(arg2),
-            cond_temp, ret, cur_eip);
+            cond_temp, ret);
         tcg_temp_free_i32(cond_temp);
         }
-        tcg_temp_free_i64(cur_eip);
     }
 }
 
@@ -1850,21 +1845,15 @@ void tcg_gen_setcond_i64(TCGCond cond, TCGv_i64 ret,
         } else {
             tcg_gen_op4i_i64(INDEX_op_setcond_i64, ret, arg1, arg2, cond);
         }
-        TCGv cur_eip = tcg_temp_new_i64();
-        target_ulong eip_value = *tcg_ctx->cur_pc - *tcg_ctx->cur_cs_base;
-
-        tcg_gen_op2i_i64(INDEX_op_movi_i64, cur_eip, eip_value);
-        gen_helper_sym_notify_block(cur_eip);
         if(second_ccache_flag) {
         TCGv_i32 cond_temp = tcg_const_i32(cond);
-        gen_helper_sym_setcond_i64(
+        gen_helper_sym_setcond_i64(cpu_env,
             tcgv_i64_expr(ret),
             arg1, tcgv_i64_expr(arg1),
             arg2, tcgv_i64_expr(arg2),
-            cond_temp, ret, cur_eip);
+            cond_temp, ret);
         tcg_temp_free_i32(cond_temp);
         }
-        tcg_temp_free_i64(cur_eip);
     }
 }
 
@@ -3426,14 +3415,9 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     //mmu_idx = tcg_const_i64(idx);
     //tcg_abort();
     if(second_ccache_flag) {
-        TCGv_i32 cur_eip = tcg_temp_new_i32();
-        target_ulong eip_value = *tcg_ctx->cur_pc - *tcg_ctx->cur_cs_base;
-
-        tcg_gen_op2i_i32(INDEX_op_movi_i32, cur_eip, eip_value);
-        gen_helper_sym_load_guest_i32(tcgv_i32_expr(val),
+        gen_helper_sym_load_guest_i32(cpu_env, tcgv_i32_expr(val),
                                   addr, tcgv_i64_expr(addr),
-                                  load_size, cur_eip);
-        tcg_temp_free_i32(cur_eip);
+                                  load_size);
     } else {
         gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
     }
@@ -3492,12 +3476,7 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     if(second_ccache_flag) {
         store_size = tcg_const_i64(1 << (memop & MO_SIZE));
         //mmu_idx = tcg_const_i64(idx);
-        TCGv_i32 cur_eip = tcg_temp_new_i32();
-        target_ulong eip_value = *tcg_ctx->cur_pc - *tcg_ctx->cur_cs_base;
-
-        tcg_gen_op2i_i32(INDEX_op_movi_i32, cur_eip, eip_value);
-        gen_helper_sym_store_guest_i32(val, tcgv_i32_expr(val), addr, tcgv_i64_expr(addr), store_size, cur_eip);
-        tcg_temp_free_i32(cur_eip);
+        gen_helper_sym_store_guest_i32(cpu_env, val, tcgv_i32_expr(val), addr, tcgv_i64_expr(addr), store_size);
         tcg_temp_free_i64(store_size);
         //tcg_temp_free_i64(mmu_idx);
     } else {
@@ -3549,12 +3528,7 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     if(!second_ccache_flag) {
         gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
     } else {
-        TCGv_i64 cur_eip = tcg_temp_new_i64();
-        target_ulong eip_value = *tcg_ctx->cur_pc - *tcg_ctx->cur_cs_base;
-
-        tcg_gen_op2i_i64(INDEX_op_movi_i64, cur_eip, eip_value);
-        gen_helper_sym_load_guest_i64(tcgv_i64_expr(val), addr, tcgv_i64_expr(addr), load_size, cur_eip);
-        tcg_temp_free_i64(cur_eip);
+        gen_helper_sym_load_guest_i64(cpu_env, tcgv_i64_expr(val), addr, tcgv_i64_expr(addr), load_size);
     }
     tcg_temp_free_i64(load_size);
     //tcg_temp_free_i64(mmu_idx);
@@ -3624,14 +3598,9 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     if(second_ccache_flag) {
         //mmu_idx = tcg_const_i64(idx);
         store_size = tcg_const_i64(1 << (memop & MO_SIZE));
-        TCGv cur_eip = tcg_temp_new_i64();
-        target_ulong eip_value = *tcg_ctx->cur_pc - *tcg_ctx->cur_cs_base;
-
-        tcg_gen_op2i_i64(INDEX_op_movi_i64, cur_eip, eip_value);
-        gen_helper_sym_store_guest_i64(val, tcgv_i64_expr(val),
+        gen_helper_sym_store_guest_i64(cpu_env, val, tcgv_i64_expr(val),
                                        addr, tcgv_i64_expr(addr),
-                                       store_size, cur_eip);
-        tcg_temp_free_i64(cur_eip);
+                                       store_size);
         tcg_temp_free_i64(store_size);
         //tcg_temp_free_i64(mmu_idx);
     } else {
