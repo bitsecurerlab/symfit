@@ -62,6 +62,11 @@ void tcg_gen_ldst_op_i64(TCGOpcode opc, TCGv_i64 val,
 void tcg_gen_ldst_op_i32(TCGOpcode opc, TCGv_i32 val,
                          TCGv_ptr base, TCGArg offset);
 
+void tcg_gen_ldst_op_nosym_i64(TCGOpcode opc, TCGv_i64 val,
+                         TCGv_ptr base, TCGArg offset);
+void tcg_gen_ldst_op_nosym_i32(TCGOpcode opc, TCGv_i32 val,
+                         TCGv_ptr base, TCGArg offset);
+
 static inline void tcg_gen_op1_i32(TCGOpcode opc, TCGv_i32 a1)
 {
     tcg_gen_op1(opc, tcgv_i32_arg(a1));
@@ -420,6 +425,11 @@ static inline void tcg_gen_st_i32(TCGv_i32 arg1, TCGv_ptr arg2,
 {
     tcg_gen_ldst_op_i32(INDEX_op_st_i32, arg1, arg2, offset);
 }
+static inline void tcg_gen_st_nosym_i32(TCGv_i32 arg1, TCGv_ptr arg2,
+                                  tcg_target_long offset)
+{
+    tcg_gen_ldst_op_nosym_i32(INDEX_op_st_i32, arg1, arg2, offset);
+}
 
 static inline void tcg_gen_add_i32(TCGv_i32 ret, TCGv_i32 arg1, TCGv_i32 arg2)
 {
@@ -680,6 +690,11 @@ static inline void tcg_gen_st_i64(TCGv_i64 arg1, TCGv_ptr arg2,
                                   tcg_target_long offset)
 {
     tcg_gen_ldst_op_i64(INDEX_op_st_i64, arg1, arg2, offset);
+}
+static inline void tcg_gen_st_nosym_i64(TCGv_i64 arg1, TCGv_ptr arg2,
+                                  tcg_target_long offset)
+{
+    tcg_gen_ldst_op_nosym_i64(INDEX_op_st_i64, arg1, arg2, offset);
 }
 
 static inline void tcg_gen_add_i64(TCGv_i64 ret, TCGv_i64 arg1, TCGv_i64 arg2)
@@ -1113,6 +1128,7 @@ void tcg_gen_stl_vec(TCGv_vec r, TCGv_ptr base, TCGArg offset, TCGType t);
 #define tcg_gen_st16_tl tcg_gen_st16_i64
 #define tcg_gen_st32_tl tcg_gen_st32_i64
 #define tcg_gen_st_tl tcg_gen_st_i64
+#define tcg_gen_st_nosym_tl tcg_gen_st_nosym_i64
 #define tcg_gen_add_tl tcg_gen_add_i64
 #define tcg_gen_addi_tl tcg_gen_addi_i64
 #define tcg_gen_sub_tl tcg_gen_sub_i64
@@ -1226,6 +1242,7 @@ void tcg_gen_stl_vec(TCGv_vec r, TCGv_ptr base, TCGArg offset, TCGType t);
 #define tcg_gen_st16_tl tcg_gen_st16_i32
 #define tcg_gen_st32_tl tcg_gen_st_i32
 #define tcg_gen_st_tl tcg_gen_st_i32
+#define tcg_gen_st_nosym_tl tcg_gen_st_nosym_i32
 #define tcg_gen_add_tl tcg_gen_add_i32
 #define tcg_gen_addi_tl tcg_gen_addi_i32
 #define tcg_gen_sub_tl tcg_gen_sub_i32

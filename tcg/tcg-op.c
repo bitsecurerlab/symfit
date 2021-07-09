@@ -132,7 +132,7 @@ void tcg_gen_ldst_op_i32(TCGOpcode opc, TCGv_i32 val,
         gen_helper_sym_load_host_i32(
             tcgv_i32_expr(val), base, offset_temp, data_size_temp);
     } else {
-        gen_helper_sym_check_load_host(cpu_env, base, offset_temp, data_size_temp);
+        //gen_helper_sym_check_load_host(cpu_env, base, offset_temp, data_size_temp);
     }
         break;
     case INDEX_op_st8_i32:
@@ -142,7 +142,7 @@ void tcg_gen_ldst_op_i32(TCGOpcode opc, TCGv_i32 val,
         gen_helper_sym_store_host_i32(val, tcgv_i32_expr(val),
             base, offset_temp, data_size_temp);
     } else {
-        gen_helper_sym_check_store_host(base, offset_temp, data_size_temp);
+        //gen_helper_sym_check_store_host(base, offset_temp, data_size_temp);
     }
         break;
     default:
@@ -154,7 +154,17 @@ void tcg_gen_ldst_op_i32(TCGOpcode opc, TCGv_i32 val,
 
     tcg_gen_op3(opc, tcgv_i32_arg(val), tcgv_ptr_arg(base), offset);
 }
+void tcg_gen_ldst_op_nosym_i32(TCGOpcode opc, TCGv_i32 val,
+                                       TCGv_ptr base, TCGArg offset)
+{
+    tcg_gen_op3(opc, tcgv_i32_arg(val), tcgv_ptr_arg(base), offset);
+}
 
+void tcg_gen_ldst_op_nosym_i64(TCGOpcode opc, TCGv_i64 val,
+                                       TCGv_ptr base, TCGArg offset)
+{
+    tcg_gen_op3(opc, tcgv_i64_arg(val), tcgv_ptr_arg(base), offset);
+}
 void tcg_gen_ldst_op_i64(TCGOpcode opc, TCGv_i64 val,
                          TCGv_ptr base, TCGArg offset)
 {
@@ -200,7 +210,7 @@ void tcg_gen_ldst_op_i64(TCGOpcode opc, TCGv_i64 val,
             gen_helper_sym_load_host_i64(
                 tcgv_i64_expr(val), base, offset_temp, data_size_temp);
         } else {
-            gen_helper_sym_check_load_host(cpu_env, base, offset_temp, data_size_temp);
+            //gen_helper_sym_check_load_host(cpu_env, base, offset_temp, data_size_temp);
         }
         break;
     case INDEX_op_st8_i64:
@@ -211,7 +221,7 @@ void tcg_gen_ldst_op_i64(TCGOpcode opc, TCGv_i64 val,
             gen_helper_sym_store_host_i64(val, tcgv_i64_expr(val),
                 base, offset_temp, data_size_temp);
         } else {
-            gen_helper_sym_check_store_host(base, offset_temp, data_size_temp);
+            //gen_helper_sym_check_store_host(base, offset_temp, data_size_temp);
         }
         break;
     default:

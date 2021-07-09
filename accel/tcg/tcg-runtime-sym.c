@@ -611,6 +611,7 @@ static void *sym_setcond_internal(CPUArchState *env, uint64_t arg1, void *arg1_e
     }
     //if (!noSymbolicData)
     //fprintf(stderr, "setcond_i%d push constraint eip: 0x%lx\n", result_bits, cur_eip);
+    _sym_notify_basic_block(env->eip);
     void *condition = handler(arg1_expr, arg2_expr);
     //_sym_push_path_constraint(condition, result, get_pc(env));
     //_sym_notify_basic_block(cur_eip);

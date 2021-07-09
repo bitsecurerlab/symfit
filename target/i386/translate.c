@@ -407,7 +407,7 @@ static void gen_add_A0_im(DisasContext *s, int val)
 
 static inline void gen_op_jmp_v(TCGv dest)
 {
-    tcg_gen_st_tl(dest, cpu_env, offsetof(CPUX86State, eip));
+    tcg_gen_st_nosym_tl(dest, cpu_env, offsetof(CPUX86State, eip));
 }
 
 static inline
