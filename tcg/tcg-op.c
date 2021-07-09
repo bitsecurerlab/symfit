@@ -430,8 +430,7 @@ void tcg_gen_setcond_i32(TCGCond cond, TCGv_i32 ret,
         tcg_gen_op4i_i32(INDEX_op_setcond_i32, ret, arg1, arg2, cond);
         if(second_ccache_flag) {
         TCGv_i32 cond_temp = tcg_const_i32(cond);
-        gen_helper_sym_setcond_i32(cpu_env,
-            tcgv_i32_expr(ret),
+        gen_helper_sym_setcond_i32(tcgv_i32_expr(ret), cpu_env,
             arg1, tcgv_i32_expr(arg1),
             arg2, tcgv_i32_expr(arg2),
             cond_temp, ret);
@@ -1857,8 +1856,7 @@ void tcg_gen_setcond_i64(TCGCond cond, TCGv_i64 ret,
         }
         if(second_ccache_flag) {
         TCGv_i32 cond_temp = tcg_const_i32(cond);
-        gen_helper_sym_setcond_i64(cpu_env,
-            tcgv_i64_expr(ret),
+        gen_helper_sym_setcond_i64(tcgv_i64_expr(ret), cpu_env,
             arg1, tcgv_i64_expr(arg1),
             arg2, tcgv_i64_expr(arg2),
             cond_temp, ret);
@@ -3425,7 +3423,7 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     //mmu_idx = tcg_const_i64(idx);
     //tcg_abort();
     if(second_ccache_flag) {
-        gen_helper_sym_load_guest_i32(cpu_env, tcgv_i32_expr(val),
+        gen_helper_sym_load_guest_i32(tcgv_i32_expr(val), cpu_env,
                                   addr, tcgv_i64_expr(addr),
                                   load_size);
     } else {
@@ -3538,7 +3536,7 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     if(!second_ccache_flag) {
         gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
     } else {
-        gen_helper_sym_load_guest_i64(cpu_env, tcgv_i64_expr(val), addr, tcgv_i64_expr(addr), load_size);
+        gen_helper_sym_load_guest_i64(tcgv_i64_expr(val), cpu_env, addr, tcgv_i64_expr(addr), load_size);
     }
     tcg_temp_free_i64(load_size);
     //tcg_temp_free_i64(mmu_idx);
