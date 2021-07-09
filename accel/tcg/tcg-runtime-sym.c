@@ -298,15 +298,15 @@ void *HELPER(sym_bswap)(void *expr, uint64_t length)
     }
 }
 
-static void *sym_load_guest_internal(target_ulong addr, void *addr_expr,
-                                     uint64_t load_length, uint8_t result_length, uint64_t cur_eip)
+static void *sym_load_guest_internal(CPUArchState *env, target_ulong addr, void *addr_expr,
+                                     uint64_t load_length, uint8_t result_length)
 {
     /* Try an alternative address */
     if (addr_expr != NULL)
         _sym_push_path_constraint(
             _sym_build_equal(
                 addr_expr, _sym_build_integer(addr, sizeof(addr) * 8)),
-            true, cur_eip);
+            true, env->eip);
     //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
     void *host_addr = g2h(addr);
     void *memory_expr = _sym_read_memory((uint8_t*)host_addr, load_length, true);
@@ -320,28 +320,28 @@ static void *sym_load_guest_internal(target_ulong addr, void *addr_expr,
         return _sym_build_zext(memory_expr, (result_length - load_length) * 8);
 }
 
-void *HELPER(sym_load_guest_i32)(target_ulong addr, void *addr_expr,
-                                 uint64_t length, uint32_t cur_eip)
+void *HELPER(sym_load_guest_i32)(CPUArchState *env, target_ulong addr, void *addr_expr,
+                                 uint64_t length)
 {
-    return sym_load_guest_internal(addr, addr_expr, length, 4, cur_eip);
+    return sym_load_guest_internal(env, addr, addr_expr, length, 4);
 }
 
-void *HELPER(sym_load_guest_i64)(target_ulong addr, void *addr_expr,
-                                 uint64_t length, uint64_t cur_eip)
+void *HELPER(sym_load_guest_i64)(CPUArchState *env, target_ulong addr, void *addr_expr,
+                                 uint64_t length)
 {
-    return sym_load_guest_internal(addr, addr_expr, length, 8, cur_eip);
+    return sym_load_guest_internal(env, addr, addr_expr, length, 8);
 }
 
-static void sym_store_guest_internal(uint64_t value, void *value_expr,
+static void sym_store_guest_internal(CPUArchState *env, uint64_t value, void *value_expr,
                                      target_ulong addr, void *addr_expr,
-                                     uint64_t length, uint64_t cur_eip)
+                                     uint64_t length)
 {
     /* Try an alternative address */
     if (addr_expr != NULL)
         _sym_push_path_constraint(
             _sym_build_equal(
                 addr_expr, _sym_build_integer(addr, sizeof(addr) * 8)),
-            true, cur_eip);
+            true, env->eip);
     //if (!noSymbolicData)
     //fprintf(stderr, "[memtrace] op: store_guest addr: 0x%lx value_expr: %p addr_expr: %p mode: symbolic eip: 0x%lx\n",
     //                    addr, value_expr, addr_expr, cur_eip);
@@ -351,18 +351,18 @@ static void sym_store_guest_internal(uint64_t value, void *value_expr,
     _sym_write_memory((uint8_t*)host_addr, length, value_expr, true);
 }
 
-void HELPER(sym_store_guest_i32)(uint32_t value, void *value_expr,
+void HELPER(sym_store_guest_i32)(CPUArchState *env, uint32_t value, void *value_expr,
                                  target_ulong addr, void *addr_expr,
-                                 uint64_t length, uint32_t cur_eip)
+                                 uint64_t length)
 {
-    return sym_store_guest_internal(value, value_expr, addr, addr_expr, length, cur_eip);
+    return sym_store_guest_internal(env, value, value_expr, addr, addr_expr, length);
 }
 
-void HELPER(sym_store_guest_i64)(uint64_t value, void *value_expr,
+void HELPER(sym_store_guest_i64)(CPUArchState *env, uint64_t value, void *value_expr,
                                  target_ulong addr, void *addr_expr,
-                                 uint64_t length, uint64_t cur_eip)
+                                 uint64_t length)
 {
-    return sym_store_guest_internal(value, value_expr, addr, addr_expr, length, cur_eip);
+    return sym_store_guest_internal(env, value, value_expr, addr, addr_expr, length);
 }
 
 static void *sym_load_host_internal(void *addr, uint64_t offset,
@@ -567,10 +567,10 @@ void *HELPER(sym_deposit_i64)(uint64_t arg1, void *arg1_expr,
             _sym_build_integer(ofs, 64)));
 }
 
-static void *sym_setcond_internal(uint64_t arg1, void *arg1_expr,
+static void *sym_setcond_internal(CPUArchState *env, uint64_t arg1, void *arg1_expr,
                                   uint64_t arg2, void *arg2_expr,
                                   int32_t cond, uint64_t result,
-                                  uint8_t result_bits, uint64_t cur_eip)
+                                  uint8_t result_bits)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS;
 
@@ -611,26 +611,27 @@ static void *sym_setcond_internal(uint64_t arg1, void *arg1_expr,
     }
     //if (!noSymbolicData)
     //fprintf(stderr, "setcond_i%d push constraint eip: 0x%lx\n", result_bits, cur_eip);
+    _sym_notify_basic_block(env->eip);
     void *condition = handler(arg1_expr, arg2_expr);
     //_sym_push_path_constraint(condition, result, get_pc(env));
     //_sym_notify_basic_block(cur_eip);
-    _sym_push_path_constraint(condition, result, cur_eip);
+    _sym_push_path_constraint(condition, result, env->eip);
 
     return _sym_build_bool_to_bits(condition, result_bits);
 }
 
-void *HELPER(sym_setcond_i32)(uint32_t arg1, void *arg1_expr,
+void *HELPER(sym_setcond_i32)(CPUArchState *env, uint32_t arg1, void *arg1_expr,
                               uint32_t arg2, void *arg2_expr,
-                              int32_t cond, uint32_t result, uint64_t cur_eip)
+                              int32_t cond, uint32_t result)
 {
-    return sym_setcond_internal(arg1, arg1_expr, arg2, arg2_expr, cond, result, 32, cur_eip);
+    return sym_setcond_internal(env, arg1, arg1_expr, arg2, arg2_expr, cond, result, 32);
 }
 
-void *HELPER(sym_setcond_i64)(uint64_t arg1, void *arg1_expr,
+void *HELPER(sym_setcond_i64)(CPUArchState *env, uint64_t arg1, void *arg1_expr,
                               uint64_t arg2, void *arg2_expr,
-                              int32_t cond, uint64_t result, uint64_t cur_eip)
+                              int32_t cond, uint64_t result)
 {
-    return sym_setcond_internal(arg1, arg1_expr, arg2, arg2_expr, cond, result, 64, cur_eip);
+    return sym_setcond_internal(env, arg1, arg1_expr, arg2, arg2_expr, cond, result, 64);
 }
 
 void HELPER(sym_notify_call)(uint64_t return_address)

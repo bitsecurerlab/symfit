@@ -407,7 +407,7 @@ static void gen_add_A0_im(DisasContext *s, int val)
 
 static inline void gen_op_jmp_v(TCGv dest)
 {
-    tcg_gen_st_tl(dest, cpu_env, offsetof(CPUX86State, eip));
+    tcg_gen_st_nosym_tl(dest, cpu_env, offsetof(CPUX86State, eip));
 }
 
 static inline
@@ -2227,8 +2227,8 @@ static inline void gen_goto_tb(DisasContext *s, int tb_num, target_ulong eip)
 
     if (use_goto_tb(s, pc))  {
         /* jump to same page: we can use a direct jump */
-        gen_jmp_im(s, eip);
         tcg_gen_goto_tb(tb_num);
+        gen_jmp_im(s, eip);
         tcg_gen_exit_tb(s->base.tb, tb_num);
         s->base.is_jmp = DISAS_NORETURN;
     } else {
@@ -8382,6 +8382,9 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         break;
     default:
         goto unknown_op;
+    }
+    if (second_ccache_flag && !s->base.is_jmp) {
+        gen_jmp_im(s, s->pc - s->cs_base);
     }
     return s->pc;
  illegal_op:
