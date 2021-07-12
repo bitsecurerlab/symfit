@@ -40,6 +40,7 @@
 
 #ifdef CONFIG_2nd_CCACHE
 int second_ccache_flag = 0;
+int sse_operation = 0;
 int fake_flag = 1;
 #endif
 /* -icount align implementation. */

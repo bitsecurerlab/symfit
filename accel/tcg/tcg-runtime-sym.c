@@ -674,6 +674,18 @@ void HELPER(sym_check_state_switch)(CPUArchState *env) {
     if (env->shadow_cc_dst || env->shadow_cc_src || env->shadow_cc_src2) {
         symbolic_flag = 1;
     }
+    if (sse_operation) {
+        int size = sizeof(env->xmm_regs);
+        uintptr_t xmm_reg_addr = (uintptr_t)env->xmm_regs;
+        void *xmm_reg = NULL;
+        for (uintptr_t addr = xmm_reg_addr; addr < xmm_reg_addr + size; addr+=8) {
+            xmm_reg = _sym_read_memory((uint8_t *)addr, 8, true);
+            if (xmm_reg != NULL) {
+                symbolic_flag = 1;
+                break;
+            }
+        }
+    }
     second_ccache_flag = symbolic_flag;
     //if (!noSymbolicData) fprintf(stderr, "block 0x%lx state %s\n", env->eip, second_ccache_flag?"symbolic":"concrete");
     if (second_ccache_flag == 0) {
@@ -695,6 +707,18 @@ void HELPER(sym_check_state)(CPUArchState *env) {
     }
     if (env->shadow_cc_dst || env->shadow_cc_src || env->shadow_cc_src2) {
         symbolic_flag = 1;
+    }
+    if (sse_operation) {
+        int size = sizeof(env->xmm_regs);
+        uintptr_t xmm_reg_addr = (uintptr_t)env->xmm_regs;
+        void *xmm_reg = NULL;
+        for (uintptr_t addr = xmm_reg_addr; addr < xmm_reg_addr + size; addr+=8) {
+            xmm_reg = _sym_read_memory((uint8_t *)addr, 8, true);
+            if (xmm_reg != NULL) {
+                symbolic_flag = 1;
+                break;
+            }
+        }
     }
     second_ccache_flag = symbolic_flag;
 }

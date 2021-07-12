@@ -2227,8 +2227,9 @@ static inline void gen_goto_tb(DisasContext *s, int tb_num, target_ulong eip)
 
     if (use_goto_tb(s, pc))  {
         /* jump to same page: we can use a direct jump */
-        tcg_gen_goto_tb(tb_num);
+        //if (second_ccache_flag)
         gen_jmp_im(s, eip);
+        tcg_gen_goto_tb(tb_num);
         tcg_gen_exit_tb(s->base.tb, tb_num);
         s->base.is_jmp = DISAS_NORETURN;
     } else {
@@ -3039,6 +3040,8 @@ static const struct SSEOpHelper_eppi sse_op_table7[256] = {
 static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     target_ulong pc_start, int rex_r)
 {
+    //zx012 check shadow mem for xxm_regs
+    sse_operation = 1;
     int b1, op1_offset, op2_offset, is_xmm, val;
     int modrm, mod, rm, reg;
     SSEFunc_0_epp sse_fn_epp;
