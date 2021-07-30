@@ -3041,7 +3041,7 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     target_ulong pc_start, int rex_r)
 {
     //zx012 check shadow mem for xxm_regs
-    sse_operation = 1;
+    //sse_operation = 1;
     int b1, op1_offset, op2_offset, is_xmm, val;
     int modrm, mod, rm, reg;
     SSEFunc_0_epp sse_fn_epp;
