@@ -3420,7 +3420,7 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
                                   addr, tcgv_i64_expr(addr),
                                   load_size);
     } else {
-        //gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
+        gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
     }
     tcg_temp_free_i64(load_size);
     //tcg_temp_free_i64(mmu_idx);
@@ -3481,9 +3481,9 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         tcg_temp_free_i64(store_size);
         //tcg_temp_free_i64(mmu_idx);
     } else {
-        //store_size = tcg_const_i64(1 << (memop & MO_SIZE));
-        //gen_helper_sym_check_store_guest_i32(cpu_env, addr, store_size);
-        //tcg_temp_free_i64(store_size);
+        store_size = tcg_const_i64(1 << (memop & MO_SIZE));
+        gen_helper_sym_check_store_guest_i32(cpu_env, addr, store_size);
+        tcg_temp_free_i64(store_size);
     }
 
     if (swap) {
@@ -3527,7 +3527,7 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     //mmu_idx = tcg_const_i64(idx);
     load_size = tcg_const_i64(1 << (memop & MO_SIZE));
     if(!second_ccache_flag) {
-        //gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
+        gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
     } else {
         gen_helper_sym_load_guest_i64(tcgv_i64_expr(val), cpu_env, addr, tcgv_i64_expr(addr), load_size);
     }
@@ -3605,9 +3605,9 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         tcg_temp_free_i64(store_size);
         //tcg_temp_free_i64(mmu_idx);
     } else {
-        //store_size = tcg_const_i64(1 << (memop & MO_SIZE));
-        //gen_helper_sym_check_store_guest_i64(cpu_env, addr, store_size);
-        //tcg_temp_free_i64(store_size);
+        store_size = tcg_const_i64(1 << (memop & MO_SIZE));
+        gen_helper_sym_check_store_guest_i64(cpu_env, addr, store_size);
+        tcg_temp_free_i64(store_size);
     }
 
     if (swap) {
