@@ -26,6 +26,7 @@
 
 #define SymExpr void*
 #include "RuntimeCommon.h"
+#include "dfsan_interface.h"
 
 /* Returning NULL for unimplemented functions is equivalent to concretizing and
  * allows us to run without all symbolic handlers fully implemented. */
@@ -780,6 +781,14 @@ void HELPER(sym_check_store_host)(void *addr, uint64_t offset, uint64_t length)
 {
     void *value_expr = NULL;
     _sym_write_memory((uint8_t*)addr + offset, length, value_expr, true);
+}
+void HELPER(sym_block_count)(uint64_t is_print) {
+    if (second_ccache_flag) ++symbolic_count;
+    else ++concrete_count;
+    if (is_print) {
+        fprintf(stderr, "symbolic count %ld concrete count %ld total %ld\n", symbolic_count,
+                    concrete_count, symbolic_count+concrete_count);
+    }
 }
 //void HELPER(sym_test)(void *p, target_ulong arg1, void *p2, target_ulong arg2) {
 void *HELPER(sym_test)(void) {

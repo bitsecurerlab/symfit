@@ -630,8 +630,15 @@ static Object *object_new_with_type(Type type)
 
     g_assert(type != NULL);
     type_initialize(type);
-
-    obj = g_malloc(type->instance_size);
+    // Symsan: allocate cpu/env structure after AppBase in symsan.
+    // So xmm registers are mapped in the shadow memory.
+    if (strcmp(type->name, "qemu64-x86_64-cpu") == 0) {
+        obj = mmap((void *)0x700000040000, type->instance_size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    } else {
+        obj = g_malloc(type->instance_size);
+    }
+    // obj = g_malloc(type->instance_size);
     object_initialize_with_type(obj, type->instance_size, type);
     obj->free = g_free;
 

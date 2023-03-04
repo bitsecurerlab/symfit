@@ -409,6 +409,8 @@ datadir="\${prefix}/share"
 firmwarepath="\${prefix}/share/qemu-firmware"
 symcc_source=""
 symcc_build=""
+symsan_source=""
+symsan_build=""
 qemu_docdir="\${prefix}/share/doc/qemu"
 bindir="\${prefix}/bin"
 libdir="\${prefix}/lib"
@@ -1071,6 +1073,10 @@ for opt do
   --symcc-source=*) symcc_source="$optarg"
   ;;
   --symcc-build=*) symcc_build="$optarg"
+  ;;
+  --symsan-source=*) symsan_source="$optarg"
+  ;;
+  --symsan-build=*) symsan_build="$optarg"
   ;;
   --host=*|--build=*|\
   --disable-dependency-tracking|\
@@ -5090,6 +5096,22 @@ if test -e "${symcc_build}/SymRuntime-prefix/src/SymRuntime-build/libSymRuntime.
     libs_cpu="-Wl,-rpath,${symcc_build}/SymRuntime-prefix/src/SymRuntime-build $libs_cpu"
 else
     feature_not_found "SymCC (runtime)" "Point --symcc-build to the SymCC build directory"
+fi
+
+##########################################
+# SymSan
+if test -e "${symsan_source}/runtime/dfsan_interface.h"; then
+    QEMU_CFLAGS="$QEMU_CFLAGS -I${symsan_source}/runtime -I${symsan_source}/include"
+else
+    feature_not_found "SymSan (source)" "Point --symsan-source to the SymSan source code"
+fi
+
+if test -e "${symsan_build}/lib/symsan/libdfsan_rt-x86_64.a"; then
+    LDFLAGS="$LDFLAGS -Wl,--no-as-needed -ldl"
+    libs_cpu="-L${symsan_build}/lib/symsan -ldfsan_rt-x86_64 -lZ3Solver $libs_cpu"
+    libs_cpu="-Wl,-rpath,${symsan_build}/lib/symsan $libs_cpu"
+else
+    feature_not_found "SymSan (runtime)" "Point --symcc-build to the SymSan build directory"
 fi
 
 ##########################################

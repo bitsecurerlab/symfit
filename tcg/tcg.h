@@ -477,6 +477,8 @@ extern int second_ccache_flag;
 extern int sse_operation;
 extern int noSymbolicData;
 extern int fake_flag;
+extern target_ulong symbolic_count;
+extern target_ulong concrete_count;
 #endif
 /* call flags */
 /* Helper does not read globals (either directly or through an exception). It

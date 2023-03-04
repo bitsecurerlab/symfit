@@ -39,6 +39,7 @@ dh_ctype(ret) HELPER(name) (dh_ctype(t1), dh_ctype(t2), dh_ctype(t3), \
 #include "trace/generated-helpers.h"
 #include "tcg-runtime.h"
 #include "tcg-runtime-sym.h"
+#include "tcg-runtime-symsan.h"
 
 #undef DEF_HELPER_FLAGS_0
 #undef DEF_HELPER_FLAGS_1

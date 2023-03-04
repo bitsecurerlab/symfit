@@ -129,14 +129,18 @@ void tcg_gen_ldst_op_i32(TCGOpcode opc, TCGv_i32 val,
     case INDEX_op_ld16u_i32:
     case INDEX_op_ld16s_i32:
     case INDEX_op_ld_i32:
-        gen_helper_sym_load_host_i32(
-            tcgv_i32_expr(val), base, offset_temp, data_size_temp);
+        gen_helper_symsan_load_host_i32(
+            shadow_i32(val), base, offset_temp, data_size_temp);
+        //gen_helper_sym_load_host_i32(
+        //    tcgv_i32_expr(val), base, offset_temp, data_size_temp);
         break;
     case INDEX_op_st8_i32:
     case INDEX_op_st16_i32:
     case INDEX_op_st_i32:
-        gen_helper_sym_store_host_i32(val, tcgv_i32_expr(val),
-            base, offset_temp, data_size_temp);
+        gen_helper_symsan_store_host_i32(shadow_i32(val),
+                base, offset_temp, data_size_temp);
+        //gen_helper_sym_store_host_i32(val, tcgv_i32_expr(val),
+        //    base, offset_temp, data_size_temp);
         break;
     default:
         g_assert_not_reached();
@@ -203,15 +207,19 @@ void tcg_gen_ldst_op_i64(TCGOpcode opc, TCGv_i64 val,
     case INDEX_op_ld32u_i64:
     case INDEX_op_ld32s_i64:
     case INDEX_op_ld_i64:
-            gen_helper_sym_load_host_i64(
-                tcgv_i64_expr(val), base, offset_temp, data_size_temp);
+            gen_helper_symsan_load_host_i64(
+                shadow_i64(val), base, offset_temp, data_size_temp);
+            //gen_helper_sym_load_host_i64(
+            //    tcgv_i64_expr(val), base, offset_temp, data_size_temp);
         break;
     case INDEX_op_st8_i64:
     case INDEX_op_st16_i64:
     case INDEX_op_st32_i64:
     case INDEX_op_st_i64:
-            gen_helper_sym_store_host_i64(val, tcgv_i64_expr(val),
+            gen_helper_symsan_store_host_i64(shadow_i64(val),
                 base, offset_temp, data_size_temp);
+            //gen_helper_sym_store_host_i64(val, tcgv_i64_expr(val),
+            //    base, offset_temp, data_size_temp);
         break;
     default:
         g_assert_not_reached();
@@ -252,7 +260,8 @@ void tcg_gen_subfi_i32(TCGv_i32 ret, int32_t arg1, TCGv_i32 arg2)
     if (arg1 == 0 && TCG_TARGET_HAS_neg_i32) {
         /* Don't recurse with tcg_gen_neg_i32.  */
         if(second_ccache_flag) {
-            gen_helper_sym_neg(tcgv_i32_expr(ret), tcgv_i32_expr(arg2));
+            //gen_helper_sym_neg(tcgv_i32_expr(ret), tcgv_i32_expr(arg2));
+            gen_helper_symsan_neg_i32(shadow_i32(ret), arg2, shadow_i32(arg2));
         }
         tcg_gen_op2_i32(INDEX_op_neg_i32, ret, arg2);
     } else {
@@ -281,7 +290,7 @@ void tcg_gen_andi_i32(TCGv_i32 ret, TCGv_i32 arg1, int32_t arg2)
     switch (arg2) {
     case 0:
         if(second_ccache_flag) {
-        tcg_gen_op2i_i64(INDEX_op_movi_i64, tcgv_i32_expr_num(ret), 0);
+            tcg_gen_op2i_i64(INDEX_op_movi_i64, tcgv_i32_expr_num(ret), 0);
         }
         tcg_gen_movi_i32(ret, 0);
         return;
@@ -329,7 +338,8 @@ void tcg_gen_xori_i32(TCGv_i32 ret, TCGv_i32 arg1, int32_t arg2)
     } else if (arg2 == -1 && TCG_TARGET_HAS_not_i32) {
         /* Don't recurse with tcg_gen_not_i32.  */
         if(second_ccache_flag) {
-            gen_helper_sym_not(tcgv_i32_expr(ret), tcgv_i32_expr(arg1));
+            //gen_helper_sym_not(tcgv_i32_expr(ret), tcgv_i32_expr(arg1));
+            gen_helper_symsan_not_i32(shadow_i32(ret), arg1, shadow_i32(arg1));
         }
         tcg_gen_op2_i32(INDEX_op_not_i32, ret, arg1);
     } else {
@@ -421,12 +431,16 @@ void tcg_gen_setcond_i32(TCGCond cond, TCGv_i32 ret,
     } else {
         tcg_gen_op4i_i32(INDEX_op_setcond_i32, ret, arg1, arg2, cond);
         if(second_ccache_flag) {
-        TCGv_i32 cond_temp = tcg_const_i32(cond);
-        gen_helper_sym_setcond_i32(tcgv_i32_expr(ret), cpu_env,
-            arg1, tcgv_i32_expr(arg1),
-            arg2, tcgv_i32_expr(arg2),
-            cond_temp, ret);
-        tcg_temp_free_i32(cond_temp);
+            TCGv_i32 cond_temp = tcg_const_i32(cond);
+            gen_helper_symsan_setcond_i32(shadow_i32(ret), cpu_env,
+                arg1, shadow_i32(arg1),
+                arg2, shadow_i32(arg2),
+                cond_temp);
+            // gen_helper_sym_setcond_i32(tcgv_i32_expr(ret), cpu_env,
+            //     arg1, tcgv_i32_expr(arg1),
+            //     arg2, tcgv_i32_expr(arg2),
+            //     cond_temp, ret);
+            tcg_temp_free_i32(cond_temp);
         }
     }
 }
@@ -807,10 +821,14 @@ void tcg_gen_deposit_i32(TCGv_i32 ret, TCGv_i32 arg1, TCGv_i32 arg2,
         TCGv_i32 ofs_tmp, len_tmp;
         ofs_tmp = tcg_const_i32(ofs);
         len_tmp = tcg_const_i32(len);
-        gen_helper_sym_deposit_i32(tcgv_i32_expr(ret),
+        /*gen_helper_sym_deposit_i32(tcgv_i32_expr(ret),
                                    arg1, tcgv_i32_expr(arg1),
                                    arg2, tcgv_i32_expr(arg2),
-                                   ofs_tmp, len_tmp);
+                                   ofs_tmp, len_tmp);*/
+        gen_helper_symsan_deposit_i32(shadow_i32(ret),
+                                      arg1, shadow_i32(arg1),
+                                      arg2, shadow_i32(arg2),
+                                      ofs_tmp, len_tmp);
         tcg_temp_free_i32(ofs_tmp);
         tcg_temp_free_i32(len_tmp);
         }
@@ -865,10 +883,14 @@ void tcg_gen_deposit_z_i32(TCGv_i32 ret, TCGv_i32 arg,
         TCGv_i32 ofs_tmp, len_tmp;
         ofs_tmp = tcg_const_i32(ofs);
         len_tmp = tcg_const_i32(len);
-        gen_helper_sym_deposit_i32(tcgv_i32_expr(ret),
+        /*gen_helper_sym_deposit_i32(tcgv_i32_expr(ret),
                                    zero, tcgv_i32_expr(zero),
                                    arg, tcgv_i32_expr(arg),
-                                   ofs_tmp, len_tmp);
+                                   ofs_tmp, len_tmp);*/
+        gen_helper_symsan_deposit_i32(shadow_i32(ret),
+                                      zero, shadow_i32(zero),
+                                      arg, shadow_i32(arg),
+                                      ofs_tmp, len_tmp);
         tcg_temp_free_i32(ofs_tmp);
         tcg_temp_free_i32(len_tmp);
         }
@@ -940,8 +962,10 @@ void tcg_gen_extract_i32(TCGv_i32 ret, TCGv_i32 arg,
         TCGv_i32 ofs_tmp, len_tmp;
         ofs_tmp = tcg_const_i32(ofs);
         len_tmp = tcg_const_i32(len);
-        gen_helper_sym_extract_i32(
-            tcgv_i32_expr(ret), tcgv_i32_expr(arg), ofs_tmp, len_tmp);
+        /*gen_helper_sym_extract_i32(
+            tcgv_i32_expr(ret), tcgv_i32_expr(arg), ofs_tmp, len_tmp);*/
+        gen_helper_symsan_extract_i32(
+            shadow_i32(ret), arg, shadow_i32(arg), ofs_tmp, len_tmp);
         tcg_temp_free_i32(ofs_tmp);
         tcg_temp_free_i32(len_tmp);
         }
@@ -1012,8 +1036,10 @@ void tcg_gen_sextract_i32(TCGv_i32 ret, TCGv_i32 arg,
         TCGv_i32 ofs_tmp, len_tmp;
         ofs_tmp = tcg_const_i32(ofs);
         len_tmp = tcg_const_i32(len);
-        gen_helper_sym_sextract_i32(
-            tcgv_i32_expr(ret), tcgv_i32_expr(arg), ofs_tmp, len_tmp);
+        //gen_helper_sym_sextract_i32(
+        //    tcgv_i32_expr(ret), tcgv_i32_expr(arg), ofs_tmp, len_tmp);
+        gen_helper_symsan_sextract_i32(
+            shadow_i32(ret), arg, shadow_i32(arg), ofs_tmp, len_tmp);
         tcg_temp_free_i32(ofs_tmp);
         tcg_temp_free_i32(len_tmp);
         }
@@ -1077,10 +1103,15 @@ void tcg_gen_extract2_i32(TCGv_i32 ret, TCGv_i32 al, TCGv_i32 ah,
         if(second_ccache_flag) {
         TCGv_i64 ofs_tmp;
         ofs_tmp = tcg_const_i64(ofs);
-        gen_helper_sym_extract2_i32(
+        /*gen_helper_sym_extract2_i32(
             tcgv_i32_expr(ret),
             ah, tcgv_i32_expr(ah),
             al, tcgv_i32_expr(al),
+            ofs_tmp);*/
+        gen_helper_symsan_extract2_i32(
+            shadow_i32(ret),
+            ah, shadow_i32(ah),
+            al, shadow_i32(al),
             ofs_tmp);
         tcg_temp_free_i64(ofs_tmp);
         }
@@ -1271,9 +1302,10 @@ void tcg_gen_ext8s_i32(TCGv_i32 ret, TCGv_i32 arg)
 {
     if (TCG_TARGET_HAS_ext8s_i32) {
         if(second_ccache_flag) {
-        TCGv_i64 target_len = tcg_const_i64(1);
-        gen_helper_sym_sext(
-            tcgv_i32_expr(ret), tcgv_i32_expr(arg), target_len);
+        TCGv_i64 target_len = tcg_const_i64(8);
+        //gen_helper_sym_sext(
+        //    tcgv_i32_expr(ret), tcgv_i32_expr(arg), target_len);
+        gen_helper_symsan_sext_i32(shadow_i32(ret), arg, shadow_i32(arg), target_len);
         tcg_temp_free_i64(target_len);
         }
         tcg_gen_op2_i32(INDEX_op_ext8s_i32, ret, arg);
@@ -1287,9 +1319,11 @@ void tcg_gen_ext16s_i32(TCGv_i32 ret, TCGv_i32 arg)
 {
     if (TCG_TARGET_HAS_ext16s_i32) {
         if(second_ccache_flag) {
-        TCGv_i64 target_len = tcg_const_i64(2);
-        gen_helper_sym_sext(
-            tcgv_i32_expr(ret), tcgv_i32_expr(arg), target_len);
+        TCGv_i64 target_len = tcg_const_i64(16);
+        //gen_helper_sym_sext(
+        //    tcgv_i32_expr(ret), tcgv_i32_expr(arg), target_len);
+        gen_helper_symsan_sext_i32(shadow_i32(ret), arg, shadow_i32(arg), target_len);
+    
         tcg_temp_free_i64(target_len);
         }
         tcg_gen_op2_i32(INDEX_op_ext16s_i32, ret, arg);
@@ -1303,9 +1337,10 @@ void tcg_gen_ext8u_i32(TCGv_i32 ret, TCGv_i32 arg)
 {
     if (TCG_TARGET_HAS_ext8u_i32) {
         if(second_ccache_flag) {
-        TCGv_i64 target_len = tcg_const_i64(1);
-        gen_helper_sym_zext(
-            tcgv_i32_expr(ret), tcgv_i32_expr(arg), target_len);
+        TCGv_i64 target_len = tcg_const_i64(8);
+        //gen_helper_sym_zext(
+        //    tcgv_i32_expr(ret), tcgv_i32_expr(arg), target_len);
+        gen_helper_symsan_zext_i32(shadow_i32(ret), arg, shadow_i32(arg), target_len);
         tcg_temp_free_i64(target_len);
         }
         tcg_gen_op2_i32(INDEX_op_ext8u_i32, ret, arg);
@@ -1318,9 +1353,10 @@ void tcg_gen_ext16u_i32(TCGv_i32 ret, TCGv_i32 arg)
 {
     if (TCG_TARGET_HAS_ext16u_i32) {
         if(second_ccache_flag) {
-        TCGv_i64 target_len = tcg_const_i64(2);
-        gen_helper_sym_zext(
-            tcgv_i32_expr(ret), tcgv_i32_expr(arg), target_len);
+        TCGv_i64 target_len = tcg_const_i64(16);
+        //gen_helper_sym_zext(
+        //    tcgv_i32_expr(ret), tcgv_i32_expr(arg), target_len);
+        gen_helper_symsan_zext_i32(shadow_i32(ret), arg, shadow_i32(arg), target_len);
         tcg_temp_free_i64(target_len);
         }
         tcg_gen_op2_i32(INDEX_op_ext16u_i32, ret, arg);
@@ -1335,8 +1371,9 @@ void tcg_gen_bswap16_i32(TCGv_i32 ret, TCGv_i32 arg)
     if (TCG_TARGET_HAS_bswap16_i32) {
         if(second_ccache_flag) {
         TCGv_i64 length = tcg_const_i64(2);
-        gen_helper_sym_bswap(
-            tcgv_i32_expr(ret), tcgv_i32_expr(arg), length);
+        //gen_helper_sym_bswap(
+        //    tcgv_i32_expr(ret), tcgv_i32_expr(arg), length);
+        gen_helper_symsan_bswap_i32(shadow_i32(ret), arg, shadow_i32(arg), length);
         tcg_temp_free_i64(length);
         }
         tcg_gen_op2_i32(INDEX_op_bswap16_i32, ret, arg);
@@ -1356,8 +1393,9 @@ void tcg_gen_bswap32_i32(TCGv_i32 ret, TCGv_i32 arg)
     if (TCG_TARGET_HAS_bswap32_i32) {
         if(second_ccache_flag) {
         TCGv_i64 length = tcg_const_i64(4);
-        gen_helper_sym_bswap(
-            tcgv_i32_expr(ret), tcgv_i32_expr(arg), length);
+        //gen_helper_sym_bswap(
+        //    tcgv_i32_expr(ret), tcgv_i32_expr(arg), length);
+        gen_helper_symsan_bswap_i32(shadow_i32(ret), arg, shadow_i32(arg), length);
         tcg_temp_free_i64(length);
         }
         tcg_gen_op2_i32(INDEX_op_bswap32_i32, ret, arg);
@@ -1517,9 +1555,12 @@ void tcg_gen_xor_i64(TCGv_i64 ret, TCGv_i64 arg1, TCGv_i64 arg2)
 void tcg_gen_shl_i64(TCGv_i64 ret, TCGv_i64 arg1, TCGv_i64 arg2)
 {
     if(second_ccache_flag) {
-    gen_helper_sym_shift_left_i64(tcgv_i64_expr(ret),
-                                  arg1, tcgv_i64_expr(arg1),
-                                  arg2, tcgv_i64_expr(arg2));
+        gen_helper_symsan_shift_left_i64(shadow_i64(ret),
+                                         arg1, shadow_i64(arg1),
+                                         arg2, shadow_i64(arg2));
+    //gen_helper_sym_shift_left_i64(tcgv_i64_expr(ret),
+    //                              arg1, tcgv_i64_expr(arg1),
+    //                              arg2, tcgv_i64_expr(arg2));
     }
     gen_helper_shl_i64(ret, arg1, arg2);
 }
@@ -1527,9 +1568,12 @@ void tcg_gen_shl_i64(TCGv_i64 ret, TCGv_i64 arg1, TCGv_i64 arg2)
 void tcg_gen_shr_i64(TCGv_i64 ret, TCGv_i64 arg1, TCGv_i64 arg2)
 {
     if(second_ccache_flag) {
-    gen_helper_sym_shift_right_i64(tcgv_i64_expr(ret),
-                                   arg1, tcgv_i64_expr(arg1),
-                                   arg2, tcgv_i64_expr(arg2));
+        gen_helper_symsan_shift_right_i64(shadow_i64(ret),
+                                          arg1, shadow_i64(arg1),
+                                          arg2, shadow_i64(arg2));
+    //gen_helper_sym_shift_right_i64(tcgv_i64_expr(ret),
+    //                               arg1, tcgv_i64_expr(arg1),
+    //                               arg2, tcgv_i64_expr(arg2));
     }
     gen_helper_shr_i64(ret, arg1, arg2);
 }
@@ -1537,9 +1581,12 @@ void tcg_gen_shr_i64(TCGv_i64 ret, TCGv_i64 arg1, TCGv_i64 arg2)
 void tcg_gen_sar_i64(TCGv_i64 ret, TCGv_i64 arg1, TCGv_i64 arg2)
 {
     if(second_ccache_flag) {
-    gen_helper_sym_arithmetic_shift_right_i64(tcgv_i64_expr(ret),
-                                              arg1, tcgv_i64_expr(arg1),
-                                              arg2, tcgv_i64_expr(arg2));
+        gen_helper_symsan_arithmetic_shift_right_i64(shadow_i64(ret),
+                                                     arg1, shadow_i64(arg1),
+                                                     arg2, shadow_i64(arg2));
+    //gen_helper_sym_arithmetic_shift_right_i64(tcgv_i64_expr(ret),
+    //                                          arg1, tcgv_i64_expr(arg1),
+    //                                          arg2, tcgv_i64_expr(arg2));
     }
     gen_helper_sar_i64(ret, arg1, arg2);
 }
@@ -1583,7 +1630,8 @@ void tcg_gen_subfi_i64(TCGv_i64 ret, int64_t arg1, TCGv_i64 arg2)
     if (arg1 == 0 && TCG_TARGET_HAS_neg_i64) {
         /* Don't recurse with tcg_gen_neg_i64.  */
         if(second_ccache_flag) {
-        gen_helper_sym_neg(tcgv_i64_expr(ret), tcgv_i64_expr(arg2));
+            gen_helper_symsan_neg_i64(shadow_i64(ret), arg2, shadow_i64(arg2));
+        //gen_helper_sym_neg(tcgv_i64_expr(ret), tcgv_i64_expr(arg2));
         }
         tcg_gen_op2_i64(INDEX_op_neg_i64, ret, arg2);
     } else {
@@ -1680,7 +1728,8 @@ void tcg_gen_xori_i64(TCGv_i64 ret, TCGv_i64 arg1, int64_t arg2)
     } else if (arg2 == -1 && TCG_TARGET_HAS_not_i64) {
         /* Don't recurse with tcg_gen_not_i64.  */
         if(second_ccache_flag) {
-        gen_helper_sym_not(tcgv_i64_expr(ret), tcgv_i64_expr(arg1));
+            gen_helper_symsan_not_i64(shadow_i64(ret), arg1, shadow_i64(arg1));
+        //gen_helper_sym_not(tcgv_i64_expr(ret), tcgv_i64_expr(arg1));
         }
         tcg_gen_op2_i64(INDEX_op_not_i64, ret, arg1);
     } else {
@@ -1848,12 +1897,16 @@ void tcg_gen_setcond_i64(TCGCond cond, TCGv_i64 ret,
             tcg_gen_op4i_i64(INDEX_op_setcond_i64, ret, arg1, arg2, cond);
         }
         if(second_ccache_flag) {
-        TCGv_i32 cond_temp = tcg_const_i32(cond);
-        gen_helper_sym_setcond_i64(tcgv_i64_expr(ret), cpu_env,
-            arg1, tcgv_i64_expr(arg1),
-            arg2, tcgv_i64_expr(arg2),
-            cond_temp, ret);
-        tcg_temp_free_i32(cond_temp);
+            TCGv_i32 cond_temp = tcg_const_i32(cond);
+            gen_helper_symsan_setcond_i64(shadow_i64(ret), cpu_env,
+                arg1, shadow_i64(arg1),
+                arg2, shadow_i64(arg2),
+                cond_temp);
+            // gen_helper_sym_setcond_i64(tcgv_i64_expr(ret), cpu_env,
+            //     arg1, tcgv_i64_expr(arg1),
+            //     arg2, tcgv_i64_expr(arg2),
+            //     cond_temp, ret);
+            tcg_temp_free_i32(cond_temp);
         }
     }
 }
@@ -1966,10 +2019,12 @@ void tcg_gen_ext8s_i64(TCGv_i64 ret, TCGv_i64 arg)
         tcg_gen_sari_i32(TCGV_HIGH(ret), TCGV_LOW(ret), 31);
     } else if (TCG_TARGET_HAS_ext8s_i64) {
         if(second_ccache_flag) {
-        TCGv_i64 target_len = tcg_const_i64(1);
-        gen_helper_sym_sext(
-            tcgv_i64_expr(ret), tcgv_i64_expr(arg), target_len);
-        tcg_temp_free_i64(target_len);
+            TCGv_i64 target_len = tcg_const_i64(8);
+            gen_helper_symsan_sext_i64(
+                shadow_i64(ret), arg, shadow_i64(arg), target_len);
+            //gen_helper_sym_sext(
+            //    tcgv_i64_expr(ret), tcgv_i64_expr(arg), target_len);
+            tcg_temp_free_i64(target_len);
         }
         tcg_gen_op2_i64(INDEX_op_ext8s_i64, ret, arg);
     } else {
@@ -1985,10 +2040,12 @@ void tcg_gen_ext16s_i64(TCGv_i64 ret, TCGv_i64 arg)
         tcg_gen_sari_i32(TCGV_HIGH(ret), TCGV_LOW(ret), 31);
     } else if (TCG_TARGET_HAS_ext16s_i64) {
         if(second_ccache_flag) {
-        TCGv_i64 target_len = tcg_const_i64(2);
-        gen_helper_sym_sext(
-            tcgv_i64_expr(ret), tcgv_i64_expr(arg), target_len);
-        tcg_temp_free_i64(target_len);
+            TCGv_i64 target_len = tcg_const_i64(16);
+            gen_helper_symsan_sext_i64(
+                shadow_i64(ret), arg, shadow_i64(arg), target_len);
+            //gen_helper_sym_sext(
+            //    tcgv_i64_expr(ret), tcgv_i64_expr(arg), target_len);
+            tcg_temp_free_i64(target_len);
         }
         tcg_gen_op2_i64(INDEX_op_ext16s_i64, ret, arg);
     } else {
@@ -2004,10 +2061,12 @@ void tcg_gen_ext32s_i64(TCGv_i64 ret, TCGv_i64 arg)
         tcg_gen_sari_i32(TCGV_HIGH(ret), TCGV_LOW(ret), 31);
     } else if (TCG_TARGET_HAS_ext32s_i64) {
         if(second_ccache_flag) {
-        TCGv_i64 target_len = tcg_const_i64(4);
-        gen_helper_sym_sext(
-            tcgv_i64_expr(ret), tcgv_i64_expr(arg), target_len);
-        tcg_temp_free_i64(target_len);
+            TCGv_i64 target_len = tcg_const_i64(32);
+            gen_helper_symsan_sext_i64(
+                shadow_i64(ret), arg, shadow_i64(arg), target_len);
+            //gen_helper_sym_sext(
+            //    tcgv_i64_expr(ret), tcgv_i64_expr(arg), target_len);
+            tcg_temp_free_i64(target_len);
         }
         tcg_gen_op2_i64(INDEX_op_ext32s_i64, ret, arg);
     } else {
@@ -2023,10 +2082,12 @@ void tcg_gen_ext8u_i64(TCGv_i64 ret, TCGv_i64 arg)
         tcg_gen_movi_i32(TCGV_HIGH(ret), 0);
     } else if (TCG_TARGET_HAS_ext8u_i64) {
         if(second_ccache_flag) {
-        TCGv_i64 target_len = tcg_const_i64(1);
-        gen_helper_sym_zext(
-            tcgv_i64_expr(ret), tcgv_i64_expr(arg), target_len);
-        tcg_temp_free_i64(target_len);
+            TCGv_i64 target_len = tcg_const_i64(8);
+            gen_helper_symsan_zext_i64(
+                shadow_i64(ret), arg, shadow_i64(arg), target_len);
+            //gen_helper_sym_zext(
+            //    tcgv_i64_expr(ret), tcgv_i64_expr(arg), target_len);
+            tcg_temp_free_i64(target_len);
         }
         tcg_gen_op2_i64(INDEX_op_ext8u_i64, ret, arg);
     } else {
@@ -2041,10 +2102,12 @@ void tcg_gen_ext16u_i64(TCGv_i64 ret, TCGv_i64 arg)
         tcg_gen_movi_i32(TCGV_HIGH(ret), 0);
     } else if (TCG_TARGET_HAS_ext16u_i64) {
         if(second_ccache_flag) {
-        TCGv_i64 target_len = tcg_const_i64(2);
-        gen_helper_sym_zext(
-            tcgv_i64_expr(ret), tcgv_i64_expr(arg), target_len);
-        tcg_temp_free_i64(target_len);
+            TCGv_i64 target_len = tcg_const_i64(16);
+            gen_helper_symsan_zext_i64(
+                shadow_i64(ret), arg, shadow_i64(arg), target_len);
+            //gen_helper_sym_zext(
+            //    tcgv_i64_expr(ret), tcgv_i64_expr(arg), target_len);
+            tcg_temp_free_i64(target_len);
         }
         tcg_gen_op2_i64(INDEX_op_ext16u_i64, ret, arg);
     } else {
@@ -2059,10 +2122,12 @@ void tcg_gen_ext32u_i64(TCGv_i64 ret, TCGv_i64 arg)
         tcg_gen_movi_i32(TCGV_HIGH(ret), 0);
     } else if (TCG_TARGET_HAS_ext32u_i64) {
         if(second_ccache_flag) {
-        TCGv_i64 target_len = tcg_const_i64(4);
-        gen_helper_sym_zext(
-            tcgv_i64_expr(ret), tcgv_i64_expr(arg), target_len);
-        tcg_temp_free_i64(target_len);
+            TCGv_i64 target_len = tcg_const_i64(32);
+            gen_helper_symsan_zext_i64(
+                shadow_i64(ret), arg, shadow_i64(arg), target_len);
+            //gen_helper_sym_zext(
+            //    tcgv_i64_expr(ret), tcgv_i64_expr(arg), target_len);
+            tcg_temp_free_i64(target_len);
         }
         tcg_gen_op2_i64(INDEX_op_ext32u_i64, ret, arg);
     } else {
@@ -2078,10 +2143,11 @@ void tcg_gen_bswap16_i64(TCGv_i64 ret, TCGv_i64 arg)
         tcg_gen_movi_i32(TCGV_HIGH(ret), 0);
     } else if (TCG_TARGET_HAS_bswap16_i64) {
         if(second_ccache_flag) {
-        TCGv_i64 length = tcg_const_i64(2);
-        gen_helper_sym_bswap(
-            tcgv_i64_expr(ret), tcgv_i64_expr(arg), length);
-        tcg_temp_free_i64(length);
+            //FIXME(symsan): not supported yet
+            TCGv_i64 length = tcg_const_i64(2);
+            gen_helper_sym_bswap(
+                tcgv_i64_expr(ret), tcgv_i64_expr(arg), length);
+            tcg_temp_free_i64(length);
         }
         tcg_gen_op2_i64(INDEX_op_bswap16_i64, ret, arg);
     } else {
@@ -2103,10 +2169,11 @@ void tcg_gen_bswap32_i64(TCGv_i64 ret, TCGv_i64 arg)
         tcg_gen_movi_i32(TCGV_HIGH(ret), 0);
     } else if (TCG_TARGET_HAS_bswap32_i64) {
         if(second_ccache_flag) {
-        TCGv_i64 length = tcg_const_i64(4);
-        gen_helper_sym_bswap(
-            tcgv_i64_expr(ret), tcgv_i64_expr(arg), length);
-        tcg_temp_free_i64(length);
+            //FIXME(symsan): not supported yet
+            TCGv_i64 length = tcg_const_i64(4);
+            gen_helper_sym_bswap(
+                tcgv_i64_expr(ret), tcgv_i64_expr(arg), length);
+            tcg_temp_free_i64(length);
         }
         tcg_gen_op2_i64(INDEX_op_bswap32_i64, ret, arg);
     } else {
@@ -2147,10 +2214,11 @@ void tcg_gen_bswap64_i64(TCGv_i64 ret, TCGv_i64 arg)
         tcg_temp_free_i32(t1);
     } else if (TCG_TARGET_HAS_bswap64_i64) {
         if(second_ccache_flag) {
-        TCGv_i64 length = tcg_const_i64(8);
-        gen_helper_sym_bswap(
-            tcgv_i64_expr(ret), tcgv_i64_expr(arg), length);
-        tcg_temp_free_i64(length);
+            //FIXME(symsan): not supported yet
+            TCGv_i64 length = tcg_const_i64(8);
+            gen_helper_sym_bswap(
+                tcgv_i64_expr(ret), tcgv_i64_expr(arg), length);
+            tcg_temp_free_i64(length);
         }
         tcg_gen_op2_i64(INDEX_op_bswap64_i64, ret, arg);
     } else {
@@ -2190,7 +2258,8 @@ void tcg_gen_not_i64(TCGv_i64 ret, TCGv_i64 arg)
         tcg_gen_not_i32(TCGV_HIGH(ret), TCGV_HIGH(arg));
     } else if (TCG_TARGET_HAS_not_i64) {
         if(second_ccache_flag) {
-        gen_helper_sym_not(tcgv_i64_expr(ret), tcgv_i64_expr(arg));
+            gen_helper_symsan_not_i64(shadow_i64(ret), arg, shadow_i64(arg));
+            //gen_helper_sym_not(tcgv_i64_expr(ret), tcgv_i64_expr(arg));
         }
         tcg_gen_op2_i64(INDEX_op_not_i64, ret, arg);
     } else {
@@ -2481,15 +2550,19 @@ void tcg_gen_deposit_i64(TCGv_i64 ret, TCGv_i64 arg1, TCGv_i64 arg2,
     }
     if (TCG_TARGET_HAS_deposit_i64 && TCG_TARGET_deposit_i64_valid(ofs, len)) {
         if(second_ccache_flag) {
-        TCGv_i64 ofs_tmp, len_tmp;
-        ofs_tmp = tcg_const_i64(ofs);
-        len_tmp = tcg_const_i64(len);
-        gen_helper_sym_deposit_i64(tcgv_i64_expr(ret),
-                                   arg1, tcgv_i64_expr(arg1),
-                                   arg2, tcgv_i64_expr(arg2),
-                                   ofs_tmp, len_tmp);
-        tcg_temp_free_i64(ofs_tmp);
-        tcg_temp_free_i64(len_tmp);
+            TCGv_i64 ofs_tmp, len_tmp;
+            ofs_tmp = tcg_const_i64(ofs);
+            len_tmp = tcg_const_i64(len);
+            gen_helper_symsan_deposit_i64(shadow_i64(ret),
+                                    arg1, shadow_i64(arg1),
+                                    arg2, shadow_i64(arg2),
+                                    ofs_tmp, len_tmp);
+            /*gen_helper_sym_deposit_i64(tcgv_i64_expr(ret),
+                                    arg1, tcgv_i64_expr(arg1),
+                                    arg2, tcgv_i64_expr(arg2),
+                                    ofs_tmp, len_tmp);*/
+            tcg_temp_free_i64(ofs_tmp);
+            tcg_temp_free_i64(len_tmp);
         }
         tcg_gen_op5ii_i64(INDEX_op_deposit_i64, ret, arg1, arg2, ofs, len);
         return;
@@ -2554,15 +2627,19 @@ void tcg_gen_deposit_z_i64(TCGv_i64 ret, TCGv_i64 arg,
                && TCG_TARGET_deposit_i64_valid(ofs, len)) {
         TCGv_i64 zero = tcg_const_i64(0);
         if(second_ccache_flag) {
-        TCGv_i64 ofs_tmp, len_tmp;
-        ofs_tmp = tcg_const_i64(ofs);
-        len_tmp = tcg_const_i64(len);
-        gen_helper_sym_deposit_i64(tcgv_i64_expr(ret),
-                                   zero, tcgv_i64_expr(zero),
-                                   arg, tcgv_i64_expr(arg),
-                                   ofs_tmp, len_tmp);
-        tcg_temp_free_i64(ofs_tmp);
-        tcg_temp_free_i64(len_tmp);
+            TCGv_i64 ofs_tmp, len_tmp;
+            ofs_tmp = tcg_const_i64(ofs);
+            len_tmp = tcg_const_i64(len);
+            gen_helper_symsan_deposit_i64(shadow_i64(ret),
+                                    zero, shadow_i64(zero),
+                                    arg, shadow_i64(arg),
+                                    ofs_tmp, len_tmp);
+            /*gen_helper_sym_deposit_i64(tcgv_i64_expr(ret),
+                                    zero, tcgv_i64_expr(zero),
+                                    arg, tcgv_i64_expr(arg),
+                                    ofs_tmp, len_tmp);*/
+            tcg_temp_free_i64(ofs_tmp);
+            tcg_temp_free_i64(len_tmp);
         }
 
         tcg_gen_op5ii_i64(INDEX_op_deposit_i64, ret, zero, arg, ofs, len);
@@ -2673,14 +2750,16 @@ void tcg_gen_extract_i64(TCGv_i64 ret, TCGv_i64 arg,
     if (TCG_TARGET_HAS_extract_i64
         && TCG_TARGET_extract_i64_valid(ofs, len)) {
         if(second_ccache_flag) {
-        //printf("should not go here\n");
-        TCGv_i64 ofs_tmp, len_tmp;
-        ofs_tmp = tcg_const_i64(ofs);
-        len_tmp = tcg_const_i64(len);
-        gen_helper_sym_extract_i64(
-            tcgv_i64_expr(ret), tcgv_i64_expr(arg), ofs_tmp, len_tmp);
-        tcg_temp_free_i64(ofs_tmp);
-        tcg_temp_free_i64(len_tmp);
+            //printf("should not go here\n");
+            TCGv_i64 ofs_tmp, len_tmp;
+            ofs_tmp = tcg_const_i64(ofs);
+            len_tmp = tcg_const_i64(len);
+            gen_helper_symsan_extract_i64(
+                shadow_i64(ret), arg, shadow_i64(arg), ofs_tmp, len_tmp);
+            //gen_helper_sym_extract_i64(
+            //    tcgv_i64_expr(ret), tcgv_i64_expr(arg), ofs_tmp, len_tmp);
+            tcg_temp_free_i64(ofs_tmp);
+            tcg_temp_free_i64(len_tmp);
         }
         tcg_gen_op4ii_i64(INDEX_op_extract_i64, ret, arg, ofs, len);
         return;
@@ -2789,13 +2868,15 @@ void tcg_gen_sextract_i64(TCGv_i64 ret, TCGv_i64 arg,
     if (TCG_TARGET_HAS_sextract_i64
         && TCG_TARGET_extract_i64_valid(ofs, len)) {
         if(second_ccache_flag) {
-        TCGv_i64 ofs_tmp, len_tmp;
-        ofs_tmp = tcg_const_i64(ofs);
-        len_tmp = tcg_const_i64(len);
-        gen_helper_sym_extract_i64(
-            tcgv_i64_expr(ret), tcgv_i64_expr(arg), ofs_tmp, len_tmp);
-        tcg_temp_free_i64(ofs_tmp);
-        tcg_temp_free_i64(len_tmp);
+            TCGv_i64 ofs_tmp, len_tmp;
+            ofs_tmp = tcg_const_i64(ofs);
+            len_tmp = tcg_const_i64(len);
+            gen_helper_symsan_sextract_i64(
+                shadow_i64(ret), arg, shadow_i64(arg), ofs_tmp, len_tmp);
+            //gen_helper_sym_extract_i64(
+            //    tcgv_i64_expr(ret), tcgv_i64_expr(arg), ofs_tmp, len_tmp);
+            tcg_temp_free_i64(ofs_tmp);
+            tcg_temp_free_i64(len_tmp);
         }
         tcg_gen_op4ii_i64(INDEX_op_sextract_i64, ret, arg, ofs, len);
         return;
@@ -2868,14 +2949,19 @@ void tcg_gen_extract2_i64(TCGv_i64 ret, TCGv_i64 al, TCGv_i64 ah,
         tcg_gen_rotri_i64(ret, al, ofs);
     } else if (TCG_TARGET_HAS_extract2_i64) {
         if(second_ccache_flag) {
-        TCGv_i64 ofs_tmp;
-        ofs_tmp = tcg_const_i64(ofs);
-        gen_helper_sym_extract2_i64(
-            tcgv_i64_expr(ret),
-            ah, tcgv_i64_expr(ah),
-            al, tcgv_i64_expr(al),
-            ofs_tmp);
-        tcg_temp_free_i64(ofs_tmp);
+            TCGv_i64 ofs_tmp;
+            ofs_tmp = tcg_const_i64(ofs);
+            gen_helper_symsan_extract2_i64(
+                shadow_i64(ret),
+                ah, shadow_i64(ah),
+                al, shadow_i64(al),
+                ofs_tmp);
+            /*gen_helper_sym_extract2_i64(
+                tcgv_i64_expr(ret),
+                ah, tcgv_i64_expr(ah),
+                al, tcgv_i64_expr(al),
+                ofs_tmp);*/
+            tcg_temp_free_i64(ofs_tmp);
         }
         tcg_gen_op4i_i64(INDEX_op_extract2_i64, ret, al, ah, ofs);
     } else {
@@ -2921,17 +3007,17 @@ void tcg_gen_movcond_i64(TCGCond cond, TCGv_i64 ret, TCGv_i64 c1,
         tcg_temp_free_i32(t1);
     } else if (TCG_TARGET_HAS_movcond_i64) {
         if(second_ccache_flag) {
-        /* Generate a setcond for effects in the symbolic backend */
-        TCGv_i64 cond_result_temp = tcg_temp_new_i64();
-        tcg_gen_setcond_i64(cond, cond_result_temp, c1, c2);
-        tcg_temp_free_i64(cond_result_temp);
-        //zx012 not defined as gen_helper_sym*
-        tcg_gen_op6i_i64(INDEX_op_movcond_i64,
-                         tcgv_i64_expr_num(ret),
-                         c1, c2,
-                         tcgv_i64_expr_num(v1),
-                         tcgv_i64_expr_num(v2),
-                         cond);
+            /* Generate a setcond for effects in the symbolic backend */
+            TCGv_i64 cond_result_temp = tcg_temp_new_i64();
+            tcg_gen_setcond_i64(cond, cond_result_temp, c1, c2);
+            tcg_temp_free_i64(cond_result_temp);
+            //zx012 not defined as gen_helper_sym*
+            tcg_gen_op6i_i64(INDEX_op_movcond_i64,
+                            tcgv_i64_expr_num(ret),
+                            c1, c2,
+                            tcgv_i64_expr_num(v1),
+                            tcgv_i64_expr_num(v2),
+                            cond);
         }
         tcg_gen_op6i_i64(INDEX_op_movcond_i64, ret, c1, c2, v1, v2, cond);
     } else {
@@ -2997,9 +3083,12 @@ void tcg_gen_mulu2_i64(TCGv_i64 rl, TCGv_i64 rh, TCGv_i64 arg1, TCGv_i64 arg2)
         TCGv_i64 t0 = tcg_temp_new_i64();
         tcg_gen_mul_i64(t0, arg1, arg2);
         if(second_ccache_flag) {
-        gen_helper_sym_muluh_i64(tcgv_i64_expr(rh),
-                                 arg1, tcgv_i64_expr(arg1),
-                                 arg2, tcgv_i64_expr(arg2));
+            gen_helper_symsan_muluh_i64(shadow_i64(rh),
+                                        arg1, shadow_i64(arg1),
+                                        arg2, shadow_i64(arg2));
+            //gen_helper_sym_muluh_i64(tcgv_i64_expr(rh),
+            //                        arg1, tcgv_i64_expr(arg1),
+            //                        arg2, tcgv_i64_expr(arg2));
         }
         gen_helper_muluh_i64(rh, arg1, arg2);
         tcg_gen_mov_i64(rl, t0);
@@ -3102,7 +3191,8 @@ void tcg_gen_extrl_i64_i32(TCGv_i32 ret, TCGv_i64 arg)
                     tcgv_i32_arg(ret), tcgv_i64_arg(arg));
     } else {
         if(second_ccache_flag) {
-        gen_helper_sym_trunc_i64_i32(tcgv_i32_expr(ret), tcgv_i64_expr(arg));
+            gen_helper_symsan_trunc_i64_i32(shadow_i32(ret), arg, shadow_i64(arg));
+            //gen_helper_sym_trunc_i64_i32(tcgv_i32_expr(ret), tcgv_i64_expr(arg));
         }
         /* We don't want symbolic handling of this mov. */
         if (ret != (TCGv_i32)arg)
@@ -3121,7 +3211,8 @@ void tcg_gen_extrh_i64_i32(TCGv_i32 ret, TCGv_i64 arg)
         TCGv_i64 t = tcg_temp_new_i64();
         tcg_gen_shri_i64(t, arg, 32);
         if(second_ccache_flag) {
-        gen_helper_sym_trunc_i64_i32(tcgv_i32_expr(ret), tcgv_i64_expr(t));
+            gen_helper_symsan_trunc_i64_i32(shadow_i32(ret), t, shadow_i64(arg));
+            //gen_helper_sym_trunc_i64_i32(tcgv_i32_expr(ret), tcgv_i64_expr(t));
         }
         /* We don't want symbolic handling of this mov. */
         tcg_gen_op2_i32(INDEX_op_mov_i32, ret, (TCGv_i32)t);
@@ -3136,7 +3227,10 @@ void tcg_gen_extu_i32_i64(TCGv_i64 ret, TCGv_i32 arg)
         tcg_gen_movi_i32(TCGV_HIGH(ret), 0);
     } else {
         if(second_ccache_flag) {
-        gen_helper_sym_zext_i32_i64(tcgv_i64_expr(ret), tcgv_i32_expr(arg));
+            TCGv_i64 length = tcg_const_i64(32);
+            gen_helper_symsan_zext_i32_i64(shadow_i64(ret), arg, shadow_i32(arg));
+            //gen_helper_sym_zext_i32_i64(tcgv_i64_expr(ret), tcgv_i32_expr(arg));
+            tcg_temp_free_i64(length);
         }
         tcg_gen_op2(INDEX_op_extu_i32_i64,
                     tcgv_i64_arg(ret), tcgv_i32_arg(arg));
@@ -3150,7 +3244,10 @@ void tcg_gen_ext_i32_i64(TCGv_i64 ret, TCGv_i32 arg)
         tcg_gen_sari_i32(TCGV_HIGH(ret), TCGV_LOW(ret), 31);
     } else {
         if(second_ccache_flag) {
-        gen_helper_sym_sext_i32_i64(tcgv_i64_expr(ret), tcgv_i32_expr(arg));
+            TCGv_i64 length = tcg_const_i64(32);
+            gen_helper_symsan_sext_i32_i64(shadow_i64(ret), arg, shadow_i32(arg));
+            tcg_temp_free_i64(length);
+            //gen_helper_sym_sext_i32_i64(tcgv_i64_expr(ret), tcgv_i32_expr(arg));
         }
         tcg_gen_op2(INDEX_op_ext_i32_i64,
                     tcgv_i64_arg(ret), tcgv_i32_arg(arg));
@@ -3223,16 +3320,8 @@ void tcg_gen_exit_tb(TranslationBlock *tb, unsigned idx)
         tcg_debug_assert(idx == TB_EXIT_REQUESTED);
     }
     if(second_ccache_flag) {
-        gen_helper_sym_collect_garbage();
-        gen_helper_sym_check_state(cpu_env);
-        /*gen_helper_sym_check_reg0(tcgv_i64_expr(cpu_regs[0]),
-                                       tcgv_i64_expr(cpu_regs[1]),
-                                       tcgv_i64_expr(cpu_regs[2]),
-                                       tcgv_i64_expr(cpu_regs[3]),
-                                       tcgv_i64_expr(cpu_regs[4]),
-                                       tcgv_i64_expr(cpu_regs[5])
-                                       );
-*/
+        //gen_helper_sym_collect_garbage();
+        gen_helper_symsan_check_state(cpu_env);
     }
     tcg_gen_op1i(INDEX_op_exit_tb, val);
 }
@@ -3249,17 +3338,8 @@ void tcg_gen_goto_tb(unsigned idx)
     /* When not chaining, we simply fall through to the "fallback" exit.  */
     if (!qemu_loglevel_mask(CPU_LOG_TB_NOCHAIN)) {
         if(second_ccache_flag) {
-        gen_helper_sym_collect_garbage();
-        gen_helper_sym_check_state_switch(cpu_env);
-/*
-        gen_helper_sym_check_reg0(tcgv_i64_expr(cpu_regs[0]),
-                                       tcgv_i64_expr(cpu_regs[1]),
-                                       tcgv_i64_expr(cpu_regs[2]),
-                                       tcgv_i64_expr(cpu_regs[3]),
-                                       tcgv_i64_expr(cpu_regs[4]),
-                                       tcgv_i64_expr(cpu_regs[5])
-                                       );
-*/
+        //gen_helper_sym_collect_garbage();
+        gen_helper_symsan_check_state_switch(cpu_env);
         }
         tcg_gen_op1i(INDEX_op_goto_tb, idx);
     }
@@ -3272,40 +3352,8 @@ void tcg_gen_lookup_and_goto_ptr(void)
         gen_helper_lookup_tb_ptr(ptr, cpu_env);
 
         if(second_ccache_flag) {
-        gen_helper_sym_collect_garbage();
-        gen_helper_sym_check_state_switch(cpu_env);
-/*
-        gen_helper_sym_check_reg0(tcgv_i64_expr(cpu_regs[0]),
-                                       tcgv_i64_expr(cpu_regs[1]),
-                                       tcgv_i64_expr(cpu_regs[2]),
-                                       tcgv_i64_expr(cpu_regs[3]),
-                                       tcgv_i64_expr(cpu_regs[4]),
-                                       tcgv_i64_expr(cpu_regs[5])
-                                       );
-
-        gen_helper_sym_check_reg1(tcgv_i64_expr(cpu_regs[6]),
-                                  tcgv_i64_expr(cpu_regs[7]),
-                                  tcgv_i64_expr(cpu_regs[8]),
-                                  tcgv_i64_expr(cpu_regs[9]),
-                                  tcgv_i64_expr(cpu_regs[10]),
-                                  tcgv_i64_expr(cpu_regs[11]),
-                                  tcgv_i64_expr(cpu_regs[12])
-                                       );
-
-        gen_helper_sym_check_reg2(tcgv_i64_expr(cpu_regs[13]),
-                                  tcgv_i64_expr(cpu_regs[14]),
-                                  tcgv_i64_expr(cpu_regs[15]),
-                                  tcgv_i32_expr(cpu_cc_op),
-                                  tcgv_i64_expr(cpu_cc_dst),
-                                  tcgv_i64_expr(cpu_cc_src),
-                                  tcgv_i64_expr(cpu_cc_src2)
-                                  );
-        gen_helper_sym_check_register(cpu_env, tcgv_i64_expr(cpu_regs[15]),
-                                                tcgv_i64_expr(cpu_cc_dst),
-                                                tcgv_i64_expr(cpu_cc_src),
-                                                tcgv_i64_expr(cpu_cc_src2),
-                                                tcgv_i64_expr(cpu_regs[14]));
-*/
+            //gen_helper_sym_collect_garbage();
+            gen_helper_symsan_check_state_switch(cpu_env);
         }
         tcg_gen_op1i(INDEX_op_goto_ptr, tcgv_ptr_arg(ptr));
         tcg_temp_free_ptr(ptr);
@@ -3416,11 +3464,13 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     //mmu_idx = tcg_const_i64(idx);
     //tcg_abort();
     if(second_ccache_flag) {
-        gen_helper_sym_load_guest_i32(tcgv_i32_expr(val), cpu_env,
+        /*gen_helper_sym_load_guest_i32(tcgv_i32_expr(val), cpu_env,
                                   addr, tcgv_i64_expr(addr),
-                                  load_size);
+                                  load_size);*/
+        gen_helper_symsan_load_guest_i32(shadow_i32(val), addr, load_size);
     } else {
-        gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
+        //gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
+        gen_helper_symsan_check_load_guest(cpu_env, addr, load_size);
     }
     tcg_temp_free_i64(load_size);
     //tcg_temp_free_i64(mmu_idx);
@@ -3477,12 +3527,14 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     if(second_ccache_flag) {
         store_size = tcg_const_i64(1 << (memop & MO_SIZE));
         //mmu_idx = tcg_const_i64(idx);
-        gen_helper_sym_store_guest_i32(cpu_env, val, tcgv_i32_expr(val), addr, tcgv_i64_expr(addr), store_size);
+        //gen_helper_sym_store_guest_i32(cpu_env, val, tcgv_i32_expr(val), addr, tcgv_i64_expr(addr), store_size);
+        gen_helper_symsan_store_guest_i32(tcgv_i32_expr_num(val), addr, store_size);
         tcg_temp_free_i64(store_size);
         //tcg_temp_free_i64(mmu_idx);
     } else {
         store_size = tcg_const_i64(1 << (memop & MO_SIZE));
-        gen_helper_sym_check_store_guest_i32(cpu_env, addr, store_size);
+        //gen_helper_sym_check_store_guest_i32(cpu_env, addr, store_size);
+        gen_helper_symsan_check_store_guest(addr, store_size);
         tcg_temp_free_i64(store_size);
     }
 
@@ -3527,9 +3579,12 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     //mmu_idx = tcg_const_i64(idx);
     load_size = tcg_const_i64(1 << (memop & MO_SIZE));
     if(!second_ccache_flag) {
-        gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
+        //gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
+        gen_helper_symsan_check_load_guest(cpu_env, addr, load_size);
     } else {
-        gen_helper_sym_load_guest_i64(tcgv_i64_expr(val), cpu_env, addr, tcgv_i64_expr(addr), load_size);
+        //gen_helper_sym_load_guest_i64(tcgv_i64_expr(val), cpu_env, addr, tcgv_i64_expr(addr), load_size);
+        gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val), addr, load_size);
+        //gen_helper_sym_print(tcgv_i64_expr_num(val));
     }
     tcg_temp_free_i64(load_size);
     //tcg_temp_free_i64(mmu_idx);
@@ -3599,14 +3654,16 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     if(second_ccache_flag) {
         //mmu_idx = tcg_const_i64(idx);
         store_size = tcg_const_i64(1 << (memop & MO_SIZE));
-        gen_helper_sym_store_guest_i64(cpu_env, val, tcgv_i64_expr(val),
+        /*gen_helper_sym_store_guest_i64(cpu_env, val, tcgv_i64_expr(val),
                                        addr, tcgv_i64_expr(addr),
-                                       store_size);
+                                       store_size);*/
+        gen_helper_symsan_store_guest_i64(shadow_i64(val), addr, store_size);
         tcg_temp_free_i64(store_size);
         //tcg_temp_free_i64(mmu_idx);
     } else {
         store_size = tcg_const_i64(1 << (memop & MO_SIZE));
-        gen_helper_sym_check_store_guest_i64(cpu_env, addr, store_size);
+        //gen_helper_sym_check_store_guest_i64(cpu_env, addr, store_size);
+        gen_helper_symsan_check_store_guest(addr, store_size);
         tcg_temp_free_i64(store_size);
     }
 

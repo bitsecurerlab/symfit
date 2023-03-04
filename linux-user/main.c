@@ -47,6 +47,7 @@
 
 #define SymExpr void*
 #include "RuntimeCommon.h"
+#include "dfsan_interface.h"
 
 char *exec_path;
 
@@ -645,7 +646,8 @@ int main(int argc, char **argv, char **envp)
     trace_init_file(trace_file);
 
     /* Initialize the symbolic backend */
-    _sym_initialize();
+    //_sym_initialize();
+    // SymSan backend is called inexplicitly.
 
     /* Zero out regs */
     memset(regs, 0, sizeof(struct target_pt_regs));
@@ -664,6 +666,7 @@ int main(int argc, char **argv, char **envp)
     if (execfd == 0) {
         execfd = open(filename, O_RDONLY);
         if (execfd < 0) {
+            fprintf(stderr, "Error while loading %s: %s\n", filename, strerror(errno));
             printf("Error while loading %s: %s\n", filename, strerror(errno));
             _exit(EXIT_FAILURE);
         }

@@ -42,6 +42,8 @@
 int second_ccache_flag = 0;
 int sse_operation = 0;
 int fake_flag = 1;
+target_ulong symbolic_count = 0;
+target_ulong concrete_count = 0;
 #endif
 /* -icount align implementation. */
 
@@ -754,8 +756,8 @@ int cpu_exec(CPUState *cpu)
             }
 
             tb = tb_find(cpu, last_tb, tb_exit, cflags);
-            //if (!noSymbolicData)
-            //    fprintf(stderr, "[blocktrace]: start executing tb 0x%lx\n", tb->pc);
+            // if (!noSymbolicData)
+            //     fprintf(stderr, "[blocktrace]: start executing tb 0x%lx\n", tb->pc);
             cpu_loop_exec_tb(cpu, tb, &last_tb, &tb_exit);
             /* Try to align the host and virtual clocks
                if the guest is in advance */

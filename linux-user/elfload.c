@@ -2247,6 +2247,10 @@ static void probe_guest_base(const char *image_name,
             }
         }
         host_size = hiaddr - loaddr;
+        // Change host_start because it was mapped by SymSan for shadow memory.
+        // host_start = 0x400100000000 + 0xc00000000;
+        // Change it to application address space so that its shadow memory can be mapped.
+        host_start = 0x700000040000;
 
         /* Setup the initial guest memory space with ranges gleaned from
          * the ELF image that is being loaded.

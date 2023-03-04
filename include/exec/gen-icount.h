@@ -45,7 +45,11 @@ static inline void gen_tb_start(TranslationBlock *tb)
     }
     tcg_temp_free_i32(t0);
     tcg_temp_free_i32(count);
-
+    if (qemu_loglevel_mask(CPU_LOG_SYM_BLK_CNT)) {
+        TCGv_i64 tmp_const = tcg_const_i64(0);
+        gen_helper_sym_block_count(tmp_const);
+        tcg_temp_free_i64(tmp_const);
+    }
     //TCGv_i64 block = tcg_const_i64((uint64_t)tb);
     //if(second_ccache_flag) {
     //gen_helper_sym_notify_block(block);

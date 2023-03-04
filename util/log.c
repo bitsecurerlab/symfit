@@ -273,6 +273,12 @@ const QEMULogItem qemu_log_items[] = {
     { CPU_LOG_TB_NOCHAIN, "nochain",
       "do not chain compiled TBs so that \"exec\" and \"cpu\" show\n"
       "complete traces" },
+    { CPU_LOG_SYM_LDST_GUEST, "symldst_guest",
+      "log symbolic load_ and store_ guest trace" },
+    { CPU_LOG_SYM_LDST_HOST, "symldst_host",
+      "log symbolic load_ and store_ host trace" },
+    { CPU_LOG_SYM_BLK_CNT, "sym_blk_cnt",
+      "log # of symbolic and concrete block" },
     { 0, NULL, NULL },
 };
 

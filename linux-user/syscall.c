@@ -334,6 +334,9 @@ ssize_t read_symbolized(int fildes, void *buf, size_t nbyte);
 ssize_t read_flag_symbolized(int fildes, void *buf, size_t nbyte, size_t *isSymbolicPage);
 uint64_t lseek64_symbolized(int fd, uint64_t offset, int whence);
 
+int __dfsan_open(const char *path, int oflags, mode_t mode);
+ssize_t __dfsan_read(int fd, void *buf, size_t count, size_t *isSymbolicPage);
+
 static bitmask_transtbl fcntl_flags_tbl[] = {
   { TARGET_O_ACCMODE,   TARGET_O_WRONLY,    O_ACCMODE,   O_WRONLY,    },
   { TARGET_O_ACCMODE,   TARGET_O_RDWR,      O_ACCMODE,   O_RDWR,      },
@@ -7133,7 +7136,8 @@ static int do_openat(void *cpu_env, int dirfd, const char *pathname, int flags, 
     }
 
     if (dirfd == AT_FDCWD)
-        return open_symbolized(path(pathname), flags, mode);
+        //return open_symbolized(path(pathname), flags, mode);
+        return __dfsan_open(path(pathname), flags, mode);
     else
         return safe_openat(dirfd, path(pathname), flags, mode);
 }
@@ -7296,7 +7300,8 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
             if (!(p = lock_user(VERIFY_WRITE, arg2, arg3, 0)))
                 return -TARGET_EFAULT;
             //ret = get_errno(read_symbolized(arg1, p, arg3));
-            ret = get_errno(read_flag_symbolized(arg1, p, arg3, &isSymbolicPage));
+            //ret = get_errno(read_flag_symbolized(arg1, p, arg3, &isSymbolicPage));
+            ret = get_errno(__dfsan_read(arg1, p, arg3, &isSymbolicPage));
             /*zx012 if symbolic, clear the corresponding entry in user tlb*/
             if (ret >= 0 &&
                 fd_trans_host_to_target_data(arg1)) {
@@ -7304,7 +7309,8 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
             }
             /* symbolic data is introduced */
             if (isSymbolicPage && noSymbolicData) {
-                //noSymbolicData = 0;
+                noSymbolicData = 0;
+                // fprintf(stderr, "read from tainted file at %p\n", p);
                 second_ccache_flag = 1;
                 //tb_flush(cpu);
             }

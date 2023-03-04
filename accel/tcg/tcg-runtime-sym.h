@@ -136,6 +136,7 @@ DEF_HELPER_FLAGS_3(sym_check_store_guest_i32, TCG_CALL_NO_RWG, void, env, dh_ali
 DEF_HELPER_FLAGS_3(sym_check_store_guest_i64, TCG_CALL_NO_RWG, void, env, dh_alias_tl, i64)
 DEF_HELPER_0(sym_test, ptr)
 DEF_HELPER_1(sym_print, void, i64)
+DEF_HELPER_1(sym_block_count, void, i64)
 #endif
 /* TODO clz, ctz, clrsb, ctpop; vector operations; helpers for atomic operations (?) */
 
