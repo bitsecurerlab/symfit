@@ -7602,7 +7602,8 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 #endif
 #ifdef TARGET_NR_lseek
     case TARGET_NR_lseek:
-        return get_errno(lseek64_symbolized(arg1, arg2, arg3));
+        return get_errno(lseek(arg1, arg2, arg3));
+        // return get_errno(lseek64_symbolized(arg1, arg2, arg3));
 #endif
 #if defined(TARGET_NR_getxpid) && defined(TARGET_ALPHA)
     /* Alpha specific */
@@ -9359,7 +9360,8 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
         {
             int64_t res;
 #if !defined(__NR_llseek)
-            res = lseek64_symbolized(arg1, ((uint64_t)arg2 << 32) | (abi_ulong)arg3, arg5);
+            // res = lseek64_symbolized(arg1, ((uint64_t)arg2 << 32) | (abi_ulong)arg3, arg5);
+            res = lseek(arg1, ((uint64_t)arg2 << 32) | (abi_ulong)arg3, arg5);
             if (res == -1) {
                 ret = get_errno(res);
             } else {

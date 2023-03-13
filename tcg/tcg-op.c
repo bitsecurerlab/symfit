@@ -2145,8 +2145,10 @@ void tcg_gen_bswap16_i64(TCGv_i64 ret, TCGv_i64 arg)
         if(second_ccache_flag) {
             //FIXME(symsan): not supported yet
             TCGv_i64 length = tcg_const_i64(2);
-            gen_helper_sym_bswap(
-                tcgv_i64_expr(ret), tcgv_i64_expr(arg), length);
+            gen_helper_symsan_bswap_i64(
+                shadow_i64(ret), arg, shadow_i64(arg), length);
+            // gen_helper_sym_bswap(
+            //     tcgv_i64_expr(ret), tcgv_i64_expr(arg), length);
             tcg_temp_free_i64(length);
         }
         tcg_gen_op2_i64(INDEX_op_bswap16_i64, ret, arg);
@@ -2171,8 +2173,10 @@ void tcg_gen_bswap32_i64(TCGv_i64 ret, TCGv_i64 arg)
         if(second_ccache_flag) {
             //FIXME(symsan): not supported yet
             TCGv_i64 length = tcg_const_i64(4);
-            gen_helper_sym_bswap(
-                tcgv_i64_expr(ret), tcgv_i64_expr(arg), length);
+            gen_helper_symsan_bswap_i64(
+                shadow_i64(ret), arg, shadow_i64(arg), length);
+            // gen_helper_sym_bswap(
+            //     tcgv_i64_expr(ret), tcgv_i64_expr(arg), length);
             tcg_temp_free_i64(length);
         }
         tcg_gen_op2_i64(INDEX_op_bswap32_i64, ret, arg);
@@ -2216,8 +2220,10 @@ void tcg_gen_bswap64_i64(TCGv_i64 ret, TCGv_i64 arg)
         if(second_ccache_flag) {
             //FIXME(symsan): not supported yet
             TCGv_i64 length = tcg_const_i64(8);
-            gen_helper_sym_bswap(
-                tcgv_i64_expr(ret), tcgv_i64_expr(arg), length);
+            gen_helper_symsan_bswap_i64(
+                shadow_i64(ret), arg, shadow_i64(arg), length);
+            // gen_helper_sym_bswap(
+            //     tcgv_i64_expr(ret), tcgv_i64_expr(arg), length);
             tcg_temp_free_i64(length);
         }
         tcg_gen_op2_i64(INDEX_op_bswap64_i64, ret, arg);
@@ -3320,8 +3326,10 @@ void tcg_gen_exit_tb(TranslationBlock *tb, unsigned idx)
         tcg_debug_assert(idx == TB_EXIT_REQUESTED);
     }
     if(second_ccache_flag) {
-        //gen_helper_sym_collect_garbage();
-        gen_helper_symsan_check_state(cpu_env);
+        if (sse_operation)
+            gen_helper_symsan_check_state(cpu_env);
+        else
+            gen_helper_symsan_check_state_no_sse(cpu_env);
     }
     tcg_gen_op1i(INDEX_op_exit_tb, val);
 }
@@ -3338,8 +3346,10 @@ void tcg_gen_goto_tb(unsigned idx)
     /* When not chaining, we simply fall through to the "fallback" exit.  */
     if (!qemu_loglevel_mask(CPU_LOG_TB_NOCHAIN)) {
         if(second_ccache_flag) {
-        //gen_helper_sym_collect_garbage();
-        gen_helper_symsan_check_state_switch(cpu_env);
+        if (sse_operation)
+            gen_helper_symsan_check_state_switch(cpu_env);
+        else
+            gen_helper_symsan_check_state_no_sse(cpu_env);
         }
         tcg_gen_op1i(INDEX_op_goto_tb, idx);
     }
@@ -3352,8 +3362,10 @@ void tcg_gen_lookup_and_goto_ptr(void)
         gen_helper_lookup_tb_ptr(ptr, cpu_env);
 
         if(second_ccache_flag) {
-            //gen_helper_sym_collect_garbage();
-            gen_helper_symsan_check_state_switch(cpu_env);
+            if (sse_operation)
+                gen_helper_symsan_check_state_switch(cpu_env);
+            else
+                gen_helper_symsan_check_state_no_sse(cpu_env);
         }
         tcg_gen_op1i(INDEX_op_goto_ptr, tcgv_ptr_arg(ptr));
         tcg_temp_free_ptr(ptr);

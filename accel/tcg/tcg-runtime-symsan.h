@@ -95,6 +95,7 @@ DEF_HELPER_FLAGS_2(symsan_check_store_guest, TCG_CALL_NO_RWG, void,
 
 DEF_HELPER_1(symsan_check_state, void, env)
 DEF_HELPER_1(symsan_check_state_switch, void, env)
+DEF_HELPER_1(symsan_check_state_no_sse, void, env)
 
 /* Context tracking */
 DEF_HELPER_FLAGS_1(symsan_notify_call, TCG_CALL_NO_RWG, void, i64)

@@ -61,22 +61,38 @@ DEF_HELPER_BINARY(shift_left, Shl, 64)
 DECL_HELPER_BINARY(rotate_left, 32)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
-    UNIMPLEMENTED_HELPER("rotate_left32")
+    // UNIMPLEMENTED_HELPER("rotate_left32")
+    uint32_t shl = dfsan_union(arg1_label, arg2_label, Shl, 32, arg1, arg2);
+    uint32_t tmp = dfsan_union(CONST_LABEL, arg2_label, Sub, 32, 32, arg2);
+    uint32_t lshr = dfsan_union(arg1_label, tmp, LShr, 32, arg1, 32-arg2);
+    return dfsan_union(shl, lshr, Or, 32, 0, 0);
 }
 DECL_HELPER_BINARY(rotate_left, 64)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
-    UNIMPLEMENTED_HELPER("rotate_left64")
+    // UNIMPLEMENTED_HELPER("rotate_left64")
+    uint32_t shl = dfsan_union(arg1_label, arg2_label, Shl, 64, arg1, arg2);
+    uint32_t tmp = dfsan_union(CONST_LABEL, arg2_label, Sub, 64, 64, arg2);
+    uint32_t lshr = dfsan_union(arg1_label, tmp, LShr, 64, arg1, 64-arg2);
+    return dfsan_union(shl, lshr, Or, 64, 0, 0);
 }
 DECL_HELPER_BINARY(rotate_right, 32)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
-    UNIMPLEMENTED_HELPER("rotate_right32")
+    // UNIMPLEMENTED_HELPER("rotate_right32")
+    uint32_t lshr = dfsan_union(arg1_label, arg2_label, LShr, 32, arg1, arg2);
+    uint32_t tmp = dfsan_union(CONST_LABEL, arg2_label, Sub, 32, 32, arg2);
+    uint32_t shl = dfsan_union(arg1_label, tmp, Shl, 32, arg1, 32-arg2);
+    return dfsan_union(lshr, shl, Or, 32, 0, 0);
 }
 DECL_HELPER_BINARY(rotate_right, 64)
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS
-    UNIMPLEMENTED_HELPER("rotate_right64")
+    // UNIMPLEMENTED_HELPER("rotate_right64")
+    uint32_t lshr = dfsan_union(arg1_label, arg2_label, LShr, 64, arg1, arg2);
+    uint32_t tmp = dfsan_union(CONST_LABEL, arg2_label, Sub, 64, 64, arg2);
+    uint32_t shl = dfsan_union(arg1_label, tmp, Shl, 64, arg1, 64-arg2);
+    return dfsan_union(lshr, shl, Or, 64, 0, 0);
 }
 
 DECL_HELPER_BINARY(nand, 32)
@@ -232,7 +248,8 @@ uint64_t HELPER(symsan_trunc_i64_i32)(uint64_t op1, uint64_t op1_label)
     // UNIMPLEMENTED_HELPER("trunc_i64_i32")
     return dfsan_union(op1_label, CONST_LABEL, Trunc, 32, op1, 32);
 }
-
+// https://github.com/chenju2k6/symsan/commit/3392e5b1d33b8ac6e350eeefb37ae861848ba9b2
+// bswap support
 uint64_t HELPER(symsan_bswap_i32)(uint32_t op1, uint64_t op1_label, uint64_t length)
 {
     if (op1_label == 0) return 0;
@@ -408,11 +425,6 @@ static uint64_t symsan_setcond_internal(CPUArchState *env, uint64_t arg1, uint64
         g_assert_not_reached();
     }
     
-    // _sym_notify_basic_block(env->eip);
-    // void *condition = handler(arg1_expr, arg2_expr);
-    //_sym_push_path_constraint(condition, result, get_pc(env));
-    //_sym_notify_basic_block(cur_eip);
-    // _sym_push_path_constraint(condition, result, env->eip);
     return __taint_trace_cmp(arg1_label, arg2_label, result_bits, predicate, arg1, arg2, env->eip);
 }
 
@@ -584,7 +596,7 @@ void HELPER(symsan_check_state_switch)(CPUArchState *env) {
     if (env->shadow_cc_dst || env->shadow_cc_src || env->shadow_cc_src2) {
         symbolic_flag = 1;
     }
-    if (sse_operation) {
+    if (!symbolic_flag && sse_operation) {
         int size = sizeof(env->xmm_regs);
         uintptr_t xmm_reg_addr = (uintptr_t)env->xmm_regs;
         uint64_t xmm_reg = 0;
@@ -597,7 +609,6 @@ void HELPER(symsan_check_state_switch)(CPUArchState *env) {
         }
     }
     second_ccache_flag = symbolic_flag;
-    // if (!noSymbolicData) fprintf(stderr, "block 0x%lx state %s\n", env->eip, second_ccache_flag?"symbolic":"concrete");
     if (second_ccache_flag == 0) {
         CPUState *cs = env_cpu(env);
         cpu_loop_exit_noexc(cs);
@@ -618,7 +629,7 @@ void HELPER(symsan_check_state)(CPUArchState *env) {
     if (env->shadow_cc_dst || env->shadow_cc_src || env->shadow_cc_src2) {
         symbolic_flag = 1;
     }
-    if (sse_operation) {
+    if (!symbolic_flag && sse_operation) {
         int size = sizeof(env->xmm_regs);
         uintptr_t xmm_reg_addr = (uintptr_t)env->xmm_regs;
         uint64_t xmm_reg = 0;
@@ -633,6 +644,29 @@ void HELPER(symsan_check_state)(CPUArchState *env) {
     second_ccache_flag = symbolic_flag;
 }
 
+void HELPER(symsan_check_state_no_sse)(CPUArchState *env) {
+    int symbolic_flag = 0;
+    for (int i=0; i<CPU_NB_REGS;i++) {
+        if (env->shadow_regs[i]){
+            symbolic_flag = 1;
+            break;
+        }
+    }
+    if (symbolic_flag) {
+        second_ccache_flag = 1;
+        //if (!noSymbolicData) fprintf(stderr, "block 0x%lx state symbolic\n", env->eip);
+        return;
+    }
+    if (env->shadow_cc_dst || env->shadow_cc_src || env->shadow_cc_src2) {
+        symbolic_flag = 1;
+    }
+    second_ccache_flag = symbolic_flag;
+    // if (!noSymbolicData) fprintf(stderr, "block 0x%lx state %s\n", env->eip, second_ccache_flag?"symbolic":"concrete");
+    if (second_ccache_flag == 0) {
+        CPUState *cs = env_cpu(env);
+        cpu_loop_exit_noexc(cs);
+    }
+}
 
 void HELPER(symsan_notify_call)(uint64_t func_addr)
 {
