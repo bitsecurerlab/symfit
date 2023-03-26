@@ -7229,7 +7229,11 @@ static int host_to_target_cpu_mask(const unsigned long *host_mask,
     unlock_user(target_mask, target_addr, target_size);
     return 0;
 }
-
+// SymElastic CLB
+static inline size_t sizeof_tlb(CPUArchState *env, uintptr_t mmu_idx)
+{
+    return env_tlb(env)->f[mmu_idx].mask + (1 << CPU_TLB_ENTRY_BITS);
+}
 /* This is an internal helper for do_syscall so that it is easier
  * to have a single return point, so that actions, such as logging
  * of syscall results, can be performed.
@@ -7312,7 +7316,11 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                 noSymbolicData = 0;
                 // fprintf(stderr, "read from tainted file at %p\n", p);
                 second_ccache_flag = 1;
-                //tb_flush(cpu);
+                int mmu_idx = 1;
+                target_ulong vaddr_page = h2g((uintptr_t)p) & TARGET_PAGE_MASK;
+                CPUTLBEntry *te = tlb_entry(cpu_env, mmu_idx, vaddr_page);
+                te->addr_read = -1;
+                // memset(env_tlb(cpu_env)->f[mmu_idx].table, -1, sizeof_tlb(cpu_env, mmu_idx));
             }
             unlock_user(p, arg2, ret);
         }

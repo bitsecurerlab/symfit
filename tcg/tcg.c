@@ -156,7 +156,7 @@ static int tcg_target_const_match(tcg_target_long val, TCGType type,
 static int tcg_out_ldst_finalize(TCGContext *s);
 #endif
 #ifdef CONFIG_2nd_CCACHE
-//static int tcg_out_symldst_finalize(TCGContext *s);
+static int tcg_out_symldst_finalize(TCGContext *s);
 #endif
 #define TCG_HIGHWATER 1024
 
@@ -4318,7 +4318,7 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         return i;
     }
 #endif
-#if 0
+#if CONFIG_2nd_CCACHE
     i = tcg_out_symldst_finalize(s);
     if (i < 0) {
         return i;

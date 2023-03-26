@@ -960,7 +960,33 @@ void cpu_exec_initfn(CPUState *cpu)
     object_ref(OBJECT(cpu->memory));
 #endif
 }
+/* zx012 defined for user tlb initializaiton */
+static void user_tlb_dyn_init(CPUArchState *env)
+{
+    int i;
 
+    for (i = 0; i < NB_MMU_MODES; i++) {
+        CPUTLBDesc *desc = &env_tlb(env)->d[i];
+        size_t n_entries = 1 << CPU_TLB_DYN_DEFAULT_BITS;
+
+        //tlb_window_reset(desc, get_clock_realtime(), 0);
+        desc->n_used_entries = 0;
+        env_tlb(env)->f[i].mask = (n_entries - 1) << CPU_TLB_ENTRY_BITS;
+        env_tlb(env)->f[i].table = g_new(CPUTLBEntry, n_entries);
+        env_tlb(env)->d[i].iotlb = g_new(CPUIOTLBEntry, n_entries);
+    }
+}
+static void user_tlb_init(CPUState *cpu)
+{
+    CPUArchState *env = cpu->env_ptr;
+
+    qemu_spin_init(&env_tlb(env)->c.lock);
+
+    /* Ensure that cpu_reset performs a full flush.  */
+   // env_tlb(env)->c.dirty = ALL_MMUIDX_BITS;
+
+    user_tlb_dyn_init(env);
+}
 void cpu_exec_realizefn(CPUState *cpu, Error **errp)
 {
     CPUClass *cc = CPU_GET_CLASS(cpu);
@@ -973,6 +999,7 @@ void cpu_exec_realizefn(CPUState *cpu, Error **errp)
         cc->tcg_initialize();
     }
     tlb_init(cpu);
+    user_tlb_init(cpu);
 
 #ifndef CONFIG_USER_ONLY
     if (qdev_get_vmsd(DEVICE(cpu)) == NULL) {

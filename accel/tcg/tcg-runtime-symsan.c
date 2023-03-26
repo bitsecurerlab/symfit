@@ -5,9 +5,16 @@
 #include "exec/cpu_ldst.h"
 #include "qemu/qemu-print.h"
 #include "tcg.h"
-
+#include "qemu/cutils.h"
 #include "dfsan_interface.h"
+extern CPUArchState *global_env;
 #define CONST_LABEL 0
+#define PAGE_START(addr) ((uint64_t)(addr) & TARGET_PAGE_MASK)
+
+static const uint64_t kShadowMask = ~0x700000000000;
+static inline void *shadow_for(uint64_t ptr) {
+  return (void *) (((ptr) & kShadowMask) << 2);
+}
 
 #define UNIMPLEMENTED_HELPER(opcode)                \
         char op[] = opcode;                         \
@@ -169,14 +176,14 @@ uint64_t HELPER(symsan_neg_i32)(uint32_t op1, uint64_t label)
     if (label == 0)
         return 0;
     /* for unary operator Neg/Not, leave the first op as 0 */
-    uint64_t res = dfsan_union(CONST_LABEL, label, Neg, 32, 0, op1);
+    uint64_t res = dfsan_union(label, CONST_LABEL, Neg, 32, op1, 0);
     return res;
 }
 uint64_t HELPER(symsan_neg_i64)(uint64_t op1, uint64_t label)
 {
     if (label == 0)
         return 0;
-    uint64_t res = dfsan_union(CONST_LABEL, label, Neg, 64, 0, op1);
+    uint64_t res = dfsan_union(label, CONST_LABEL, Neg, 64, op1, 0);
     return res;
 }
 
@@ -184,14 +191,14 @@ uint64_t HELPER(symsan_not_i32)(uint32_t op1, uint64_t label)
 {
     if (label == 0)
         return 0;
-    uint64_t res = dfsan_union(CONST_LABEL, label, Not, 32, 0, op1);
+    uint64_t res = dfsan_union(label, CONST_LABEL, Not, 32, op1, 0);
     return res;
 }
 uint64_t HELPER(symsan_not_i64)(uint64_t op1, uint64_t label)
 {
     if (label == 0)
         return 0;
-    uint64_t res = dfsan_union(CONST_LABEL, label, Not, 64, 0, op1);
+    uint64_t res = dfsan_union(label, CONST_LABEL, Not, 64, op1, 0);
     return res;
 }
 
@@ -221,6 +228,7 @@ uint64_t HELPER(symsan_sext_i64)(uint64_t op1, uint64_t op1_label, uint64_t ext_
 uint64_t HELPER(symsan_zext_i32)(uint32_t op1, uint64_t op1_label, uint64_t ext_bit)
 {
     if (op1_label == 0) return 0; /* op2 label is alway zero */
+    // bitwise and
     return dfsan_union(op1_label, CONST_LABEL, And, 32, op1, (1ull << ext_bit) - 1);
 }
 uint64_t HELPER(symsan_zext_i64)(uint64_t op1, uint64_t op1_label, uint64_t ext_bit)
@@ -460,6 +468,18 @@ static uint64_t symsan_load_guest_internal(target_ulong addr,
         fprintf(stderr, "[memtrace:symbolic]op: load_guest_i%d addr: 0x%lx host_addr: %p size: %ld memory_expr: %ld\n",
                      result_length*8, addr, host_addr, load_length, res_label);
     }
+    // g_assert_not_reached();
+    int mmu_idx = 1;
+    CPUTLBEntry *te;
+    target_ulong vaddr_page = addr & TARGET_PAGE_MASK;
+    te = tlb_entry(global_env, mmu_idx, vaddr_page);
+    if (buffer_is_zero(shadow_for(PAGE_START(host_addr)), TARGET_PAGE_SIZE*4)) {
+    // if (dfsan_concrete_page(host_addr)) {
+        // assert(te->addr_read!=vaddr_page);
+        te->addr_read = vaddr_page;
+    } else {
+        te->addr_read = -1;
+    }
     return res_label;
 }
 
@@ -506,10 +526,31 @@ static void symsan_store_guest_internal(uint64_t value_label,
                      length*8, addr, length, value_label);
     }
 
-    //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
+    //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DAA_STORE, mmu_idx);
     void *host_addr = g2h(addr);
     assert((uintptr_t)host_addr >= 0x700000040000);
     dfsan_store_label(value_label, (uint8_t*)host_addr, length);
+    // g_assert_not_reached();
+
+    int mmu_idx = 1;
+    CPUTLBEntry *te;
+    target_ulong vaddr_page;
+     vaddr_page = addr & TARGET_PAGE_MASK;
+    te = tlb_entry(global_env, mmu_idx, vaddr_page);
+
+    if (value_label) {
+        te->addr_read = -1;
+    } else {
+        if (buffer_is_zero(shadow_for(PAGE_START(host_addr)), TARGET_PAGE_SIZE*4)) {
+        // if (dfsan_concrete_page(host_addr)) {
+            // Should not enable this assert since we nullify the target address.
+            // if ((addr&0xfff)+length <= 0x1000 && value_label == 0)
+                // assert(te->addr_read!=vaddr_page);
+            te->addr_read = vaddr_page;
+        } else {
+            te->addr_read = -1;
+        }
+    }
 }
 
 void HELPER(symsan_store_guest_i32)(uint64_t value_label,
@@ -557,10 +598,14 @@ void HELPER(symsan_check_load_guest)(CPUArchState *env, target_ulong addr, uint6
     void *host_addr = g2h(addr);
     assert((uintptr_t)host_addr >= 0x700000040000);
     uint32_t res_label = dfsan_read_label((uint8_t*)host_addr, length);
+    if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_GUEST) && !noSymbolicData) {
+        fprintf(stderr, "[memtrace:concrete] op: load_guest addr: 0x%lx host_addr %p\n",
+                                addr, host_addr);
+    }
     if (res_label != 0) {
         if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_GUEST) && !noSymbolicData) {
-            // fprintf(stderr, "[memtrace:switch] op: load_guest addr: 0x%lx host_addr %p mode: concrete\n",
-            //                         addr, host_addr);
+            fprintf(stderr, "[memtrace:switch] op: load_guest addr: 0x%lx host_addr %p mode: concrete\n",
+                                    addr, host_addr);
         }
         second_ccache_flag = 1;
         raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());

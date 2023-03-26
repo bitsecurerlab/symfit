@@ -38,8 +38,6 @@ typedef struct TCGLabelQemuLdst {
  * Generate TB finalization at the end of block
  */
 #ifdef CONFIG_2nd_CCACHE
-#if 0
-
 static bool tcg_out_qemu_check_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
 static bool tcg_out_qemu_check_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
 static int tcg_out_symldst_finalize(TCGContext *s)
@@ -64,7 +62,6 @@ static int tcg_out_symldst_finalize(TCGContext *s)
     }
     return 0;
 }
-#endif
 #else
 static bool tcg_out_qemu_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
 static bool tcg_out_qemu_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l);

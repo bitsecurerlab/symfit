@@ -1183,7 +1183,8 @@ typedef struct CPUX86State {
     BNDCSReg bndcs_regs;
     uint64_t msr_bndcfgs;
     uint64_t efer;
-
+    target_ulong val_expr;
+    target_ulong addr_expr;
     /* Beginning of state preserved by INIT (dummy marker).  */
     struct {} start_init_save;
 

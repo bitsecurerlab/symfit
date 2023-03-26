@@ -50,7 +50,7 @@
 #include "dfsan_interface.h"
 
 char *exec_path;
-
+CPUArchState *global_env;
 int singlestep;
 static const char *filename;
 static const char *argv0;
@@ -694,6 +694,7 @@ int main(int argc, char **argv, char **envp)
 
     cpu = cpu_create(cpu_type);
     env = cpu->env_ptr;
+    global_env = env;
     cpu_reset(cpu);
 
     thread_cpu = cpu;
