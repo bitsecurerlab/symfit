@@ -3470,23 +3470,23 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     }
 
     gen_ldst_i32(INDEX_op_qemu_ld_i32, val, addr, memop, idx);
-    if (second_ccache_flag) {
-        tcg_gen_ldst_op_nosym_i32(INDEX_op_ld_i32, (TCGv_i32)tcgv_i32_expr(val),
-                                 cpu_env, offsetof(CPUX86State, val_expr));
-    }
+    // if (second_ccache_flag) {
+    //     tcg_gen_ldst_op_nosym_i32(INDEX_op_ld_i32, (TCGv_i32)tcgv_i32_expr(val),
+    //                              cpu_env, offsetof(CPUX86State, val_expr));
+    // }
 
     /* Perform the symbolic memory access. Doing so _after_ the concrete
      * operation ensures that the target address is in the TLB. */
     load_size = tcg_const_i64(1 << (memop & MO_SIZE));
-    // if(second_ccache_flag) {
+    if(second_ccache_flag) {
         /*gen_helper_sym_load_guest_i32(tcgv_i32_expr(val), cpu_env,
                                   addr, tcgv_i64_expr(addr),
                                   load_size);*/
-        // gen_helper_symsan_load_guest_i32(shadow_i32(val), addr, load_size);
-    // } else {
+        gen_helper_symsan_load_guest_i32(shadow_i32(val), addr, load_size);
+    } else {
         //gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
         // gen_helper_symsan_check_load_guest(cpu_env, addr, load_size);
-    // }
+    }
     tcg_temp_free_i64(load_size);
 
     if ((orig_memop ^ memop) & MO_BSWAP) {
@@ -3532,26 +3532,26 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         val = swap;
         memop &= ~MO_BSWAP;
     }
-    if (second_ccache_flag) {
-        tcg_gen_ldst_op_nosym_i32(INDEX_op_st_i32, (TCGv_i32)tcgv_i32_expr(val),
-                                 cpu_env, offsetof(CPUX86State, val_expr));
-    }
+    // if (second_ccache_flag) {
+    //     tcg_gen_ldst_op_nosym_i32(INDEX_op_st_i32, (TCGv_i32)tcgv_i32_expr(val),
+    //                              cpu_env, offsetof(CPUX86State, val_expr));
+    // }
     gen_ldst_i32(INDEX_op_qemu_st_i32, val, addr, memop, idx);
 
     /* Perform the symbolic memory access. Doing so _after_ the concrete
      * operation ensures that the target address is in the TLB. */
 
-    // if(second_ccache_flag) {
-        // store_size = tcg_const_i64(1 << (memop & MO_SIZE));
+    if(second_ccache_flag) {
+        store_size = tcg_const_i64(1 << (memop & MO_SIZE));
         // gen_helper_sym_store_guest_i32(cpu_env, val, tcgv_i32_expr(val), addr, tcgv_i64_expr(addr), store_size);
-        // gen_helper_symsan_store_guest_i32(tcgv_i32_expr_num(val), addr, store_size);
-        // tcg_temp_free_i64(store_size);
-    // } else {
+        gen_helper_symsan_store_guest_i32(tcgv_i32_expr_num(val), addr, store_size);
+        tcg_temp_free_i64(store_size);
+    } else {
         // store_size = tcg_const_i64(1 << (memop & MO_SIZE));
         //gen_helper_sym_check_store_guest_i32(cpu_env, addr, store_size);
         // gen_helper_symsan_check_store_guest(addr, store_size);
         // tcg_temp_free_i64(store_size);
-    // }
+    }
 
     if (swap) {
         tcg_temp_free_i32(swap);
@@ -3588,22 +3588,22 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     }
 
     gen_ldst_i64(INDEX_op_qemu_ld_i64, val, addr, memop, idx);
-    if (second_ccache_flag) {
-        tcg_gen_ldst_op_nosym_i64(INDEX_op_ld_i64, (TCGv_i64)tcgv_i64_expr(val),
-                                 cpu_env, offsetof(CPUX86State, val_expr));
-    }
+    // if (second_ccache_flag) {
+    //     tcg_gen_ldst_op_nosym_i64(INDEX_op_ld_i64, (TCGv_i64)tcgv_i64_expr(val),
+    //                              cpu_env, offsetof(CPUX86State, val_expr));
+    // }
     /* Perform the symbolic memory access. Doing so _after_ the concrete
      * operation ensures that the target address is in the TLB. */
-    // load_size = tcg_const_i64(1 << (memop & MO_SIZE));
-    // if(!second_ccache_flag) {
+    load_size = tcg_const_i64(1 << (memop & MO_SIZE));
+    if(!second_ccache_flag) {
     //     //gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
         // gen_helper_symsan_check_load_guest(cpu_env, addr, load_size);
-    // } else {
+    } else {
         // gen_helper_sym_load_guest_i64(tcgv_i64_expr(val), cpu_env, addr, tcgv_i64_expr(addr), load_size);
-        // gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val), addr, load_size);
+        gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val), addr, load_size);
         // gen_helper_sym_print(tcgv_i64_expr_num(val));
-    // }
-    // tcg_temp_free_i64(load_size);
+    }
+    tcg_temp_free_i64(load_size);
 
     if ((orig_memop ^ memop) & MO_BSWAP) {
         switch (orig_memop & MO_SIZE) {
@@ -3663,28 +3663,28 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         val = swap;
         memop &= ~MO_BSWAP;
     }
-    if (second_ccache_flag) {
-        tcg_gen_ldst_op_nosym_i64(INDEX_op_st_i64, (TCGv_i64)tcgv_i64_expr(val), cpu_env,
-                                offsetof(CPUX86State, val_expr));
-    }
+    // if (second_ccache_flag) {
+    //     tcg_gen_ldst_op_nosym_i64(INDEX_op_st_i64, (TCGv_i64)tcgv_i64_expr(val), cpu_env,
+    //                             offsetof(CPUX86State, val_expr));
+    // }
     
     gen_ldst_i64(INDEX_op_qemu_st_i64, val, addr, memop, idx);
 
     /* Perform the symbolic memory access. Doing so _after_ the concrete
      * operation ensures that the target address is in the TLB. */
-    // if(second_ccache_flag) {
-        // store_size = tcg_const_i64(1 << (memop & MO_SIZE));
+    if(second_ccache_flag) {
+        store_size = tcg_const_i64(1 << (memop & MO_SIZE));
         /*gen_helper_sym_store_guest_i64(cpu_env, val, tcgv_i64_expr(val),
                                        addr, tcgv_i64_expr(addr),
                                        store_size);*/
-        // gen_helper_symsan_store_guest_i64(shadow_i64(val), addr, store_size);
-        // tcg_temp_free_i64(store_size);
-    // } else {
+        gen_helper_symsan_store_guest_i64(shadow_i64(val), addr, store_size);
+        tcg_temp_free_i64(store_size);
+    } else {
         // store_size = tcg_const_i64(1 << (memop & MO_SIZE));
         //gen_helper_sym_check_store_guest_i64(cpu_env, addr, store_size);
         // gen_helper_symsan_check_store_guest(addr, store_size);
         // tcg_temp_free_i64(store_size);
-    // }
+    }
 
     if (swap) {
         tcg_temp_free_i64(swap);

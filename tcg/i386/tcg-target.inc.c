@@ -2352,13 +2352,13 @@ static void tcg_out_qemu_ld(TCGContext *s, const TCGArg *args, bool is64)
     add_qemu_ldst_label(s, true, is64, oi, datalo, datahi, addrlo, addrhi,
                         s->code_ptr, label_ptr);
 #else
-    // if (!second_ccache_flag) {
+    if (!second_ccache_flag) {
         tcg_out_utlb_load(s, addrlo, addrhi, mem_index, opc, label_ptr);
         /* set label before *ld_direct because in both path, we need to call ld_direct
         * for some reason in qemu_st, we have to set the label after *st_direct
         */
         add_qemu_symldst_label(s, true, is64, oi, datalo, datahi, addrlo, addrhi, s->code_ptr, label_ptr);
-    // }
+    }
     tcg_out_qemu_ld_direct(s, datalo, datahi, addrlo, x86_guest_base_index,
                            x86_guest_base_offset, x86_guest_base_seg,
                            is64, opc);
@@ -2482,7 +2482,7 @@ static void tcg_out_qemu_st(TCGContext *s, const TCGArg *args, bool is64)
 #else
     if (second_ccache_flag) {
         /* in symbolic mode, we also need to check whether val_expr is zero */
-        tcg_out_utlb_store(s, addrlo, addrhi, mem_index, opc, label_ptr);
+        // tcg_out_utlb_store(s, addrlo, addrhi, mem_index, opc, label_ptr);
         //add_qemu_symldst_label(s, false, is64, oi, datalo, datahi, addrlo, addrhi, s->code_ptr, label_ptr);
         // tcg_out_utlb_load(s, addrlo, addrhi, mem_index, opc, label_ptr);
     } else {
@@ -2490,9 +2490,9 @@ static void tcg_out_qemu_st(TCGContext *s, const TCGArg *args, bool is64)
     }
     tcg_out_qemu_st_direct(s, datalo, datahi, addrlo, x86_guest_base_index,
                            x86_guest_base_offset, x86_guest_base_seg, opc);
-    // if (!second_ccache_flag) {
+    if (!second_ccache_flag) {
         add_qemu_symldst_label(s, false, is64, oi, datalo, datahi, addrlo, addrhi, s->code_ptr, label_ptr);  
-    // }
+    }
 #endif
 }
 
@@ -2537,7 +2537,7 @@ static bool tcg_out_qemu_check_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *l)
         tcg_out_sti(s, TCG_TYPE_PTR, (uintptr_t)l->raddr, TCG_REG_ESP, ofs);
     } else {
         if (second_ccache_flag) {
-            #if 1
+            #if 0
             /* The first argument is the global env -> CPUArchenv *env */
             tcg_out_mov(s, TCG_TYPE_PTR, tcg_target_call_iarg_regs[0], TCG_AREG0);
             /* The second argument is already loaded with addrlo.  */
@@ -2576,7 +2576,7 @@ static bool tcg_out_qemu_check_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *l)
     /* "Tail call" to the helper, with the return address back inline.  */
     tcg_out_push(s, retaddr);
     if (second_ccache_flag) {
-        tcg_out_jmp(s, check_sym_ldst_helpers[1]);
+        // tcg_out_jmp(s, check_sym_ldst_helpers[1]);
     } else {
         tcg_out_jmp(s, check_sym_ldst_helpers[2]);
     }
@@ -2648,7 +2648,7 @@ static bool tcg_out_qemu_check_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l)
         tcg_out_st(s, TCG_TYPE_PTR, retaddr, TCG_REG_ESP, ofs);
     } else {
         if (second_ccache_flag) {
-            #if 1
+            #if 0
             tcg_out_mov(s, TCG_TYPE_PTR, tcg_target_call_iarg_regs[0], TCG_AREG0);
             tcg_out_mov(s, TCG_TYPE_I64, tcg_target_call_iarg_regs[1], l->addrlo_reg);
             tcg_out_mov(s, TCG_TYPE_PTR, tcg_target_call_iarg_regs[2], oi);
@@ -2696,7 +2696,7 @@ static bool tcg_out_qemu_check_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l)
     tcg_out_push(s, retaddr);
     /* call the helper function to nullify the target address and fill tlb */
     if (second_ccache_flag) {
-        tcg_out_jmp(s, check_sym_ldst_helpers[3]);
+        // tcg_out_jmp(s, check_sym_ldst_helpers[3]);
     } else {
         tcg_out_jmp(s, check_sym_ldst_helpers[4]);
     }
