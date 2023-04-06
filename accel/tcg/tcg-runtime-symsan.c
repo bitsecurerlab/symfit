@@ -451,18 +451,18 @@ uint64_t HELPER(symsan_setcond_i64)(CPUArchState *env, uint64_t arg1, uint64_t a
 }
 
 /* Guest memory opreation */
-static uint64_t symsan_load_guest_internal(target_ulong addr,
+static uint64_t symsan_load_guest_internal(CPUArchState *env, target_ulong addr, uint64_t addr_label,
                                      uint64_t load_length, uint8_t result_length)
 {
     void *host_addr = g2h(addr);
     assert((uintptr_t)host_addr >= 0x700000040000);
     
-    /*if (addr == 0x6552e1 && load_length==8) {
-        char *p1 = (char*)(addr+7);
-        fprintf(stderr, "load host 0x%ld %s\n", addr+7, p1);
-        p1 = (char*)g2h(addr+7);
-        fprintf(stderr, "load guest %p %d\n", p1, (int)*p1);
-    }*/
+    if (addr_label) {
+        dfsan_label addr_label_new = \
+            dfsan_union(addr_label, CONST_LABEL, Equal, 64, addr, 0);
+        __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, Equal, 0, 0, env->eip);
+    }
+
     uint64_t res_label = dfsan_read_label((uint8_t*)host_addr, load_length);
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_GUEST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic]op: load_guest_i%d addr: 0x%lx host_addr: %p size: %ld memory_expr: %ld\n",
@@ -483,16 +483,16 @@ static uint64_t symsan_load_guest_internal(target_ulong addr,
     return res_label;
 }
 
-uint64_t HELPER(symsan_load_guest_i32)(target_ulong addr,
+uint64_t HELPER(symsan_load_guest_i32)(CPUArchState *env, target_ulong addr, uint64_t addr_label,
                                  uint64_t length)
 {
-    return symsan_load_guest_internal(addr, length, 4);
+    return symsan_load_guest_internal(env, addr, addr_label, length, 4);
 }
 
-uint64_t HELPER(symsan_load_guest_i64)(target_ulong addr,
+uint64_t HELPER(symsan_load_guest_i64)(CPUArchState *env, target_ulong addr, uint64_t addr_label,
                                  uint64_t length)
 {
-    return symsan_load_guest_internal(addr, length, 8);
+    return symsan_load_guest_internal(env, addr, addr_label, length, 8);
 }
 
 
@@ -518,12 +518,17 @@ uint64_t HELPER(symsan_load_host_i64)(void *addr, uint64_t offset, uint64_t leng
     return symsan_load_host_internal(addr, offset, length, 8);
 }
 
-static void symsan_store_guest_internal(uint64_t value_label,
-                                     target_ulong addr, uint64_t length)
+static void symsan_store_guest_internal(CPUArchState *env, uint64_t value_label,
+                                     target_ulong addr, uint64_t addr_label, uint64_t length)
 {
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_GUEST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic]op: store_guest_i%ld addr: 0x%lx size: %ld value_expr: %ld\n",
                      length*8, addr, length, value_label);
+    }
+    if (addr_label) {
+        dfsan_label addr_label_new = \
+            dfsan_union(addr_label, CONST_LABEL, Equal, 64, addr, 0);
+        __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, Equal, 0, 0, env->eip);
     }
 
     //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DAA_STORE, mmu_idx);
@@ -553,16 +558,16 @@ static void symsan_store_guest_internal(uint64_t value_label,
     }
 }
 
-void HELPER(symsan_store_guest_i32)(uint64_t value_label,
-                                 target_ulong addr, uint64_t length)
+void HELPER(symsan_store_guest_i32)(CPUArchState *env, uint64_t value_label,
+                                 target_ulong addr, uint64_t addr_label, uint64_t length)
 {
-    symsan_store_guest_internal(value_label, addr, length);
+    symsan_store_guest_internal(env, value_label, addr, addr_label, length);
 }
 
-void HELPER(symsan_store_guest_i64)(uint64_t value_label,
-                                 target_ulong addr, uint64_t length)
+void HELPER(symsan_store_guest_i64)(CPUArchState *env, uint64_t value_label,
+                                 target_ulong addr, uint64_t addr_label, uint64_t length)
 {
-    symsan_store_guest_internal(value_label, addr, length);
+    symsan_store_guest_internal(env, value_label, addr, addr_label, length);
 }
 
 void HELPER(symsan_store_host_i32)(uint64_t value_label,

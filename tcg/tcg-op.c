@@ -3482,7 +3482,7 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         /*gen_helper_sym_load_guest_i32(tcgv_i32_expr(val), cpu_env,
                                   addr, tcgv_i64_expr(addr),
                                   load_size);*/
-        gen_helper_symsan_load_guest_i32(shadow_i32(val), addr, load_size);
+        gen_helper_symsan_load_guest_i32(shadow_i32(val), cpu_env, addr, tcgv_i64_expr_num(addr), load_size);
     } else {
         //gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
         // gen_helper_symsan_check_load_guest(cpu_env, addr, load_size);
@@ -3544,7 +3544,7 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     if(second_ccache_flag) {
         store_size = tcg_const_i64(1 << (memop & MO_SIZE));
         // gen_helper_sym_store_guest_i32(cpu_env, val, tcgv_i32_expr(val), addr, tcgv_i64_expr(addr), store_size);
-        gen_helper_symsan_store_guest_i32(tcgv_i32_expr_num(val), addr, store_size);
+        gen_helper_symsan_store_guest_i32(cpu_env, tcgv_i32_expr_num(val), addr, tcgv_i64_expr_num(addr), store_size);
         tcg_temp_free_i64(store_size);
     } else {
         // store_size = tcg_const_i64(1 << (memop & MO_SIZE));
@@ -3600,7 +3600,8 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         // gen_helper_symsan_check_load_guest(cpu_env, addr, load_size);
     } else {
         // gen_helper_sym_load_guest_i64(tcgv_i64_expr(val), cpu_env, addr, tcgv_i64_expr(addr), load_size);
-        gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val), addr, load_size);
+        gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val),\
+                                         cpu_env, addr, tcgv_i64_expr_num(addr), load_size);
         // gen_helper_sym_print(tcgv_i64_expr_num(val));
     }
     tcg_temp_free_i64(load_size);
@@ -3677,7 +3678,7 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         /*gen_helper_sym_store_guest_i64(cpu_env, val, tcgv_i64_expr(val),
                                        addr, tcgv_i64_expr(addr),
                                        store_size);*/
-        gen_helper_symsan_store_guest_i64(shadow_i64(val), addr, store_size);
+        gen_helper_symsan_store_guest_i64(cpu_env, shadow_i64(val), addr, tcgv_i64_expr_num(addr), store_size);
         tcg_temp_free_i64(store_size);
     } else {
         // store_size = tcg_const_i64(1 << (memop & MO_SIZE));

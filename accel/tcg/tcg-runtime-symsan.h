@@ -78,14 +78,14 @@ DEF_HELPER_FLAGS_4(symsan_store_host_i32, TCG_CALL_NO_RWG, void, i64, ptr,
 DEF_HELPER_FLAGS_4(symsan_store_host_i64, TCG_CALL_NO_RWG, void, i64, ptr,
                    i64, i64)
 /* Guest memory */
-DEF_HELPER_FLAGS_2(symsan_load_guest_i32, TCG_CALL_NO_RWG, i64,
-                     dh_alias_tl, i64)
-DEF_HELPER_FLAGS_2(symsan_load_guest_i64, TCG_CALL_NO_RWG, i64,
-                     dh_alias_tl, i64)
-DEF_HELPER_FLAGS_3(symsan_store_guest_i32, TCG_CALL_NO_RWG, void,
-                    i64, dh_alias_tl, i64)
-DEF_HELPER_FLAGS_3(symsan_store_guest_i64, TCG_CALL_NO_RWG, void,
-                    i64, dh_alias_tl, i64)
+DEF_HELPER_FLAGS_4(symsan_load_guest_i32, TCG_CALL_NO_RWG, i64,
+                     env, dh_alias_tl, i64, i64)
+DEF_HELPER_FLAGS_4(symsan_load_guest_i64, TCG_CALL_NO_RWG, i64,
+                     env, dh_alias_tl, i64, i64)
+DEF_HELPER_FLAGS_5(symsan_store_guest_i32, TCG_CALL_NO_RWG, void,
+                    env, i64, dh_alias_tl, i64, i64)
+DEF_HELPER_FLAGS_5(symsan_store_guest_i64, TCG_CALL_NO_RWG, void,
+                    env, i64, dh_alias_tl, i64, i64)
 
 
 DEF_HELPER_FLAGS_3(symsan_check_load_guest, TCG_CALL_NO_RWG, void,
