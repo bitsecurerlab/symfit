@@ -155,9 +155,6 @@ static int tcg_target_const_match(tcg_target_long val, TCGType type,
 #ifdef TCG_TARGET_NEED_LDST_LABELS
 static int tcg_out_ldst_finalize(TCGContext *s);
 #endif
-#ifdef CONFIG_2nd_CCACHE
-static int tcg_out_symldst_finalize(TCGContext *s);
-#endif
 #define TCG_HIGHWATER 1024
 
 static TCGContext **tcg_ctxs;
@@ -4314,12 +4311,6 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     /* Generate TB finalization at the end of block */
 #ifdef TCG_TARGET_NEED_LDST_LABELS
     i = tcg_out_ldst_finalize(s);
-    if (i < 0) {
-        return i;
-    }
-#endif
-#if CONFIG_2nd_CCACHE
-    i = tcg_out_symldst_finalize(s);
     if (i < 0) {
         return i;
     }

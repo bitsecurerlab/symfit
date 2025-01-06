@@ -50,11 +50,11 @@ static inline void gen_tb_start(TranslationBlock *tb)
         gen_helper_sym_block_count(tmp_const);
         tcg_temp_free_i64(tmp_const);
     }
-    //TCGv_i64 block = tcg_const_i64((uint64_t)tb);
+    // TCGv_i64 block = tcg_const_i64((uint64_t)tb);
     //if(second_ccache_flag) {
-    //gen_helper_sym_notify_block(block);
+    // gen_helper_symsan_notify_basic_block(block);
     //}
-    //tcg_temp_free_i64(block);
+    // tcg_temp_free_i64(block);
 }
 
 static inline void gen_tb_end(TranslationBlock *tb, int num_insns)

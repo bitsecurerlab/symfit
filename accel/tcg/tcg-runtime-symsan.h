@@ -67,8 +67,8 @@ DEF_HELPER_FLAGS_6(symsan_deposit_i32, TCG_CALL_NO_RWG_SE, i64, i32, i64, i32, i
 DEF_HELPER_FLAGS_6(symsan_deposit_i64, TCG_CALL_NO_RWG_SE, i64, i64, i64, i64, i64, i64, i64)
 
 /* Conditionals */
-DEF_HELPER_FLAGS_6(symsan_setcond_i32, TCG_CALL_NO_RWG, i64, env, i32, i64, i32, i64, s32)
-DEF_HELPER_FLAGS_6(symsan_setcond_i64, TCG_CALL_NO_RWG, i64, env, i64, i64, i64, i64, s32)
+DEF_HELPER_FLAGS_7(symsan_setcond_i32, TCG_CALL_NO_RWG, i64, env, i32, i64, i32, i64, s32, i32)
+DEF_HELPER_FLAGS_7(symsan_setcond_i64, TCG_CALL_NO_RWG, i64, env, i64, i64, i64, i64, s32, i64)
 
 /* Host memory */
 DEF_HELPER_FLAGS_3(symsan_load_host_i32, TCG_CALL_NO_RWG_SE, i64, ptr, i64, i64)
@@ -98,4 +98,6 @@ DEF_HELPER_1(symsan_check_state_switch, void, env)
 DEF_HELPER_1(symsan_check_state_no_sse, void, env)
 
 /* Context tracking */
-DEF_HELPER_FLAGS_1(symsan_notify_call, TCG_CALL_NO_RWG, void, i64)
+// DEF_HELPER_FLAGS_1(symsan_notify_call, TCG_CALL_NO_RWG, void, i64)
+// DEF_HELPER_FLAGS_1(symsan_notify_ret, TCG_CALL_NO_RWG, void, i64)
+// DEF_HELPER_FLAGS_1(symsan_notify_basic_block, TCG_CALL_NO_RWG, void, i64)

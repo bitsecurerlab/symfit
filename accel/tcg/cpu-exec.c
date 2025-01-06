@@ -40,7 +40,7 @@
 
 #ifdef CONFIG_2nd_CCACHE
 int second_ccache_flag = 0;
-int sse_operation = 0;
+int sse_operation = 1;
 int fake_flag = 1;
 target_ulong symbolic_count = 0;
 target_ulong concrete_count = 0;

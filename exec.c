@@ -972,7 +972,7 @@ static void user_tlb_dyn_init(CPUArchState *env)
         //tlb_window_reset(desc, get_clock_realtime(), 0);
         desc->n_used_entries = 0;
         env_tlb(env)->f[i].mask = (n_entries - 1) << CPU_TLB_ENTRY_BITS;
-        env_tlb(env)->f[i].table = g_new(CPUTLBEntry, n_entries);
+                env_tlb(env)->f[i].table = g_new(CPUTLBEntry, n_entries);
         env_tlb(env)->d[i].iotlb = g_new(CPUIOTLBEntry, n_entries);
     }
 }

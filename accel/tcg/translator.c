@@ -55,7 +55,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     ops->tb_start(db, cpu);
     tcg_debug_assert(db->is_jmp == DISAS_NEXT);  /* no early exit */
     // Set flag to indicate whether the current TB contains xmm instructions.
-    sse_operation = 0;
+    // sse_operation = 1;
     while (true) {
         db->num_insns++;
         ops->insn_start(db, cpu);

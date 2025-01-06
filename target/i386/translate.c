@@ -3041,7 +3041,7 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     target_ulong pc_start, int rex_r)
 {
     //zx012 check shadow mem for xxm_regs
-    sse_operation = 1;
+    // sse_operation = 1;
     int b1, op1_offset, op2_offset, is_xmm, val;
     int modrm, mod, rm, reg;
     SSEFunc_0_epp sse_fn_epp;
@@ -5065,7 +5065,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             }
             next_eip = s->pc - s->cs_base;
             tcg_gen_movi_tl(s->T1, next_eip);
-            gen_helper_symsan_notify_call(s->T1);
+            // gen_helper_symsan_notify_call(s->T1);
             gen_push_v(s, s->T1);
             gen_op_jmp_v(s->T0);
             gen_bnd_jmp(s);
@@ -6523,7 +6523,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         ot = gen_pop_T0(s);
         gen_stack_update(s, val + (1 << ot));
         //if(second_ccache_flag) {
-            //gen_helper_sym_notify_return(s->T0);
+            // gen_helper_symsan_notify_return(s->T0);
         //}
         /* Note that gen_pop_T0 uses a zero-extending load.  */
         gen_op_jmp_v(s->T0);
@@ -6539,7 +6539,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         ot = gen_pop_T0(s);
         gen_pop_update(s, ot);
         //if(second_ccache_flag) {
-            //gen_helper_sym_notify_return(s->T0);
+            // gen_helper_symsan_notify_return(s->T0);
         //}
         /* Note that gen_pop_T0 uses a zero-extending load.  */
         gen_op_jmp_v(s->T0);
@@ -6608,7 +6608,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
                 tval &= 0xffffffff;
             }
             tcg_gen_movi_tl(s->T0, next_eip);
-            gen_helper_symsan_notify_call(s->T0);
+            // gen_helper_symsan_notify_call(s->T0);
             gen_push_v(s, s->T0);
             gen_bnd_jmp(s);
             gen_jmp(s, tval);

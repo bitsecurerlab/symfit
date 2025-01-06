@@ -336,6 +336,7 @@ uint64_t lseek64_symbolized(int fd, uint64_t offset, int whence);
 
 int __dfsan_open(const char *path, int oflags, mode_t mode);
 ssize_t __dfsan_read(int fd, void *buf, size_t count, size_t *isSymbolicPage);
+off_t __dfsan_lseek(int fd, off_t offset, int whence);
 
 static bitmask_transtbl fcntl_flags_tbl[] = {
   { TARGET_O_ACCMODE,   TARGET_O_WRONLY,    O_ACCMODE,   O_WRONLY,    },
@@ -7232,7 +7233,8 @@ static int host_to_target_cpu_mask(const unsigned long *host_mask,
 // SymElastic CLB
 static inline size_t sizeof_tlb(CPUArchState *env, uintptr_t mmu_idx)
 {
-    return env_tlb(env)->f[mmu_idx].mask + (1 << CPU_TLB_ENTRY_BITS);
+    return sizeof(CPUTLBEntry) * (1 << CPU_TLB_DYN_DEFAULT_BITS);
+    // return env_tlb(env)->f[mmu_idx].mask + (1 << CPU_TLB_ENTRY_BITS);
 }
 /* This is an internal helper for do_syscall so that it is easier
  * to have a single return point, so that actions, such as logging
@@ -7312,15 +7314,10 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                 ret = fd_trans_host_to_target_data(arg1)(p, ret);
             }
             /* symbolic data is introduced */
-            if (isSymbolicPage && noSymbolicData) {
+            if (isSymbolicPage) {
                 noSymbolicData = 0;
                 // fprintf(stderr, "read from tainted file at %p\n", p);
                 second_ccache_flag = 1;
-                int mmu_idx = 1;
-                target_ulong vaddr_page = h2g((uintptr_t)p) & TARGET_PAGE_MASK;
-                CPUTLBEntry *te = tlb_entry(cpu_env, mmu_idx, vaddr_page);
-                te->addr_read = -1;
-                // memset(env_tlb(cpu_env)->f[mmu_idx].table, -1, sizeof_tlb(cpu_env, mmu_idx));
             }
             unlock_user(p, arg2, ret);
         }
@@ -7610,7 +7607,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 #endif
 #ifdef TARGET_NR_lseek
     case TARGET_NR_lseek:
-        return get_errno(lseek(arg1, arg2, arg3));
+        return get_errno(__dfsan_lseek(arg1, arg2, arg3));
         // return get_errno(lseek64_symbolized(arg1, arg2, arg3));
 #endif
 #if defined(TARGET_NR_getxpid) && defined(TARGET_ALPHA)
@@ -9369,7 +9366,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
             int64_t res;
 #if !defined(__NR_llseek)
             // res = lseek64_symbolized(arg1, ((uint64_t)arg2 << 32) | (abi_ulong)arg3, arg5);
-            res = lseek(arg1, ((uint64_t)arg2 << 32) | (abi_ulong)arg3, arg5);
+            res = __dfsan_lseek(arg1, ((uint64_t)arg2 << 32) | (abi_ulong)arg3, arg5);
             if (res == -1) {
                 ret = get_errno(res);
             } else {

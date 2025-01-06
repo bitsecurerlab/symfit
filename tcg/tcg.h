@@ -1363,16 +1363,6 @@ uint64_t dup_const(unsigned vece, uint64_t c);
      : dup_const(VECE, C))
 
 /*
- * define helper functions for symbolic memory check
- */
-void helper_sym_load(CPUArchState *env, target_ulong addr, uint32_t oi);
-void helper_check_sym_load(CPUArchState *env, target_ulong addr, uint32_t oi,
-                                       uintptr_t retaddr);
-void helper_sym_store(CPUArchState *env, target_ulong addr, uint32_t oi);
-void helper_check_sym_store(CPUArchState *env, target_ulong addr, uint32_t oi);
-tcg_target_ulong helperdebug(target_ulong addr);
-tcg_target_ulong helper_test(void);
-/*
  * Memory helpers that will be used by TCG generated code.
  */
 #ifdef CONFIG_SOFTMMU
