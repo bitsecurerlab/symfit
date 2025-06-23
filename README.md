@@ -1,9 +1,7 @@
 # SymFit
----
 
 SymFit is a symbolic execution framework for analyzing binaries, supporting multiple backends such as SymCC and SymSan. This document provides instructions for building and running SymFit using Docker.
 
----
 
 ## How to Build the Docker Image
 
@@ -13,9 +11,6 @@ Navigate to the root directory containing the `Dockerfile`, then build the image
 docker build -t symfit_env .
 ```
 
-
----
-
 ## Launch the Container
 
 Enter the `run` folder and launch the container:
@@ -24,8 +19,6 @@ Enter the `run` folder and launch the container:
 cd run
 ./launch.sh
 ```
-
----
 
 ## Setup SymFit Inside the Container
 
@@ -59,8 +52,6 @@ git clone https://github.com/bitsecurerlab/symsan.git
 ```bash
 mkdir -p symcc_build symfit_symcc_build symsan_build symfit_symsan_build
 ```
-
----
 
 ## Compilation
 
