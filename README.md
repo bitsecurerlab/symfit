@@ -1,78 +1,90 @@
-``` shell
-$ git clone https://github.com/bitsecurerlab/symsan.git
-$ ln -s /usr/bin/python2 /usr/bin/python
-$ cd ${/path/to/build}
-$ CC=clang-12 CXX=clang++-12            \
-$ cmake -DCMAKE_BUILD_TYPE=Release      \
-$       -DCMAKE_INSTALL_PREFIX=${/path/to/build} \
-$       ${/path/to/symsan}
-$ make -j && make install
-```
+# SymFit
 
-### To download symcc:
+SymFit is a symbolic execution framework for analyzing binaries, supporting multiple backends such as SymCC and SymSan. This document provides instructions for building and running SymFit using Docker.
 
-`$ git clone https://github.com/bitsecurerlab/symcc.git`
 
-``` shell
-$ ../configure                                                    \
-      --audio-drv-list=                                           \
-      --disable-bluez                                             \
-      --disable-sdl                                               \
-      --disable-gtk                                               \
-      --disable-vte                                               \
-      --disable-opengl                                            \
-      --disable-virglrenderer                                     \
-      --disable-werror                                            \
-      --target-list=x86_64-linux-user                             \
-      --enable-capstone=git                                       \
-      --symsan-source=/workdir/symsan                             \
-      --symsan-build=/workdir/symsan_build                        \
-      --symcc-source=/path/to/symcc/sources                       \
-      --symcc-build=/path/to/symcc/build
-$ make -j
-```
+## How to Build the Docker Image
 
-## Docker Build Instructions
+Navigate to the root directory containing the `Dockerfile`, then build the image:
 
-To build the Docker image for this project, run the following command from the project root (where the `Dockerfile` is located):
-
-```sh
+```bash
 docker build -t symfit_env .
 ```
 
-This will create a Docker image named `symfit_env`.
+## Launch the Container
 
-## Running Scripts in the `run` Directory
+Enter the `run` folder and launch the container:
 
-The `run` directory contains scripts for building and launching the environment:
-
-### 1. `./launch.sh`
-
-This script launches a Docker container from the built image and mounts the necessary directories. It is configured to use the `symfit_env` image by default:
-
-```sh
+```bash
+cd run
 ./launch.sh
 ```
 
-This will start an interactive shell inside the container with the project and relevant data directories mounted, then run the compile script within the container.
+## Setup SymFit Inside the Container
 
-### 2. `./compile.sh`
+Once inside the container:
 
-Inside the container, this script is used to build various components. It accepts several options:
+1. Clone the SymFit main repository:
 
-- `--symcc`        : Compile symcc
-- `--symsan`       : Compile symsan
-- `--symfit_symcc` : Compile symfit with symcc backend
-- `--symfit_symsan`: Compile symfit with symsan backend
+```bash
+cd /workdir
+git clone https://github.com/bitsecurerlab/symfit.git
+```
 
-Example usage:
+2. Clone the required backend repositories:
 
-```sh
+```bash
+# SymCC backend
+git clone https://github.com/bitsecurerlab/symcc.git
+
+# SymSan backend
+git clone https://github.com/bitsecurerlab/symsan.git
+```
+
+> If submodules are used, run:
+> 
+> ```bash
+> git submodule update --init --recursive
+> ```
+
+3. Create the following build directories inside the workdir:
+
+```bash
+mkdir -p symcc_build symfit_symcc_build symsan_build symfit_symsan_build
+```
+
+## Compilation
+
+Use the provided `compile.sh` script to build components.
+
+### Usage
+
+Compile a specific target:
+
+```bash
 ./compile.sh --symfit_symcc
 ```
 
-You can combine multiple options as needed.
+Compile multiple components:
 
-```sh
+```bash
 ./compile.sh --symcc --symfit_symcc
 ```
+
+### Options
+
+- `--symcc` : Compile SymCC  
+- `--symsan` : Compile SymSan  
+- `--symfit_symcc` : Compile SymFit with SymCC backend  
+- `--symfit_symsan` : Compile SymFit with SymSan backend
+
+> Note: If errors occur when using `--symfit_*` options, you may need to modify `compile.sh` to append the following:
+
+```bash
+--symsan-source=/workdir/symsan \
+--symsan-build=/workdir/symsan_build \
+--symcc-source=/workdir/symcc \
+--symcc-build=/workdir/symcc_build \
+```
+
+
