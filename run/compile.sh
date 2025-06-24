@@ -93,6 +93,8 @@ if [ $compile_symfit_symcc == 1 ]
         --enable-capstone=git            \
         --symcc-source=/workdir/symcc    \
         --symcc-build=/workdir/symcc_build       \
+        --symsan-source=/workdir/symsan  \
+        --symsan-build=/workdir/symsan_build    \
       && make -j
     else
       ${source}/configure                \
@@ -108,6 +110,8 @@ if [ $compile_symfit_symcc == 1 ]
         --enable-capstone=git            \
         --symcc-source=/workdir/symcc    \
         --symcc-build=/workdir/symcc_build       \
+        --symsan-source=/workdir/symsan  \
+        --symsan-build=/workdir/symsan_build    \
       && make -j
     fi
 fi
@@ -130,6 +134,8 @@ if [ $compile_symfit_symsan == 1 ]
         --disable-virglrenderer          \
         --target-list=x86_64-linux-user  \
         --enable-capstone=git            \
+        --symcc-source=/workdir/symcc    \
+        --symcc-build=/workdir/symcc_build       \
         --symsan-source=/workdir/symsan  \
         --symsan-build=/workdir/symsan_build    \
       && make -j
@@ -145,6 +151,8 @@ if [ $compile_symfit_symsan == 1 ]
         --disable-virglrenderer          \
         --target-list=x86_64-linux-user  \
         --enable-capstone=git            \
+        --symcc-source=/workdir/symcc    \
+        --symcc-build=/workdir/symcc_build       \
         --symsan-source=/workdir/symsan  \
         --symsan-build=/workdir/symsan_build    \
       && make -j
