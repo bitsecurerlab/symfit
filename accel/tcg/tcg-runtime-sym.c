@@ -102,6 +102,8 @@ static target_ulong get_pc(CPUArchState *env)
 }
 #endif
 
+
+
 /* The binary helpers */
 
 DEF_HELPER_BINARY(add, add)
@@ -566,6 +568,11 @@ void *HELPER(sym_deposit_i64)(uint64_t arg1, void *arg1_expr,
         _sym_build_shift_left(
             _sym_build_and(arg2_expr, _sym_build_integer(mask, 64)),
             _sym_build_integer(ofs, 64)));
+}
+
+// Definition of the symbolic condition building functions
+void *_sym_build_bool_to_bit(void *condition){
+    return _sym_build_zext(condition, 1);
 }
 
 static void *sym_setcond_internal(CPUArchState *env, uint64_t arg1, void *arg1_expr,
