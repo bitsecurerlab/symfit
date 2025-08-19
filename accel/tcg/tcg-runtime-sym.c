@@ -571,9 +571,9 @@ void *HELPER(sym_deposit_i64)(uint64_t arg1, void *arg1_expr,
 }
 
 // Definition of the symbolic condition building functions
-void *_sym_build_bool_to_bit(void *condition){
-    return _sym_build_zext(condition, 1);
-}
+// void *_sym_build_bool_to_bit(void *condition){
+//     return _sym_build_zext(condition, 1);
+// }
 
 static void *sym_setcond_internal(CPUArchState *env, uint64_t arg1, void *arg1_expr,
                                   uint64_t arg2, void *arg2_expr,
@@ -625,9 +625,15 @@ static void *sym_setcond_internal(CPUArchState *env, uint64_t arg1, void *arg1_e
     //_sym_notify_basic_block(cur_eip);
     _sym_push_path_constraint(condition, result, env->eip);
 
-    assert(result_bits > 1);
-    return _sym_build_zext(_sym_build_bool_to_bit(condition),
-                           result_bits - 1);
+    // FIXME: Commented out the following two lines for now.
+    // because _sym_build_bool_to_bit is a helper added in newer version of symcc.
+    // we are still using an old one.
+    // change it back to use _sym_build_bool_to_bits
+    
+    // assert(result_bits > 1);
+    // return _sym_build_zext(_sym_build_bool_to_bit(condition),
+    //                        result_bits - 1);
+    return _sym_build_bool_to_bits(condition, result_bits);
 }
 
 void *HELPER(sym_setcond_i32)(CPUArchState *env, uint32_t arg1, void *arg1_expr,
