@@ -66,11 +66,21 @@ if [ $compile_symsan == 1 ]
     build="/workdir/symsan_build"
     source="/workdir/symsan"
     cd $build
-    CC=clang-12 CXX=clang++-12            \
-    cmake -DCMAKE_BUILD_TYPE=Release      \
-          -DCMAKE_INSTALL_PREFIX=${build} \
-          ${source}
+    if [ $debug == 1 ]; then
+      CC=clang-12 CXX=clang++-12            \
+      cmake -DCMAKE_BUILD_TYPE=Release      \
+            -DCMAKE_INSTALL_PREFIX=${build} \
+            -DSYMSAN_DEBUG=ON               \
+            ${source}
+    else
+      CC=clang-12 CXX=clang++-12            \
+      cmake -DCMAKE_BUILD_TYPE=Release      \
+            -DCMAKE_INSTALL_PREFIX=${build} \
+            -DSYMSAN_DEBUG=OFF              \
+            ${source}
+    fi
     make -j && make install
+
 fi
 
 if [ $compile_symfit_symcc == 1 ]
