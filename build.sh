@@ -82,6 +82,8 @@ configure_symfit_common() {
 
   # Common configure flags (from your script)
   "${SYMFIT_SRC}/configure"       \
+    --cc=gcc                      \
+    --cxx=g++                     \
     --audio-drv-list=             \
     --disable-bluez               \
     --disable-sdl                 \
