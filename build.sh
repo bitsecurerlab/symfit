@@ -108,8 +108,6 @@ configure_symfit_common() {
     --symcc-build="${SYMCC_BUILD}" \
     --symsan-source="${SYMSAN_SRC}" \
     --symsan-build="${SYMSAN_BUILD}"
-    --symsan-source="${SYMSAN_SRC}" \
-    --symsan-build="${SYMSAN_BUILD}"
 
   log "Building symfit (${backend}) in ${bdir}"
   make -j"${JOBS}"
