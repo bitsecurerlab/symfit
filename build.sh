@@ -74,16 +74,24 @@ configure_symfit_common() {
   local backend="$1"           # symcc | symsan
   local bdir="$2"              # build dir
 
+  LLVM_CONFIG_BIN="${LLVM_CONFIG_BIN:-llvm-config-12}"
+  if command -v "$LLVM_CONFIG_BIN" >/dev/null 2>&1; then
+    LLVM_INCLUDEDIR="$($LLVM_CONFIG_BIN --includedir)"
+  else
+    # Fallback to common Ubuntu path
+    LLVM_INCLUDEDIR="/usr/lib/llvm-12/include"
+  fi
+
   need_dir "$SYMFIT_SRC"
   mkcd "$bdir"
 
   local debug_flag=""
   [[ $DEBUG -eq 1 ]] && debug_flag="--enable-debug"
 
+  EXTRA_CFLAGS="-I${LLVM_INCLUDEDIR}"
   # Common configure flags (from your script)
   "${SYMFIT_SRC}/configure"       \
-    --cc=gcc                      \
-    --cxx=g++                     \
+    --extra-cflags="${EXTRA_CFLAGS}" \
     --audio-drv-list=             \
     --disable-bluez               \
     --disable-sdl                 \
@@ -95,8 +103,11 @@ configure_symfit_common() {
     --disable-virglrenderer       \
     --target-list=x86_64-linux-user \
     --enable-capstone=git         \
+    --disable-werror              \
     --symcc-source="${SYMCC_SRC}" \
     --symcc-build="${SYMCC_BUILD}" \
+    --symsan-source="${SYMSAN_SRC}" \
+    --symsan-build="${SYMSAN_BUILD}"
     --symsan-source="${SYMSAN_SRC}" \
     --symsan-build="${SYMSAN_BUILD}"
 
