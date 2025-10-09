@@ -43,11 +43,7 @@ RUN git clone --depth 1 --branch ${Z3_TAG} https://github.com/Z3Prover/z3.git /o
     ldconfig && \
     rm -rf /opt/z3
 
-ARG REPO_URL="https://github.com/bitsecurerlab/symfit.git"
-ARG REF="clb+symsan"   # or a commit SHA for reproducibility
-
 WORKDIR /workspace
-
 
 # Toolchain defaults (overridable)
 ENV CC=clang-${CLANG_VER} \
@@ -58,7 +54,9 @@ ENV CC=clang-${CLANG_VER} \
 ENV CCACHE_DIR=/home/dev/.ccache \
     CCACHE_MAXSIZE=5G
 
-RUN git clone --recurse-submodules --branch "${REF}" "${REPO_URL}" /workspace 
+# Copy source code from host (excludes .git, build artifacts, etc. via .dockerignore)
+COPY . /workspace
+
 RUN chmod +x ./build.sh && ./build.sh all -j"$(nproc)"
 
 # Default shell
