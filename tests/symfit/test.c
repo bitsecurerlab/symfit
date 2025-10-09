@@ -7,7 +7,7 @@
 #include <stdlib.h>
 
 int main() {
-    char buf[128] = {0};
+    char buf[8] = {0};
     FILE *f = fopen("testfile", "r");
 
     if (!f) {
@@ -17,6 +17,7 @@ int main() {
 
     size_t n = fread(buf, 1, sizeof(buf) - 1, f);
     fclose(f);
+    buf[7] = 0;
 
     if (n < 1) {
         fprintf(stderr, "Empty file\n");
@@ -38,7 +39,7 @@ int main() {
     }
 
     // Branch 3: Check for substring
-    if (strstr(buf, "PASS")) {
+    if (strcmp(buf, "PASS")) {
         puts("B3:PASS");
     } else {
         puts("B3:!PASS");
