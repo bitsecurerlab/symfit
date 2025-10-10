@@ -1,0 +1,53 @@
+# Version control metadata
+.git
+.gitignore
+.gitmodules
+.gitattributes
+
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.out
+*.log
+
+# Testing artifacts
+tests/symfit/workdir/
+tests/symfit/test
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation build artifacts
+*.pdf
+docs/_build/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+.ccache/
+
+# CI/CD
+.github/
+.travis.yml
+.gitlab-ci.yml
+
+# Docker files (don't need to copy Dockerfile into itself)
+Dockerfile
+.dockerignore
