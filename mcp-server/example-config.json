@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "symfit": {
+      "command": "node",
+      "args": ["/absolute/path/to/symfit/mcp-server/index.js"],
+      "env": {
+        "SYMFIT_BUILD_DIR": "/absolute/path/to/symfit/build",
+        "SYMFIT_WORK_DIR": "/absolute/path/to/symfit/mcp-workdir"
+      }
+    }
+  }
+}

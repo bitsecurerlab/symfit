@@ -1,0 +1,31 @@
+{
+  "name": "symfit-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for SymFit concolic execution framework",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "symfit-mcp-server": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "keywords": [
+    "mcp",
+    "symfit",
+    "symbolic-execution",
+    "concolic-execution",
+    "binary-analysis",
+    "security",
+    "testing"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
