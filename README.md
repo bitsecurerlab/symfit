@@ -2,6 +2,17 @@
 
 SymFit is a symbolic execution framework for analyzing binaries, supporting multiple backends such as SymCC and SymSan. This document provides instructions for building and running SymFit using Docker.
 
+## MCP Server for LLM Agents
+
+SymFit now includes an MCP (Model Context Protocol) server that enables LLM agents to perform automated concolic execution on binaries. The MCP server provides a standardized interface for:
+
+- Running symbolic execution campaigns
+- Managing test case corpora
+- Analyzing coverage and results
+- Automating binary analysis workflows
+
+See [mcp-server/README.md](mcp-server/README.md) for setup instructions and [mcp-server/QUICKSTART.md](mcp-server/QUICKSTART.md) to get started quickly.
+
 ## Quick Start with Docker
 
 You can check out our ready-to-use Docker container on GitHub Container Registry:
