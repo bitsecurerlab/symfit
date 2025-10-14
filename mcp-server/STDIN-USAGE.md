@@ -290,7 +290,7 @@ chmod +x /path/to/binary
 - [README.md](README.md) - Main documentation
 - [EXAMPLES.md](EXAMPLES.md) - More usage examples
 - [test-stdin.sh](test-stdin.sh) - Stdin mode test script
-- [DOCKER-SETUP.md](DOCKER-SETUP.md) - Docker configuration
+- [CHANGELOG.md](CHANGELOG.md) - Version history
 
 ## Support
 

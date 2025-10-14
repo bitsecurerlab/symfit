@@ -52,6 +52,44 @@ async function getFileHash(filePath) {
 }
 
 /**
+ * Read AFL coverage map and calculate metrics
+ */
+async function readCoverageMap(coverageMapPath) {
+  try {
+    const mapData = await fs.readFile(coverageMapPath);
+    // AFL coverage map is 64KB (65536 bytes)
+    const mapSize = 65536;
+
+    let edgesHit = 0;
+    const hitCounts = new Map();
+
+    for (let i = 0; i < Math.min(mapData.length, mapSize); i++) {
+      const count = mapData[i];
+      if (count > 0) {
+        edgesHit++;
+        hitCounts.set(count, (hitCounts.get(count) || 0) + 1);
+      }
+    }
+
+    return {
+      edges_hit: edgesHit,
+      total_edges: mapSize,
+      coverage_percentage: ((edgesHit / mapSize) * 100).toFixed(2),
+      hit_counts: Object.fromEntries(hitCounts),
+    };
+  } catch (error) {
+    // Coverage map might not exist yet
+    return {
+      edges_hit: 0,
+      total_edges: 65536,
+      coverage_percentage: "0.00",
+      hit_counts: {},
+      error: error.message,
+    };
+  }
+}
+
+/**
  * Run symbolic execution on a binary with a given input
  */
 async function runSymbolicExecution(args) {
@@ -157,12 +195,14 @@ async function runSymbolicExecution(args) {
       proc.on("close", async (code) => {
         try {
           const generatedCases = await collectGeneratedCases(outputDir);
+          const coverage = await readCoverageMap(coverageMap);
           resolve({
             exit_code: code,
             stdout,
             stderr,
             generated_cases: generatedCases,
             output_dir: outputDir,
+            coverage,
           });
         } catch (error) {
           reject(error);
@@ -251,6 +291,7 @@ async function runSymbolicExecutionDocker(args) {
     proc.on("close", async (code) => {
       try {
         const generatedCases = await collectGeneratedCases(outputDir);
+        const coverage = await readCoverageMap(coverageMap);
         resolve({
           exit_code: code,
           stdout,
@@ -258,6 +299,7 @@ async function runSymbolicExecutionDocker(args) {
           generated_cases: generatedCases,
           output_dir: outputDir,
           execution_mode: "docker",
+          coverage,
         });
       } catch (error) {
         reject(error);
@@ -378,10 +420,15 @@ async function runCampaign(args) {
     rounds: [],
     total_cases_generated: 0,
     final_corpus_size: 0,
+    coverage_progression: [],
   };
 
   // Track campaign start time for total timeout
   const campaignStartTime = Date.now();
+
+  // Track global coverage across all rounds
+  const globalCoverage = new Uint8Array(65536); // AFL map size
+  let totalEdgesCovered = 0;
 
   // Track which files to process in next round
   let queueFiles = await fs.readdir(corpus_dir);
@@ -404,9 +451,14 @@ async function runCampaign(args) {
       inputs_processed: queueFiles.length,
       new_cases: 0,
       cases: [],
+      coverage: {
+        edges_discovered_this_round: 0,
+        total_edges_covered: 0,
+      },
     };
 
     const nextQueue = [];
+    let newEdgesThisRound = 0;
 
     for (const file of queueFiles) {
       const inputPath = path.join(corpus_dir, file);
@@ -439,10 +491,28 @@ async function runCampaign(args) {
           }
         }
 
+        // Merge coverage data from this execution
+        if (execResult.coverage && execResult.coverage.edges_hit > 0) {
+          try {
+            const coverageMapPath = path.join(work_dir, "covmap");
+            const mapData = await fs.readFile(coverageMapPath);
+            for (let i = 0; i < Math.min(mapData.length, 65536); i++) {
+              if (mapData[i] > 0 && globalCoverage[i] === 0) {
+                globalCoverage[i] = 1;
+                newEdgesThisRound++;
+                totalEdgesCovered++;
+              }
+            }
+          } catch (error) {
+            // Coverage map read failed, skip
+          }
+        }
+
         roundResult.cases.push({
           input_file: file,
           exit_code: execResult.exit_code,
           new_cases: newCases,
+          coverage: execResult.coverage,
         });
       } catch (error) {
         roundResult.cases.push({
@@ -452,8 +522,21 @@ async function runCampaign(args) {
       }
     }
 
+    // Update coverage metrics for this round
+    roundResult.coverage.edges_discovered_this_round = newEdgesThisRound;
+    roundResult.coverage.total_edges_covered = totalEdgesCovered;
+    roundResult.coverage.coverage_percentage = ((totalEdgesCovered / 65536) * 100).toFixed(2);
+
     results.rounds.push(roundResult);
     results.total_cases_generated += roundResult.new_cases;
+
+    // Track coverage progression
+    results.coverage_progression.push({
+      round,
+      edges_covered: totalEdgesCovered,
+      new_edges: newEdgesThisRound,
+      percentage: roundResult.coverage.coverage_percentage,
+    });
 
     if (roundResult.new_cases === 0) {
       results.stop_reason = "no_new_cases";
@@ -470,6 +553,13 @@ async function runCampaign(args) {
   const totalElapsedTime = Date.now() - campaignStartTime;
   results.elapsed_time_ms = totalElapsedTime;
   results.elapsed_time_seconds = (totalElapsedTime / 1000).toFixed(2);
+
+  // Final coverage summary
+  results.final_coverage = {
+    total_edges_covered: totalEdgesCovered,
+    total_edges: 65536,
+    coverage_percentage: ((totalEdgesCovered / 65536) * 100).toFixed(2),
+  };
 
   return results;
 }
@@ -565,7 +655,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "run_symbolic_execution",
         description:
-          "Run symbolic execution on a binary with a given input. This generates new test cases that explore different execution paths.",
+          "Run symbolic execution on a binary with a given input. This generates new test cases that explore different execution paths. Returns generated test cases and coverage metrics (edges hit, coverage percentage).",
         inputSchema: {
           type: "object",
           properties: {
@@ -657,7 +747,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "run_campaign",
         description:
-          "Run an iterative symbolic execution campaign. This repeatedly runs symbolic execution on corpus inputs, generates new test cases, and adds them to the corpus until no new cases are found or max_rounds is reached.",
+          "Run an iterative symbolic execution campaign. This repeatedly runs symbolic execution on corpus inputs, generates new test cases, and adds them to the corpus until no new cases are found or max_rounds is reached. Returns detailed coverage progression showing edges discovered per round, total coverage percentage, and per-input coverage metrics.",
         inputSchema: {
           type: "object",
           properties: {
