@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "symfit": {
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/mcp-server/index.js"
+      ],
+      "env": {
+        "SYMFIT_BUILD_DIR": "${workspaceFolder}/build",
+        "SYMFIT_WORK_DIR": "${workspaceFolder}/mcp-workdir",
+        "SYMFIT_USE_DOCKER": "true",
+        "SYMFIT_DOCKER_IMAGE": "ghcr.io/bitsecurerlab/symfit:latest"
+      }
+    }
+  }
+}
