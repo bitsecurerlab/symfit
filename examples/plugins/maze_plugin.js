@@ -11,7 +11,7 @@
  *   symqemu-x86_64 --plugin maze_plugin.js /tmp/maze_test/maze-nosleep
  */
 
-export const plugin = {
+const plugin = {
     name: "Maze Navigator",
     version: "1.0.0",
 
@@ -212,3 +212,6 @@ export const plugin = {
         console.log(`  Goal reached: ${this.state.goalReached ? "YES ✓" : "NO"}`);
     }
 };
+
+// Export plugin to global scope
+globalThis.plugin = plugin;
