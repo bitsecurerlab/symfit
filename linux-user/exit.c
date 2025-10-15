@@ -18,6 +18,7 @@
  */
 #include "qemu/osdep.h"
 #include "qemu.h"
+#include "symfit-plugin-global.h"
 #ifdef TARGET_GPROF
 #include <sys/gmon.h>
 #endif
@@ -35,4 +36,7 @@ void preexit_cleanup(CPUArchState *env, int code)
         __gcov_dump();
 #endif
         gdb_exit(env, code);
+
+        /* Write plugin results before exit */
+        symfit_plugin_global_shutdown();
 }
