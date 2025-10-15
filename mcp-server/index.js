@@ -128,6 +128,15 @@ async function runSymbolicExecution(args) {
     }
   }
 
+  // Clear coverage map to ensure fresh coverage tracking
+  // Create a zeroed 64KB buffer for AFL coverage map
+  try {
+    const zeroedMap = Buffer.alloc(65536, 0);
+    await fs.writeFile(coverageMap, zeroedMap);
+  } catch (error) {
+    // If file doesn't exist yet, that's fine
+  }
+
   // Write input data (always write to file, even for stdin mode)
   // SymFit will read from this file to get the symbolic input
   if (typeof input_data === "string") {
@@ -246,12 +255,21 @@ async function runSymbolicExecution(args) {
 async function runSymbolicExecutionDocker(args) {
   const { binary_path, work_dir, outputDir, coverageMap, inputFile, input_filename, use_stdin, timeout, plugin_file } = args;
 
-  // Use paths as they appear on the host (they're mounted via docker-compose)
-  const dockerInputFile = inputFile;
-  const dockerOutputDir = outputDir;
-  const dockerCoverageMap = coverageMap;
-  const dockerBinaryPath = binary_path;
-  const dockerPluginPath = plugin_file;
+  // Translate host paths to container paths
+  // docker-compose mounts current directory as /workspace
+  const projectRoot = process.cwd();
+  const toContainerPath = (hostPath) => {
+    if (hostPath.startsWith('/tmp/')) {
+      return hostPath;  // /tmp is mounted directly
+    }
+    return `/workspace/${path.relative(projectRoot, hostPath)}`;
+  };
+
+  const dockerInputFile = toContainerPath(inputFile);
+  const dockerOutputDir = toContainerPath(outputDir);
+  const dockerCoverageMap = toContainerPath(coverageMap);
+  const dockerBinaryPath = binary_path;  // Already in /tmp
+  const dockerPluginPath = plugin_file ? toContainerPath(plugin_file) : null;
 
   // Build docker compose command
   const dockerArgs = [
@@ -281,7 +299,7 @@ async function runSymbolicExecutionDocker(args) {
     const pluginArg = plugin_file ? `--plugin ${dockerPluginPath}` : "";
     dockerArgs.push(
       "bash", "-c",
-      `cat ${dockerInputFile} | /workspace/build/symsan/bin/fgtest /workspace/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64 ${pluginArg} ${dockerBinaryPath}`
+      `/workspace/build/symsan/bin/fgtest /workspace/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64 ${pluginArg} ${dockerBinaryPath} < ${dockerInputFile}`
     );
   } else {
     dockerArgs.push("bash", "-c");
