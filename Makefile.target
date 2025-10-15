@@ -122,6 +122,11 @@ obj-y += disas.o
 obj-$(call notempty,$(TARGET_XML_FILES)) += gdbstub-xml.o
 LIBS := $(libs_cpu) $(LIBS)
 
+# SymFit Plugin System - Add QuickJS libraries
+LIBS += $(QUICKJS_LIBS)
+# Allow multiple definitions (QuickJS and QEMU both have some utility functions)
+LDFLAGS += -Wl,--allow-multiple-definition
+
 #########################################################
 # Linux user emulator target
 

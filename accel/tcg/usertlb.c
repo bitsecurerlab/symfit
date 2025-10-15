@@ -16,6 +16,7 @@
 #include "qemu/atomic128.h"
 #include "exec/cpu_ldst.h"
 #include "qemu/cutils.h"
+#include "symfit-plugin-global.h"
 extern CPUArchState *global_env;
 
 #define SAVE_ALL_REGS     \
@@ -233,6 +234,24 @@ sym_st_helper(CPUArchState *env, target_ulong addr, uint32_t oi)
     void *host_addr = g2h(addr);
     dfsan_store_label(env->val_expr, (uint8_t*)host_addr, length);
 
+    /* Call plugin hook if plugin is loaded */
+    if (g_symfit_plugin) {
+        /* Read the value that was just stored */
+        uint64_t value = 0;
+        switch (length) {
+            case 1: value = *(uint8_t*)host_addr; break;
+            case 2: value = *(uint16_t*)host_addr; break;
+            case 4: value = *(uint32_t*)host_addr; break;
+            case 8: value = *(uint64_t*)host_addr; break;
+        }
+        static int mem_hook_count = 0;
+        if (mem_hook_count++ < 5) {
+            fprintf(stderr, "[DEBUG] Memory write hook (sym): addr=0x%lx, len=%lu, val=0x%lx\n",
+                    (unsigned long)addr, (unsigned long)length, (unsigned long)value);
+        }
+        symfit_plugin_on_memory_write(g_symfit_plugin, addr, length, value);
+    }
+
     vaddr_page = addr & TARGET_1024_MASK;
     te = tlb_entry(env, mmu_idx, vaddr_page);
 
@@ -266,6 +285,24 @@ check_st_helper(CPUArchState *env, target_ulong addr, uint32_t oi)
     void *host_addr = g2h(addr);
     /* nullify the target address */
     dfsan_store_label(0, (uint8_t*)host_addr, length);
+
+    /* Call plugin hook if plugin is loaded */
+    if (g_symfit_plugin) {
+        /* Read the value that was just stored */
+        uint64_t value = 0;
+        switch (length) {
+            case 1: value = *(uint8_t*)host_addr; break;
+            case 2: value = *(uint16_t*)host_addr; break;
+            case 4: value = *(uint32_t*)host_addr; break;
+            case 8: value = *(uint64_t*)host_addr; break;
+        }
+        static int check_hook_count = 0;
+        if (check_hook_count++ < 5) {
+            fprintf(stderr, "[DEBUG] Memory write hook (check): addr=0x%lx, len=%lu, val=0x%lx\n",
+                    (unsigned long)addr, (unsigned long)length, (unsigned long)value);
+        }
+        symfit_plugin_on_memory_write(g_symfit_plugin, addr, length, value);
+    }
 
     // assert(env->val_expr == 0);
 

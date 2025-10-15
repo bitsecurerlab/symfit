@@ -48,6 +48,7 @@
 #define SymExpr void*
 #include "RuntimeCommon.h"
 #include "dfsan_interface.h"
+#include "symfit-plugin-global.h"
 
 char *exec_path;
 CPUArchState *global_env;
@@ -59,6 +60,7 @@ static envlist_t *envlist;
 static const char *cpu_model;
 static const char *cpu_type;
 static const char *seed_optarg;
+static const char *plugin_path;
 unsigned long mmap_min_addr;
 unsigned long guest_base;
 int have_guest_base;
@@ -396,6 +398,11 @@ static void handle_arg_trace(const char *arg)
     trace_file = trace_opt_parse(arg);
 }
 
+static void handle_arg_plugin(const char *arg)
+{
+    plugin_path = strdup(arg);
+}
+
 struct qemu_argument {
     const char *argv;
     const char *env;
@@ -449,6 +456,8 @@ static const struct qemu_argument arg_table[] = {
      "",           "[[enable=]<pattern>][,events=<file>][,file=<file>]"},
     {"version",    "QEMU_VERSION",     false, handle_arg_version,
      "",           "display version information and exit"},
+    {"plugin",     "SYMFIT_PLUGIN",    true,  handle_arg_plugin,
+     "file",       "load SymFit JavaScript plugin from 'file'"},
     {NULL, NULL, false, NULL, NULL, NULL}
 };
 
@@ -639,6 +648,13 @@ int main(int argc, char **argv, char **envp)
     qemu_add_opts(&qemu_trace_opts);
 
     optind = parse_args(argc, argv);
+
+    /* Initialize plugin system if --plugin was specified */
+    if (plugin_path) {
+        symfit_plugin_global_init(plugin_path);
+        /* Register shutdown handler to write plugin results */
+        atexit(symfit_plugin_global_shutdown);
+    }
 
     if (!trace_init_backends()) {
         exit(1);

@@ -96,6 +96,12 @@ common-obj-y += qom/
 common-obj-y += disas/
 
 ######################################################################
+# SymFit Plugin System
+# JavaScript plugin support for custom instrumentation
+include $(SRC_PATH)/plugin-system/Makefile.objs
+common-obj-y += $(plugin-obj-y)
+
+######################################################################
 # Resource file for Windows executables
 version-obj-$(CONFIG_WIN32) += $(BUILD_DIR)/version.o
 

@@ -102,6 +102,7 @@ async function runSymbolicExecution(args) {
     work_dir = DEFAULT_WORK_DIR,
     timeout = 500,  // Default: 500ms per execution
     use_docker = USE_DOCKER,
+    plugin_file = null,  // Optional: JavaScript plugin file path
   } = args;
 
   // Validate target binary exists
@@ -148,6 +149,7 @@ async function runSymbolicExecution(args) {
       input_filename,
       use_stdin,
       timeout,
+      plugin_file,
     });
   } else {
     // Run natively (original implementation)
@@ -175,7 +177,14 @@ async function runSymbolicExecution(args) {
     };
 
     return new Promise((resolve, reject) => {
-      const proc = spawn(fgtest, [symfit, binary_path], {
+      // Build symqemu arguments
+      const symqemuArgs = [];
+      if (plugin_file) {
+        symqemuArgs.push('--plugin', plugin_file);
+      }
+      symqemuArgs.push(binary_path);
+
+      const proc = spawn(fgtest, [symfit, ...symqemuArgs], {
         env,
         cwd: work_dir,
         timeout,
@@ -196,6 +205,20 @@ async function runSymbolicExecution(args) {
         try {
           const generatedCases = await collectGeneratedCases(outputDir);
           const coverage = await readCoverageMap(coverageMap);
+
+          // Read plugin results if available
+          let pluginResults = null;
+          if (plugin_file) {
+            const pluginResultsPath = path.join(outputDir, "plugin_results.json");
+            try {
+              const pluginData = await fs.readFile(pluginResultsPath, "utf8");
+              pluginResults = JSON.parse(pluginData);
+            } catch (error) {
+              // Plugin results not available
+              pluginResults = { error: "Plugin results not found" };
+            }
+          }
+
           resolve({
             exit_code: code,
             stdout,
@@ -203,6 +226,7 @@ async function runSymbolicExecution(args) {
             generated_cases: generatedCases,
             output_dir: outputDir,
             coverage,
+            plugin_results: pluginResults,
           });
         } catch (error) {
           reject(error);
@@ -220,7 +244,7 @@ async function runSymbolicExecution(args) {
  * Run symbolic execution using Docker
  */
 async function runSymbolicExecutionDocker(args) {
-  const { binary_path, work_dir, outputDir, coverageMap, inputFile, input_filename, use_stdin, timeout } = args;
+  const { binary_path, work_dir, outputDir, coverageMap, inputFile, input_filename, use_stdin, timeout, plugin_file } = args;
 
   // Docker paths (inside container)
   const dockerWorkDir = "/workdir";
@@ -246,9 +270,19 @@ async function runSymbolicExecutionDocker(args) {
     dockerArgs.push("-i");  // Interactive mode for stdin
   }
 
+  // Add plugin file mount if specified
+  const dockerPluginPath = plugin_file ? "/plugin.js" : null;
+
   dockerArgs.push(
     "-v", `${work_dir}:${dockerWorkDir}`,
     "-v", `${binary_path}:${dockerBinaryPath}:ro`,
+  );
+
+  if (plugin_file) {
+    dockerArgs.push("-v", `${plugin_file}:${dockerPluginPath}:ro`);
+  }
+
+  dockerArgs.push(
     "-e", `SYMCC_INPUT_FILE=${dockerInputFile}`,
     "-e", `SYMCC_OUTPUT_DIR=${dockerOutputDir}`,
     "-e", `SYMCC_AFL_COVERAGE_MAP=${dockerCoverageMap}`,
@@ -259,17 +293,19 @@ async function runSymbolicExecutionDocker(args) {
 
   // If stdin mode, redirect input file to stdin using shell
   if (use_stdin) {
+    const pluginArg = plugin_file ? `--plugin ${dockerPluginPath}` : "";
     dockerArgs.push(
       "/bin/sh",
       "-c",
-      `cat ${dockerInputFile} | /workspace/build/symsan/bin/fgtest /workspace/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64 ${dockerBinaryPath}`
+      `cat ${dockerInputFile} | /workspace/build/symsan/bin/fgtest /workspace/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64 ${pluginArg} ${dockerBinaryPath}`
     );
   } else {
-    dockerArgs.push(
-      "/workspace/build/symsan/bin/fgtest",
-      "/workspace/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64",
-      dockerBinaryPath
-    );
+    dockerArgs.push("/workspace/build/symsan/bin/fgtest");
+    dockerArgs.push("/workspace/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64");
+    if (plugin_file) {
+      dockerArgs.push("--plugin", dockerPluginPath);
+    }
+    dockerArgs.push(dockerBinaryPath);
   }
 
   return new Promise((resolve, reject) => {
@@ -292,6 +328,20 @@ async function runSymbolicExecutionDocker(args) {
       try {
         const generatedCases = await collectGeneratedCases(outputDir);
         const coverage = await readCoverageMap(coverageMap);
+
+        // Read plugin results if available
+        let pluginResults = null;
+        if (plugin_file) {
+          const pluginResultsPath = path.join(outputDir, "plugin_results.json");
+          try {
+            const pluginData = await fs.readFile(pluginResultsPath, "utf8");
+            pluginResults = JSON.parse(pluginData);
+          } catch (error) {
+            // Plugin results not available
+            pluginResults = { error: "Plugin results not found" };
+          }
+        }
+
         resolve({
           exit_code: code,
           stdout,
@@ -300,6 +350,7 @@ async function runSymbolicExecutionDocker(args) {
           output_dir: outputDir,
           execution_mode: "docker",
           coverage,
+          plugin_results: pluginResults,
         });
       } catch (error) {
         reject(error);
@@ -405,6 +456,7 @@ async function runCampaign(args) {
     work_dir = DEFAULT_WORK_DIR,
     timeout = 500,  // Per-execution timeout: 500ms (should be small)
     campaign_timeout = 300000,  // Total campaign timeout: 5 minutes
+    plugin_file = null,  // Optional: JavaScript plugin file path
   } = args;
 
   await ensureDir(corpus_dir);
@@ -421,6 +473,7 @@ async function runCampaign(args) {
     total_cases_generated: 0,
     final_corpus_size: 0,
     coverage_progression: [],
+    goal_reached_cases: [],  // Track cases that reached the goal
   };
 
   // Track campaign start time for total timeout
@@ -429,6 +482,9 @@ async function runCampaign(args) {
   // Track global coverage across all rounds
   const globalCoverage = new Uint8Array(65536); // AFL map size
   let totalEdgesCovered = 0;
+
+  // Track state hashes for deduplication (plugin-based)
+  const seenStateHashes = new Set();
 
   // Track which files to process in next round
   let queueFiles = await fs.readdir(corpus_dir);
@@ -473,7 +529,39 @@ async function runCampaign(args) {
           build_dir,
           work_dir,
           timeout,
+          plugin_file,
         });
+
+        // Check plugin results if available
+        if (execResult.plugin_results && !execResult.plugin_results.error) {
+          const { goal_reached, state_hash, score } = execResult.plugin_results;
+
+          // Check if goal was reached
+          if (goal_reached) {
+            results.goal_reached_cases.push({
+              input_file: file,
+              round,
+              score,
+              state_hash,
+              input_data: inputData.toString('base64'),
+            });
+            results.stop_reason = "goal_reached";
+
+            // Save the successful input to corpus
+            const goalPath = path.join(corpus_dir, `goal-${state_hash}`);
+            await fs.writeFile(goalPath, inputData);
+
+            // Stop campaign immediately
+            results.elapsed_time_ms = Date.now() - campaignStartTime;
+            results.final_corpus_size = (await fs.readdir(corpus_dir)).length;
+            return results;
+          }
+
+          // Track state hash for deduplication
+          if (state_hash) {
+            seenStateHashes.add(state_hash);
+          }
+        }
 
         // Add new cases to corpus
         const newCases = [];
@@ -513,6 +601,7 @@ async function runCampaign(args) {
           exit_code: execResult.exit_code,
           new_cases: newCases,
           coverage: execResult.coverage,
+          plugin_results: execResult.plugin_results,
         });
       } catch (error) {
         roundResult.cases.push({
@@ -687,6 +776,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "number",
               description: "Execution timeout in milliseconds (default: 500ms)",
             },
+            plugin_file: {
+              type: "string",
+              description: "Optional path to JavaScript plugin file for custom instrumentation",
+            },
           },
           required: ["binary_path", "input_data"],
         },
@@ -786,6 +879,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             campaign_timeout: {
               type: "number",
               description: "Total campaign timeout in milliseconds - maximum time for the entire campaign (default: 300000ms = 5 minutes)",
+            },
+            plugin_file: {
+              type: "string",
+              description: "Optional path to JavaScript plugin file for custom instrumentation, scoring, and goal detection",
             },
           },
           required: ["binary_path", "corpus_dir"],

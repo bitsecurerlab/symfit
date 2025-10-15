@@ -7,6 +7,7 @@
 #include "tcg.h"
 #include "qemu/cutils.h"
 #include "dfsan_interface.h"
+#include "symfit-plugin-global.h"
 extern CPUArchState *global_env;
 #define CONST_LABEL 0
 
@@ -763,6 +764,19 @@ static void symsan_store_guest_internal(CPUArchState *env, uint64_t value_label,
     void *host_addr = g2h(addr);
     assert((uintptr_t)host_addr >= 0x700000040000);
     dfsan_store_label(value_label, (uint8_t*)host_addr, length);
+
+    /* Call plugin hook if plugin is loaded */
+    if (g_symfit_plugin) {
+        /* Read the value that was just stored */
+        uint64_t value = 0;
+        switch (length) {
+            case 1: value = *(uint8_t*)host_addr; break;
+            case 2: value = *(uint16_t*)host_addr; break;
+            case 4: value = *(uint32_t*)host_addr; break;
+            case 8: value = *(uint64_t*)host_addr; break;
+        }
+        symfit_plugin_on_memory_write(g_symfit_plugin, addr, length, value);
+    }
     // g_assert_not_reached();
 
 }
@@ -830,6 +844,19 @@ void HELPER(symsan_check_store_guest)(target_ulong addr, uint64_t length){
     // if (!noSymbolicData)
     // fprintf(stderr, "[memtrace] op: check_store_guest addr: 0x%lx mode: concrete\n", addr);
     dfsan_store_label(value_label, (uint8_t*)host_addr, length);
+
+    /* Call plugin hook if plugin is loaded */
+    if (g_symfit_plugin) {
+        /* Read the value that was just stored */
+        uint64_t value = 0;
+        switch (length) {
+            case 1: value = *(uint8_t*)host_addr; break;
+            case 2: value = *(uint16_t*)host_addr; break;
+            case 4: value = *(uint32_t*)host_addr; break;
+            case 8: value = *(uint64_t*)host_addr; break;
+        }
+        symfit_plugin_on_memory_write(g_symfit_plugin, addr, length, value);
+    }
 }
 
 /* Check the register status at the end of one basic block in symbolic mode

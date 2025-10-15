@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  # Use pre-built SymFit image
+  symfit-dev:
+    image: ghcr.io/bitsecurerlab/symfit:latest
+    container_name: symfit-dev
+    working_dir: /workspace
+    volumes:
+      # Mount source code from host
+      - .:/workspace
+      # Mount /tmp for test binaries
+      - /tmp:/tmp
+    environment:
+      - CC=clang-12
+      - CXX=clang++-12
+    command: /bin/bash
+    stdin_open: true
+    tty: true

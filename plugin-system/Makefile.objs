@@ -1,0 +1,22 @@
+#######################################################################
+# SymFit JavaScript Plugin System
+#
+# Provides JavaScript plugin support for custom instrumentation
+# and symbolic execution guidance.
+#
+
+# Plugin system object files
+plugin-obj-y = plugin-system/symfit_plugin.o
+plugin-obj-y += plugin-system/symfit_plugin_global.o
+
+# QuickJS flags
+# Note: Assumes QuickJS is in external/quickjs/
+QUICKJS_CFLAGS = -I$(SRC_PATH)/external/quickjs
+QUICKJS_LIBS = $(SRC_PATH)/external/quickjs/libquickjs.a -lm -ldl -lpthread
+
+# Add QuickJS includes to plugin compilation
+plugin-system/symfit_plugin.o-cflags := $(QUICKJS_CFLAGS) -DHAVE_QUICKJS
+
+# Export for use in other Makefiles
+export QUICKJS_CFLAGS
+export QUICKJS_LIBS

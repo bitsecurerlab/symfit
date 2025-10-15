@@ -111,6 +111,7 @@
 #include "qemu/guest-random.h"
 #include "qapi/error.h"
 #include "fd-trans.h"
+#include "symfit-plugin-global.h"
 
 #ifndef CLONE_IO
 #define CLONE_IO                0x80000000      /* Clone io context */
@@ -7339,6 +7340,16 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
         } else {
             ret = get_errno(safe_write(arg1, p, arg3));
         }
+
+        /* Call plugin hook if plugin is loaded */
+        if (g_symfit_plugin && ret >= 0) {
+            fprintf(stderr, "[DEBUG] Syscall hook fired: write(fd=%lu, len=%lu, ret=%ld)\n",
+                    (unsigned long)arg1, (unsigned long)arg3, (long)ret);
+            uint64_t args[6] = {arg1, arg2, arg3, arg4, arg5, arg6};
+            symfit_plugin_on_syscall_return(g_symfit_plugin, TARGET_NR_write,
+                                           args, ret, p, arg3);
+        }
+
         unlock_user(p, arg2, 0);
         return ret;
 
