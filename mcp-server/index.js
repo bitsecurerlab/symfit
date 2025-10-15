@@ -246,23 +246,18 @@ async function runSymbolicExecution(args) {
 async function runSymbolicExecutionDocker(args) {
   const { binary_path, work_dir, outputDir, coverageMap, inputFile, input_filename, use_stdin, timeout, plugin_file } = args;
 
-  // Docker paths (inside container)
-  const dockerWorkDir = "/workdir";
-  const dockerBinaryPath = "/binary";
-  const dockerInputFile = `${dockerWorkDir}/${input_filename}`;
-  const dockerOutputDir = `${dockerWorkDir}/output`;
-  const dockerCoverageMap = `${dockerWorkDir}/covmap`;
+  // Use paths as they appear on the host (they're mounted via docker-compose)
+  const dockerInputFile = inputFile;
+  const dockerOutputDir = outputDir;
+  const dockerCoverageMap = coverageMap;
+  const dockerBinaryPath = binary_path;
+  const dockerPluginPath = plugin_file;
 
-  // Get current user UID and GID for Docker
-  // This ensures files created in Docker have correct permissions
-  const uid = process.getuid ? process.getuid() : 1000;
-  const gid = process.getgid ? process.getgid() : 1000;
-
-  // Build docker command
+  // Build docker compose command
   const dockerArgs = [
+    "compose",
     "run",
     "--rm",
-    "--user", `${uid}:${gid}`,
   ];
 
   // Add stdin mode if requested
@@ -270,47 +265,35 @@ async function runSymbolicExecutionDocker(args) {
     dockerArgs.push("-i");  // Interactive mode for stdin
   }
 
-  // Add plugin file mount if specified
-  const dockerPluginPath = plugin_file ? "/plugin.js" : null;
-
-  dockerArgs.push(
-    "-v", `${work_dir}:${dockerWorkDir}`,
-    "-v", `${binary_path}:${dockerBinaryPath}:ro`,
-  );
-
-  if (plugin_file) {
-    dockerArgs.push("-v", `${plugin_file}:${dockerPluginPath}:ro`);
-  }
-
+  // Add environment variables
   dockerArgs.push(
     "-e", `SYMCC_INPUT_FILE=${dockerInputFile}`,
     "-e", `SYMCC_OUTPUT_DIR=${dockerOutputDir}`,
     "-e", `SYMCC_AFL_COVERAGE_MAP=${dockerCoverageMap}`,
     "-e", `TAINT_OPTIONS=taint_file=${dockerInputFile}`,
-    "-w", dockerWorkDir,
-    DOCKER_IMAGE,
   );
 
-  // If stdin mode, redirect input file to stdin using shell
+  // Specify the service
+  dockerArgs.push("symfit-dev");
+
+  // Build the command to run inside the container
   if (use_stdin) {
     const pluginArg = plugin_file ? `--plugin ${dockerPluginPath}` : "";
     dockerArgs.push(
-      "/bin/sh",
-      "-c",
+      "bash", "-c",
       `cat ${dockerInputFile} | /workspace/build/symsan/bin/fgtest /workspace/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64 ${pluginArg} ${dockerBinaryPath}`
     );
   } else {
-    dockerArgs.push("/workspace/build/symsan/bin/fgtest");
-    dockerArgs.push("/workspace/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64");
-    if (plugin_file) {
-      dockerArgs.push("--plugin", dockerPluginPath);
-    }
-    dockerArgs.push(dockerBinaryPath);
+    dockerArgs.push("bash", "-c");
+    const pluginArg = plugin_file ? `--plugin ${dockerPluginPath}` : "";
+    const cmd = `/workspace/build/symsan/bin/fgtest /workspace/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64 ${pluginArg} ${dockerBinaryPath}`.trim();
+    dockerArgs.push(cmd);
   }
 
   return new Promise((resolve, reject) => {
     const proc = spawn("docker", dockerArgs, {
       timeout,
+      cwd: process.cwd(),  // Run from project root where docker-compose.yml is
     });
 
     let stdout = "";
