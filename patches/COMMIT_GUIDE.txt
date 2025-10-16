@@ -1,0 +1,77 @@
+===========================================
+COMMIT GUIDE FOR UBUNTU 22.04 PATCHES
+===========================================
+
+WHAT TO COMMIT:
+---------------
+The patches directory contains all changes needed for Ubuntu 22.04 compatibility.
+These files should be committed to your symfit repository:
+
+  patches/
+  ├── README.md                    (3.4 KB) - Full documentation
+  ├── PATCH_SUMMARY.md             (3.0 KB) - Quick reference
+  ├── COMMIT_GUIDE.txt             (this file)
+  ├── apply-patches.sh             (executable) - Automated patch application
+  ├── symcc-llvm14-compat.patch    (84 lines) - SymCC fixes
+  └── symsan-ubuntu22-compat.patch (59 lines) - Symsan fixes
+
+
+HOW TO COMMIT:
+--------------
+From the symfit root directory, run:
+
+    git add patches/
+    git status  # Verify files
+    git commit -m "Add Ubuntu 22.04 compatibility patches
+
+    - Fix LLVM 14 API changes in SymCC (APInt::toString)
+    - Fix glibc 2.33+ removed functions in Symsan (__xstat family)
+    - Switch Symsan to libstdc++ to avoid libunwind dependency
+    
+    Tested on Ubuntu 22.04.3 LTS with clang-12 and LLVM 14.
+    All build artifacts successfully created."
+
+
+IMPORTANT NOTES:
+----------------
+1. The patches are already APPLIED in your working tree
+2. Future users will need to run: ./patches/apply-patches.sh
+3. Or manually apply before building: 
+   cd external/symcc/runtime/qsym_backend/qsym && git apply ../../../../patches/symcc-llvm14-compat.patch
+   cd external/symsan && git apply ../../patches/symsan-ubuntu22-compat.patch
+
+
+WHAT NOT TO COMMIT:
+-------------------
+❌ Do NOT commit the modified files in external/symcc (submodule)
+❌ Do NOT commit the modified files in external/symsan (submodule)
+✅ Only commit the patches directory with the patch files
+
+
+VERIFICATION:
+-------------
+After committing, verify:
+    git log --oneline -1
+    git show --stat HEAD  # Should show only patches/ directory
+
+
+FRESH CLONE WORKFLOW:
+---------------------
+For future users cloning the repository:
+
+    git clone <your-symfit-repo>
+    cd symfit
+    git submodule update --init --recursive
+    ./patches/apply-patches.sh
+    ./build.sh
+
+
+OPTIONAL: UPDATE build.sh
+--------------------------
+You may want to add automatic patch application to build.sh:
+
+    # Add before build steps
+    if [ -d patches ] && [ -x patches/apply-patches.sh ]; then
+        ./patches/apply-patches.sh
+    fi
+

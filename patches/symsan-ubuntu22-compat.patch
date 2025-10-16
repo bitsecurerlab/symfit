@@ -1,0 +1,59 @@
+diff --git a/driver/CMakeLists.txt b/driver/CMakeLists.txt
+index 754bbd4..7307db3 100644
+--- a/driver/CMakeLists.txt
++++ b/driver/CMakeLists.txt
+@@ -1,7 +1,8 @@
+ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+ set(CMAKE_CXX_STANDARD 14)
+ 
+-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++ -g")
++# Use libstdc++ instead of libc++ to avoid libunwind linking issues
++set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g")
+ 
+ ## simple driver for testing out-of-process solving
+ add_executable(FGTest fgtest.cpp afl_trace_map.cpp third_party/xxhash/xxhash.cpp)
+diff --git a/runtime/dfsan/dfsan_custom.cpp b/runtime/dfsan/dfsan_custom.cpp
+index 325b98e..ee6c25e 100644
+--- a/runtime/dfsan/dfsan_custom.cpp
++++ b/runtime/dfsan/dfsan_custom.cpp
+@@ -86,7 +86,7 @@ SANITIZER_INTERFACE_ATTRIBUTE int
+ __dfsw___xstat(int vers, const char *path, struct stat *buf,
+                dfsan_label vers_label, dfsan_label path_label,
+                dfsan_label buf_label, dfsan_label *ret_label) {
+-  int ret = __xstat(vers, path, buf);
++  int ret = stat(path, buf);
+   if (ret == 0) {
+     dfsan_set_label(0, buf, sizeof(struct stat));
+     dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size) * 8, 0, 0);
+@@ -114,7 +114,7 @@ SANITIZER_INTERFACE_ATTRIBUTE int
+ __dfsw___fxstat(int vers, const int fd, struct stat *buf,
+                 dfsan_label vers_label, dfsan_label fd_label,
+                 dfsan_label buf_label, dfsan_label *ret_label) {
+-  int ret = __fxstat(vers, fd, buf);
++  int ret = fstat(fd, buf);
+   if (ret == 0) {
+     dfsan_set_label(0, buf, sizeof(struct stat));
+     dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size) * 8, 0, 0);
+@@ -141,7 +141,7 @@ SANITIZER_INTERFACE_ATTRIBUTE int
+ __dfsw___lxstat(int vers, const char *path, struct stat *buf,
+                 dfsan_label vers_label, dfsan_label path_label,
+                 dfsan_label buf_label, dfsan_label *ret_label) {
+-  int ret = __lxstat(vers, path, buf);
++  int ret = lstat(path, buf);
+   if (ret == 0) {
+     dfsan_set_label(0, buf, sizeof(struct stat));
+     dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size) * 8, 0, 0);
+diff --git a/solvers/CMakeLists.txt b/solvers/CMakeLists.txt
+index d89efc8..a8ba4b9 100644
+--- a/solvers/CMakeLists.txt
++++ b/solvers/CMakeLists.txt
+@@ -1,7 +1,8 @@
+ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+ set(CMAKE_CXX_STANDARD 14)
+ 
+-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++ -g")
++# Use libstdc++ instead of libc++ to avoid libunwind linking issues
++set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g")
+ 
+ ## solvers
+ add_library(Z3Solver STATIC z3.cpp)

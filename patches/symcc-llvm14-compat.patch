@@ -1,0 +1,84 @@
+diff --git a/qsym/pintool/codegen/expr.cpp b/qsym/pintool/codegen/expr.cpp
+index 0b826ac..5287499 100644
+--- a/qsym/pintool/codegen/expr.cpp
++++ b/qsym/pintool/codegen/expr.cpp
+@@ -1,6 +1,7 @@
+ #include "expr_builder.h"
+ #include "expr.h"
+ #include "solver.h"
++#include <llvm/ADT/SmallString.h>
+ 
+ // NOTE: Some simplification is ported from KLEE
+ namespace qsym {
+@@ -380,7 +381,9 @@ void Expr::addConstraint(Kind kind, llvm::APInt rhs, llvm::APInt adjustment) {
+ }
+ 
+ void ConstantExpr::print(ostream& os, UINT depth) const {
+-    os << "0x" << value_.toString(16, false);
++    llvm::SmallString<64> Str;
++    value_.toString(Str, 16, false, false);
++    os << "0x" << Str.c_str();
+ }
+ 
+ void ConcatExpr::print(ostream& os, UINT depth) const {
+diff --git a/qsym/pintool/expr.h b/qsym/pintool/expr.h
+index 2c7b2dd..b7c5812 100644
+--- a/qsym/pintool/expr.h
++++ b/qsym/pintool/expr.h
+@@ -10,6 +10,7 @@
+ #include <vector>
+ 
+ #include <z3++.h>
++#include <llvm/ADT/SmallString.h>
+ 
+ #include "common.h"
+ #include "dependency.h"
+@@ -376,7 +377,9 @@ protected:
+   }
+ 
+   bool printAux(ostream& os) const override {
+-    os << "value=0x" << value_.toString(16, false)
++    llvm::SmallString<64> Str;
++    value_.toString(Str, 16, false, false);
++    os << "value=0x" << Str.c_str()
+       << ", bits=" << bits_;
+     return true;
+   }
+@@ -384,8 +387,11 @@ protected:
+   z3::expr toZ3ExprRecursively(bool verbose) override {
+     if (value_.getNumWords() == 1)
+       return context_.bv_val((__uint64)value_.getZExtValue(), bits_);
+-    else
+-      return context_.bv_val(value_.toString(10, false).c_str(), bits_);
++    else {
++      llvm::SmallString<64> Str;
++      value_.toString(Str, 10, false, false);
++      return context_.bv_val(Str.c_str(), bits_);
++    }
+   }
+ 
+   void hashAux(XXH32_state_t* state) override {
+diff --git a/qsym/pintool/third_party/llvm/range.h b/qsym/pintool/third_party/llvm/range.h
+index 1108c66..8cab17d 100644
+--- a/qsym/pintool/third_party/llvm/range.h
++++ b/qsym/pintool/third_party/llvm/range.h
+@@ -6,6 +6,7 @@
+ #include <iostream>
+ #include <set>
+ #include <llvm/ADT/APSInt.h>
++#include <llvm/ADT/SmallString.h>
+ #include "pin.H"
+ 
+ namespace qsym {
+@@ -175,7 +176,10 @@ public:
+       else
+         os << ", ";
+ 
+-      os << '[' << i->From().toString(10) << ", " << i->To().toString(10) << ']';
++      llvm::SmallString<64> FromStr, ToStr;
++      i->From().toString(FromStr, 10);
++      i->To().toString(ToStr, 10);
++      os << '[' << FromStr.c_str() << ", " << ToStr.c_str() << ']';
+     }
+     os << " }";
+   }
