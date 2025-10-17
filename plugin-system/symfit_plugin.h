@@ -53,6 +53,7 @@ void symfit_plugin_shutdown(void);
  * @param value Value written
  */
 void symfit_plugin_on_memory_write(SymFitPlugin *plugin,
+                                    void *env,
                                     uint64_t addr,
                                     uint32_t size,
                                     uint64_t value);
@@ -83,31 +84,12 @@ void symfit_plugin_on_syscall(SymFitPlugin *plugin,
  * @param buffer_len Length of buffer
  */
 void symfit_plugin_on_syscall_return(SymFitPlugin *plugin,
+                                      void * cpu_env,
                                       int syscall_num,
                                       uint64_t args[6],
                                       int64_t ret_val,
                                       const uint8_t *buffer,
                                       size_t buffer_len);
-
-// === Decision Hooks ===
-
-/**
- * Get program state hash for deduplication
- * @return Hash value (0 if plugin doesn't provide)
- */
-uint64_t symfit_plugin_get_state_hash(SymFitPlugin *plugin);
-
-/**
- * Score current execution path
- * @return Score (higher = more interesting)
- */
-double symfit_plugin_score_execution(SymFitPlugin *plugin);
-
-/**
- * Check if goal condition is reached
- * @return true if goal reached
- */
-bool symfit_plugin_is_goal_reached(SymFitPlugin *plugin);
 
 // === Context for Memory Access ===
 
