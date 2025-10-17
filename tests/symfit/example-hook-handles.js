@@ -18,14 +18,14 @@ const plugin = {
         hook3Count: 0,
     },
 
-    onStartExecution(ctx) {
+    onStartExecution() {
         console.log("=== Hook Handle Management Example ===");
         console.log("");
 
         // Register multiple hooks at the same address
         console.log("Registering 3 hooks at the same global address (-1n):");
 
-        this.state.hook1 = ctx.addInstructionHook(-1n, (hookCtx) => {
+        this.state.hook1 = addInstructionHook(-1n, () => {
             this.state.hook1Count++;
             if (this.state.hook1Count <= 2) {
                 console.log(`  Hook 1 fired (count: ${this.state.hook1Count})`);
@@ -34,19 +34,19 @@ const plugin = {
             // Remove hook 2 after 3 instructions
             if (this.state.hook1Count === 3 && this.state.hook2 !== null) {
                 console.log("  → Hook 1: Removing hook 2...");
-                hookCtx.removeInstructionHook(this.state.hook2);
+                removeInstructionHook(this.state.hook2);
                 this.state.hook2 = null;
             }
         });
 
-        this.state.hook2 = ctx.addInstructionHook(-1n, (hookCtx) => {
+        this.state.hook2 = addInstructionHook(-1n, () => {
             this.state.hook2Count++;
             if (this.state.hook2Count <= 2) {
                 console.log(`  Hook 2 fired (count: ${this.state.hook2Count})`);
             }
         });
 
-        this.state.hook3 = ctx.addInstructionHook(-1n, (hookCtx) => {
+        this.state.hook3 = addInstructionHook(-1n, () => {
             this.state.hook3Count++;
             if (this.state.hook3Count <= 2) {
                 console.log(`  Hook 3 fired (count: ${this.state.hook3Count})`);
@@ -62,12 +62,12 @@ const plugin = {
                 // Remove hooks (check for null, not falsy, since 0n is a valid handle!)
                 if (handle1 !== null) {
                     console.log(`    Removing hook 1 (handle ${handle1})...`);
-                    hookCtx.removeInstructionHook(handle1);
+                    removeInstructionHook(handle1);
                     this.state.hook1 = null;
                 }
                 if (handle3 !== null) {
                     console.log(`    Removing hook 3 (handle ${handle3})...`);
-                    hookCtx.removeInstructionHook(handle3);
+                    removeInstructionHook(handle3);
                     this.state.hook3 = null;
                 }
             }

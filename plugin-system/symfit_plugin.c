@@ -869,38 +869,16 @@ static JSValue js_remove_instruction_hook(JSContext *ctx, JSValue this_val,
 
 // === Helper: Create Context Object ===
 
-static JSValue create_context_object(JSContext *ctx, SymFitPlugin *plugin) {
+/**
+ * Create a minimal context object with just the PC
+ * All methods (readMemory, writeMemory, etc.) are now available globally
+ * This is called frequently (on every instruction hook), so keep it minimal
+ */
+/*static JSValue create_context_object(JSContext *ctx, SymFitPlugin *plugin) {
     JSValue obj = JS_NewObject(ctx);
-
-    // Add PC
     JS_SetPropertyStr(ctx, obj, "pc", JS_NewBigUint64(ctx, plugin->current_pc));
-
-    // Add readMemory function
-    JSValue read_mem_fn = JS_NewCFunction(ctx, (void*)js_read_memory, "readMemory", 2);
-    JS_SetPropertyStr(ctx, obj, "readMemory", read_mem_fn);
-
-    // Add writeMemory function
-    JSValue write_mem_fn = JS_NewCFunction(ctx, (void*)js_write_memory, "writeMemory", 3);
-    JS_SetPropertyStr(ctx, obj, "writeMemory", write_mem_fn);
-
-    // Add readRegister function
-    JSValue read_reg_fn = JS_NewCFunction(ctx, (void*)js_read_register, "readRegister", 1);
-    JS_SetPropertyStr(ctx, obj, "readRegister", read_reg_fn);
-
-    // Add writeRegister function
-    JSValue write_reg_fn = JS_NewCFunction(ctx, (void*)js_write_register, "writeRegister", 2);
-    JS_SetPropertyStr(ctx, obj, "writeRegister", write_reg_fn);
-
-    // Add addInstructionHook function
-    JSValue add_hook_fn = JS_NewCFunction(ctx, (void*)js_add_instruction_hook, "addInstructionHook", 2);
-    JS_SetPropertyStr(ctx, obj, "addInstructionHook", add_hook_fn);
-
-    // Add removeInstructionHook function
-    JSValue remove_hook_fn = JS_NewCFunction(ctx, (void*)js_remove_instruction_hook, "removeInstructionHook", 1);
-    JS_SetPropertyStr(ctx, obj, "removeInstructionHook", remove_hook_fn);
-
     return obj;
-}
+}*/
 
 // === Plugin Loading ===
 
@@ -949,6 +927,22 @@ SymFitPlugin* symfit_plugin_load(const char *plugin_path) {
     JS_SetPropertyStr(plugin->ctx, console, "log",
                      JS_NewCFunction(plugin->ctx, (void*)js_console_log, "log", 1));
     JS_SetPropertyStr(plugin->ctx, global, "console", console);
+
+    // Setup global context methods (instead of recreating on every callback)
+    // These can access g_plugin global state
+    JS_SetPropertyStr(plugin->ctx, global, "readMemory",
+                     JS_NewCFunction(plugin->ctx, (void*)js_read_memory, "readMemory", 2));
+    JS_SetPropertyStr(plugin->ctx, global, "writeMemory",
+                     JS_NewCFunction(plugin->ctx, (void*)js_write_memory, "writeMemory", 3));
+    JS_SetPropertyStr(plugin->ctx, global, "readRegister",
+                     JS_NewCFunction(plugin->ctx, (void*)js_read_register, "readRegister", 1));
+    JS_SetPropertyStr(plugin->ctx, global, "writeRegister",
+                     JS_NewCFunction(plugin->ctx, (void*)js_write_register, "writeRegister", 2));
+    JS_SetPropertyStr(plugin->ctx, global, "addInstructionHook",
+                     JS_NewCFunction(plugin->ctx, (void*)js_add_instruction_hook, "addInstructionHook", 2));
+    JS_SetPropertyStr(plugin->ctx, global, "removeInstructionHook",
+                     JS_NewCFunction(plugin->ctx, (void*)js_remove_instruction_hook, "removeInstructionHook", 1));
+
 
     // Setup register name constants based on compile-time architecture
     JSValue registers = JS_NewObject(plugin->ctx);
@@ -1164,13 +1158,14 @@ SymFitPlugin* symfit_plugin_load(const char *plugin_path) {
         printf("[SymFit] Calling plugin.onInit()\n");
 
         // Create a context object for onInit
-        JSValue ctx_obj = create_context_object(plugin->ctx, plugin);
-        JSValue init_result = JS_Call(plugin->ctx, on_init, plugin->plugin_obj, 1, &ctx_obj);
+        //JSValue ctx_obj = create_context_object(plugin->ctx, plugin);
+        //JSValue init_result = JS_Call(plugin->ctx, on_init, plugin->plugin_obj, 1, &ctx_obj);
+        JSValue init_result = JS_Call(plugin->ctx, on_init, plugin->plugin_obj, 0, NULL);
         if (JS_IsException(init_result)) {
             js_std_dump_error(plugin->ctx);
         }
         JS_FreeValue(plugin->ctx, init_result);
-        JS_FreeValue(plugin->ctx, ctx_obj);
+        //JS_FreeValue(plugin->ctx, ctx_obj);
     }
     JS_FreeValue(plugin->ctx, on_init);
 
@@ -1338,15 +1333,13 @@ void symfit_plugin_on_instruction(SymFitPlugin *plugin,
 
             // Duplicate the callback before calling it, in case the callback removes the hook
             JSValue callback = JS_DupValue(plugin->ctx, global_entry->callback);
-            JSValue ctx_obj = create_context_object(plugin->ctx, plugin);
             JSValue result = JS_Call(plugin->ctx, callback,
-                                   JS_UNDEFINED, 1, &ctx_obj);
+                                   JS_UNDEFINED, 0, NULL);
             if (JS_IsException(result)) {
                 fprintf(stderr, "[SymFit] Error in global instruction hook at 0x%lx:\n", pc);
                 js_std_dump_error(plugin->ctx);
             }
             JS_FreeValue(plugin->ctx, result);
-            JS_FreeValue(plugin->ctx, ctx_obj);
             JS_FreeValue(plugin->ctx, callback);
 
             global_entry = global_entry->next;
@@ -1363,15 +1356,13 @@ void symfit_plugin_on_instruction(SymFitPlugin *plugin,
 
                 // Duplicate the callback before calling it, in case the callback removes the hook
                 JSValue callback = JS_DupValue(plugin->ctx, entry->callback);
-                JSValue ctx_obj = create_context_object(plugin->ctx, plugin);
                 JSValue result = JS_Call(plugin->ctx, callback,
-                                       JS_UNDEFINED, 1, &ctx_obj);
+                                       JS_UNDEFINED, 0, NULL);
                 if (JS_IsException(result)) {
                     fprintf(stderr, "[SymFit] Error in selective instruction hook at 0x%lx:\n", pc);
                     js_std_dump_error(plugin->ctx);
                 }
                 JS_FreeValue(plugin->ctx, result);
-                JS_FreeValue(plugin->ctx, ctx_obj);
                 JS_FreeValue(plugin->ctx, callback);
             }
             entry = entry->next;
@@ -1380,24 +1371,25 @@ void symfit_plugin_on_instruction(SymFitPlugin *plugin,
 }
 
 void symfit_plugin_on_start_execution(SymFitPlugin *plugin,
-                                       void *cpu_env) {
+                                       void *cpu_env,
+                                       uint64_t pc) {
     if (!plugin || plugin->execution_started) {
         return;
     }
 
     plugin->execution_started = 1;
     plugin->cpu_env = cpu_env;
+    plugin->current_pc = pc;
 
     if (!JS_IsFunction(plugin->ctx, plugin->on_start_execution_fn)) {
         return;
     }
 
-    printf("[SymFit] Calling plugin.onStartExecution()\n");
+    printf("[SymFit] Calling plugin.onStartExecution(), pc=%lx\n", plugin->current_pc);
     plugin->callback_count++;
 
-    JSValue ctx_obj = create_context_object(plugin->ctx, plugin);
     JSValue result = JS_Call(plugin->ctx, plugin->on_start_execution_fn,
-                             plugin->plugin_obj, 1, &ctx_obj);
+                             plugin->plugin_obj, 0, NULL);
 
     if (JS_IsException(result)) {
         fprintf(stderr, "[SymFit] Error in onStartExecution:\n");
@@ -1405,7 +1397,6 @@ void symfit_plugin_on_start_execution(SymFitPlugin *plugin,
     }
 
     JS_FreeValue(plugin->ctx, result);
-    JS_FreeValue(plugin->ctx, ctx_obj);
 }
 
 

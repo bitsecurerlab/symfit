@@ -45,7 +45,7 @@ const plugin = {
         hookRemoved: false,
     },
 
-    onStartExecution(ctx) {
+    onStartExecution() {
         console.log("╔════════════════════════════════════════════════════════╗");
         console.log("║     COMPREHENSIVE PLUGIN FEATURE TEST                  ║");
         console.log("╚════════════════════════════════════════════════════════╝");
@@ -57,18 +57,19 @@ const plugin = {
 
         // Test 1: Global instruction hook
         console.log("━━━ Test 1: Global Instruction Hooks ━━━");
-        this.state.globalHookHandle = ctx.addInstructionHook(-1n, (hookCtx) => {
+        this.state.globalHookHandle = addInstructionHook(-1n, () => {
             this.state.globalHookCount++;
 
             if (this.state.globalHookCount === 1) {
-                this.state.firstPC = hookCtx.pc;
-                console.log(`  First instruction at: 0x${hookCtx.pc.toString(16)}`);
+                const pc = readRegister(Registers.RIP);
+                this.state.firstPC = pc;
+                console.log(`  First instruction at: 0x${pc.toString(16)}`);
 
                 // Test 2: Register read
                 console.log("");
                 console.log("━━━ Test 2: Register Read ━━━");
                 try {
-                    const rax = hookCtx.readRegister(Registers.RAX);
+                    const rax = readRegister(Registers.RAX);
                     this.state.initialRAX = rax;
                     this.state.registerReadSuccess = true;
                     console.log(`  ✓ Read RAX: 0x${rax.toString(16)}`);
@@ -81,8 +82,8 @@ const plugin = {
                 console.log("━━━ Test 3: Register Write ━━━");
                 try {
                     const testValue = 0x1234567890abcdefn;
-                    hookCtx.writeRegister(Registers.R15, testValue);
-                    const r15 = hookCtx.readRegister(Registers.R15);
+                    writeRegister(Registers.R15, testValue);
+                    const r15 = readRegister(Registers.R15);
                     if (r15 === testValue) {
                         this.state.registerWriteSuccess = true;
                         console.log(`  ✓ Write R15: 0x${testValue.toString(16)}`);
@@ -98,9 +99,9 @@ const plugin = {
                 console.log("");
                 console.log("━━━ Test 4: Memory Read ━━━");
                 try {
-                    const rsp = hookCtx.readRegister(Registers.RSP);
+                    const rsp = readRegister(Registers.RSP);
                     console.log(`  Stack pointer: 0x${rsp.toString(16)}`);
-                    const stackVal = hookCtx.readMemory(rsp, 8);
+                    const stackVal = readMemory(rsp, 8);
                     this.state.stackValue = stackVal;
                     this.state.memoryReadSuccess = true;
                     console.log(`  ✓ Read from stack: 0x${stackVal.toString(16)}`);
@@ -112,14 +113,14 @@ const plugin = {
                 console.log("");
                 console.log("━━━ Test 5: Memory Write ━━━");
                 try {
-                    const rsp = hookCtx.readRegister(Registers.RSP);
+                    const rsp = readRegister(Registers.RSP);
                     // Save original value
-                    const originalVal = hookCtx.readMemory(rsp, 8);
+                    const originalVal = readMemory(rsp, 8);
                     // Write test value
                     const testValue = 0xdeadbeefcafebaben;
-                    hookCtx.writeMemory(rsp, 8, testValue);
+                    writeMemory(rsp, 8, testValue);
                     // Verify write
-                    const verifyVal = hookCtx.readMemory(rsp, 8);
+                    const verifyVal = readMemory(rsp, 8);
                     if (verifyVal === testValue) {
                         this.state.memoryWriteSuccess = true;
                         console.log(`  ✓ Write to stack: 0x${testValue.toString(16)}`);
@@ -128,7 +129,7 @@ const plugin = {
                         console.log(`  ✗ Memory mismatch: expected 0x${testValue.toString(16)}, got 0x${verifyVal.toString(16)}`);
                     }
                     // Restore original value to avoid corruption
-                    hookCtx.writeMemory(rsp, 8, originalVal);
+                    writeMemory(rsp, 8, originalVal);
                     console.log(`  ✓ Restored original value: 0x${originalVal.toString(16)}`);
                 } catch (e) {
                     console.log(`  ✗ Failed to write memory: ${e}`);
@@ -137,13 +138,14 @@ const plugin = {
                 // Test 6: Address-specific hook
                 console.log("");
                 console.log("━━━ Test 6: Address-Specific Hook ━━━");
-                const hookAddr = hookCtx.pc;
+                const hookAddr = pc;
                 console.log(`  Registering hook at: 0x${hookAddr.toString(16)}`);
 
-                ctx.addInstructionHook(hookAddr, (addrHookCtx) => {
+                addInstructionHook(hookAddr, () => {
                     this.state.addressHookCount++;
                     if (this.state.addressHookCount === 1) {
-                        console.log(`  ✓ Address-specific hook triggered at: 0x${addrHookCtx.pc.toString(16)}`);
+                        const addrPC = readRegister(Registers.RIP);
+                        console.log(`  ✓ Address-specific hook triggered at: 0x${addrPC.toString(16)}`);
                     }
                 });
             }
@@ -153,7 +155,7 @@ const plugin = {
                 console.log("");
                 console.log("━━━ Test 7: Hook Removal ━━━");
                 console.log(`  Removing global hook after ${this.state.maxGlobalHooks} triggers...`);
-                const removed = hookCtx.removeInstructionHook(this.state.globalHookHandle);
+                const removed = removeInstructionHook(this.state.globalHookHandle);
                 this.state.hookRemoved = removed;
                 if (removed) {
                     console.log("  ✓ Global hook removed successfully (using handle)");
