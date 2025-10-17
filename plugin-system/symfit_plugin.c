@@ -82,6 +82,27 @@ enum RISCVRegister {
 #include "quickjs.h"
 #include "quickjs-libc.h"
 
+// === Instruction Hook Hash Table ===
+
+#define HOOK_TABLE_SIZE 1024
+#define GLOBAL_HOOK_PC 0xFFFFFFFFFFFFFFFFULL  // Special value for global hooks
+
+typedef struct InstructionHookEntry {
+    uint64_t pc;
+    JSValue callback;
+    uint64_t hook_id;  // Unique identifier for this hook
+    struct InstructionHookEntry *next;
+} InstructionHookEntry;
+
+typedef struct {
+    InstructionHookEntry *buckets[HOOK_TABLE_SIZE];
+    InstructionHookEntry *global_hook;  // Separate storage for global hook
+} InstructionHookTable;
+
+static uint32_t hash_pc(uint64_t pc) {
+    return (uint32_t)(pc % HOOK_TABLE_SIZE);
+}
+
 // Plugin structure
 struct SymFitPlugin {
     JSRuntime *rt;
@@ -93,10 +114,18 @@ struct SymFitPlugin {
     JSValue on_memory_read_fn;
     JSValue on_syscall_fn;
     JSValue on_syscall_return_fn;
+    JSValue on_start_execution_fn;
+
+    // Execution state
+    int execution_started;
 
     // Context
     uint64_t current_pc;
     void *cpu_env; // Pointer to CPUArchState
+
+    // Instruction hooks
+    InstructionHookTable *instruction_hooks;
+    uint64_t next_hook_id;  // Counter for generating unique hook IDs
 
     // Statistics
     uint64_t callback_count;
@@ -699,6 +728,145 @@ static JSValue js_console_log(JSContext *ctx, JSValue this_val,
     return JS_UNDEFINED;
 }
 
+/**
+ * ctx.addInstructionHook(address, callback)
+ * Register a callback for a specific instruction address
+ * Special value: 0xFFFFFFFFFFFFFFFF (-1n) = global hook for all instructions
+ * Returns a hook handle (BigInt) that can be used to remove the hook
+ */
+static JSValue js_add_instruction_hook(JSContext *ctx, JSValue this_val,
+                                        int argc, JSValue *argv) {
+    if (argc < 2) {
+        fprintf(stderr, "[Plugin] addInstructionHook requires 2 arguments (address, callback)\n");
+        return JS_UNDEFINED;
+    }
+
+    if (!g_plugin || !g_plugin->instruction_hooks) {
+        fprintf(stderr, "[Plugin] addInstructionHook: plugin not initialized\n");
+        return JS_UNDEFINED;
+    }
+
+    // Get address (can be Number or BigInt)
+    int64_t addr_signed = 0;
+    if (JS_IsBigInt(ctx, argv[0])) {
+        JS_ToBigInt64(ctx, &addr_signed, argv[0]);
+    } else {
+        int32_t addr_int = 0;
+        JS_ToInt32(ctx, &addr_int, argv[0]);
+        addr_signed = addr_int;
+    }
+    uint64_t pc = (uint64_t)addr_signed;
+
+    // Check that second argument is a function
+    if (!JS_IsFunction(ctx, argv[1])) {
+        fprintf(stderr, "[Plugin] addInstructionHook: second argument must be a function\n");
+        return JS_UNDEFINED;
+    }
+
+    InstructionHookEntry *entry = malloc(sizeof(InstructionHookEntry));
+    if (!entry) {
+        fprintf(stderr, "[Plugin] addInstructionHook: failed to allocate entry\n");
+        return JS_UNDEFINED;
+    }
+
+    entry->pc = pc;
+    entry->callback = JS_DupValue(ctx, argv[1]);
+    entry->hook_id = g_plugin->next_hook_id++;
+
+    // Check if this is a global hook (special value 0xFFFFFFFFFFFFFFFF)
+    if (pc == GLOBAL_HOOK_PC) {
+        // Add to global hook list
+        entry->next = g_plugin->instruction_hooks->global_hook;
+        g_plugin->instruction_hooks->global_hook = entry;
+
+        printf("[Plugin Native] addInstructionHook(GLOBAL) -> handle %lu\n", entry->hook_id);
+        return JS_NewBigUint64(ctx, entry->hook_id);
+    }
+
+    // Add to hook table for specific address
+    uint32_t bucket = hash_pc(pc);
+    entry->next = g_plugin->instruction_hooks->buckets[bucket];
+    g_plugin->instruction_hooks->buckets[bucket] = entry;
+
+    printf("[Plugin Native] addInstructionHook(0x%lx) -> handle %lu\n", pc, entry->hook_id);
+    return JS_NewBigUint64(ctx, entry->hook_id);
+}
+
+/**
+ * ctx.removeInstructionHook(handle)
+ * Remove a specific hook using its handle (returned by addInstructionHook)
+ * Returns true if the hook was found and removed, false otherwise
+ */
+static JSValue js_remove_instruction_hook(JSContext *ctx, JSValue this_val,
+                                           int argc, JSValue *argv) {
+    if (argc < 1) {
+        fprintf(stderr, "[Plugin] removeInstructionHook requires 1 argument (hook handle)\n");
+        return JS_FALSE;
+    }
+
+    if (!g_plugin || !g_plugin->instruction_hooks) {
+        fprintf(stderr, "[Plugin] removeInstructionHook: plugin not initialized\n");
+        return JS_FALSE;
+    }
+
+    // Get hook handle (must be BigInt)
+    int64_t hook_id_signed = 0;
+    if (JS_IsBigInt(ctx, argv[0])) {
+        JS_ToBigInt64(ctx, &hook_id_signed, argv[0]);
+    } else {
+        int32_t hook_id_int = 0;
+        JS_ToInt32(ctx, &hook_id_int, argv[0]);
+        hook_id_signed = hook_id_int;
+    }
+    uint64_t hook_id = (uint64_t)hook_id_signed;
+
+    // Search in global hooks
+    InstructionHookEntry *entry = g_plugin->instruction_hooks->global_hook;
+    InstructionHookEntry *prev = NULL;
+
+    while (entry) {
+        if (entry->hook_id == hook_id) {
+            if (prev) {
+                prev->next = entry->next;
+            } else {
+                g_plugin->instruction_hooks->global_hook = entry->next;
+            }
+            JS_FreeValue(ctx, entry->callback);
+            free(entry);
+            printf("[Plugin Native] removeInstructionHook(handle %lu) - global hook removed\n", hook_id);
+            return JS_TRUE;
+        }
+        prev = entry;
+        entry = entry->next;
+    }
+
+    // Search in all buckets for address-specific hooks
+    for (int i = 0; i < HOOK_TABLE_SIZE; i++) {
+        entry = g_plugin->instruction_hooks->buckets[i];
+        prev = NULL;
+
+        while (entry) {
+            if (entry->hook_id == hook_id) {
+                if (prev) {
+                    prev->next = entry->next;
+                } else {
+                    g_plugin->instruction_hooks->buckets[i] = entry->next;
+                }
+                uint64_t pc = entry->pc;
+                JS_FreeValue(ctx, entry->callback);
+                free(entry);
+                printf("[Plugin Native] removeInstructionHook(handle %lu) - removed hook at 0x%lx\n", hook_id, pc);
+                return JS_TRUE;
+            }
+            prev = entry;
+            entry = entry->next;
+        }
+    }
+
+    printf("[Plugin Native] removeInstructionHook(handle %lu) - not found\n", hook_id);
+    return JS_FALSE;
+}
+
 // === Helper: Create Context Object ===
 
 static JSValue create_context_object(JSContext *ctx, SymFitPlugin *plugin) {
@@ -722,6 +890,14 @@ static JSValue create_context_object(JSContext *ctx, SymFitPlugin *plugin) {
     // Add writeRegister function
     JSValue write_reg_fn = JS_NewCFunction(ctx, (void*)js_write_register, "writeRegister", 2);
     JS_SetPropertyStr(ctx, obj, "writeRegister", write_reg_fn);
+
+    // Add addInstructionHook function
+    JSValue add_hook_fn = JS_NewCFunction(ctx, (void*)js_add_instruction_hook, "addInstructionHook", 2);
+    JS_SetPropertyStr(ctx, obj, "addInstructionHook", add_hook_fn);
+
+    // Add removeInstructionHook function
+    JSValue remove_hook_fn = JS_NewCFunction(ctx, (void*)js_remove_instruction_hook, "removeInstructionHook", 1);
+    JS_SetPropertyStr(ctx, obj, "removeInstructionHook", remove_hook_fn);
 
     return obj;
 }
@@ -752,6 +928,16 @@ SymFitPlugin* symfit_plugin_load(const char *plugin_path) {
     plugin->ctx = JS_NewContext(plugin->rt);
     if (!plugin->ctx) {
         fprintf(stderr, "Failed to create JS context\n");
+        JS_FreeRuntime(plugin->rt);
+        free(plugin);
+        return NULL;
+    }
+
+    // Initialize instruction hooks table
+    plugin->instruction_hooks = calloc(1, sizeof(InstructionHookTable));
+    if (!plugin->instruction_hooks) {
+        fprintf(stderr, "Failed to allocate instruction hooks table\n");
+        JS_FreeContext(plugin->ctx);
         JS_FreeRuntime(plugin->rt);
         free(plugin);
         return NULL;
@@ -967,20 +1153,27 @@ SymFitPlugin* symfit_plugin_load(const char *plugin_path) {
     plugin->on_memory_read_fn = JS_GetPropertyStr(plugin->ctx, plugin->plugin_obj, "onMemoryRead");
     plugin->on_syscall_fn = JS_GetPropertyStr(plugin->ctx, plugin->plugin_obj, "onSyscall");
     plugin->on_syscall_return_fn = JS_GetPropertyStr(plugin->ctx, plugin->plugin_obj, "onSyscallReturn");
+    plugin->on_start_execution_fn = JS_GetPropertyStr(plugin->ctx, plugin->plugin_obj, "onStartExecution");
 
-    // Call onInit if present
+    // Set g_plugin before calling onInit so that addInstructionHook can work
+    g_plugin = plugin;
+
+    // Call onInit if present (with context object so plugins can register hooks)
     JSValue on_init = JS_GetPropertyStr(plugin->ctx, plugin->plugin_obj, "onInit");
     if (JS_IsFunction(plugin->ctx, on_init)) {
         printf("[SymFit] Calling plugin.onInit()\n");
-        JSValue init_result = JS_Call(plugin->ctx, on_init, plugin->plugin_obj, 0, NULL);
+
+        // Create a context object for onInit
+        JSValue ctx_obj = create_context_object(plugin->ctx, plugin);
+        JSValue init_result = JS_Call(plugin->ctx, on_init, plugin->plugin_obj, 1, &ctx_obj);
         if (JS_IsException(init_result)) {
             js_std_dump_error(plugin->ctx);
         }
         JS_FreeValue(plugin->ctx, init_result);
+        JS_FreeValue(plugin->ctx, ctx_obj);
     }
     JS_FreeValue(plugin->ctx, on_init);
 
-    g_plugin = plugin;
     printf("[SymFit] Plugin loaded successfully\n");
 
     return plugin;
@@ -1005,6 +1198,30 @@ void symfit_plugin_unload(SymFitPlugin *plugin) {
     JS_FreeValue(plugin->ctx, plugin->on_memory_read_fn);
     JS_FreeValue(plugin->ctx, plugin->on_syscall_fn);
     JS_FreeValue(plugin->ctx, plugin->on_syscall_return_fn);
+    JS_FreeValue(plugin->ctx, plugin->on_start_execution_fn);
+
+    // Free instruction hooks
+    if (plugin->instruction_hooks) {
+        // Free address-specific hooks
+        for (int i = 0; i < HOOK_TABLE_SIZE; i++) {
+            InstructionHookEntry *entry = plugin->instruction_hooks->buckets[i];
+            while (entry) {
+                InstructionHookEntry *next = entry->next;
+                JS_FreeValue(plugin->ctx, entry->callback);
+                free(entry);
+                entry = next;
+            }
+        }
+        // Free global hooks
+        InstructionHookEntry *entry = plugin->instruction_hooks->global_hook;
+        while (entry) {
+            InstructionHookEntry *next = entry->next;
+            JS_FreeValue(plugin->ctx, entry->callback);
+            free(entry);
+            entry = next;
+        }
+        free(plugin->instruction_hooks);
+    }
 
     JS_FreeValue(plugin->ctx, plugin->plugin_obj);
     JS_FreeContext(plugin->ctx);
@@ -1065,7 +1282,7 @@ void symfit_plugin_on_syscall_return(SymFitPlugin *plugin,
         return;
     }
 
-    plugin->cpu_env = cpu_env; 
+    plugin->cpu_env = cpu_env;
 
     plugin->callback_count++;
 
@@ -1101,6 +1318,94 @@ void symfit_plugin_on_syscall_return(SymFitPlugin *plugin,
     JS_FreeValue(plugin->ctx, js_args[1]);
     JS_FreeValue(plugin->ctx, js_args[2]);
     JS_FreeValue(plugin->ctx, js_args[3]);
+}
+
+void symfit_plugin_on_instruction(SymFitPlugin *plugin,
+                                    void *cpu_env,
+                                    uint64_t pc) {
+    if (!plugin) {
+        return;
+    }
+
+    plugin->cpu_env = cpu_env;
+    plugin->current_pc = pc;
+
+    if (plugin->instruction_hooks) {
+        // Call ALL global hooks first
+        InstructionHookEntry *global_entry = plugin->instruction_hooks->global_hook;
+        while (global_entry) {
+            plugin->callback_count++;
+
+            // Duplicate the callback before calling it, in case the callback removes the hook
+            JSValue callback = JS_DupValue(plugin->ctx, global_entry->callback);
+            JSValue ctx_obj = create_context_object(plugin->ctx, plugin);
+            JSValue result = JS_Call(plugin->ctx, callback,
+                                   JS_UNDEFINED, 1, &ctx_obj);
+            if (JS_IsException(result)) {
+                fprintf(stderr, "[SymFit] Error in global instruction hook at 0x%lx:\n", pc);
+                js_std_dump_error(plugin->ctx);
+            }
+            JS_FreeValue(plugin->ctx, result);
+            JS_FreeValue(plugin->ctx, ctx_obj);
+            JS_FreeValue(plugin->ctx, callback);
+
+            global_entry = global_entry->next;
+        }
+
+        // Call ALL address-specific hooks for this PC
+        uint32_t bucket = hash_pc(pc);
+        InstructionHookEntry *entry = plugin->instruction_hooks->buckets[bucket];
+
+        while (entry) {
+            if (entry->pc == pc) {
+                // Found a selective hook for this PC
+                plugin->callback_count++;
+
+                // Duplicate the callback before calling it, in case the callback removes the hook
+                JSValue callback = JS_DupValue(plugin->ctx, entry->callback);
+                JSValue ctx_obj = create_context_object(plugin->ctx, plugin);
+                JSValue result = JS_Call(plugin->ctx, callback,
+                                       JS_UNDEFINED, 1, &ctx_obj);
+                if (JS_IsException(result)) {
+                    fprintf(stderr, "[SymFit] Error in selective instruction hook at 0x%lx:\n", pc);
+                    js_std_dump_error(plugin->ctx);
+                }
+                JS_FreeValue(plugin->ctx, result);
+                JS_FreeValue(plugin->ctx, ctx_obj);
+                JS_FreeValue(plugin->ctx, callback);
+            }
+            entry = entry->next;
+        }
+    }
+}
+
+void symfit_plugin_on_start_execution(SymFitPlugin *plugin,
+                                       void *cpu_env) {
+    if (!plugin || plugin->execution_started) {
+        return;
+    }
+
+    plugin->execution_started = 1;
+    plugin->cpu_env = cpu_env;
+
+    if (!JS_IsFunction(plugin->ctx, plugin->on_start_execution_fn)) {
+        return;
+    }
+
+    printf("[SymFit] Calling plugin.onStartExecution()\n");
+    plugin->callback_count++;
+
+    JSValue ctx_obj = create_context_object(plugin->ctx, plugin);
+    JSValue result = JS_Call(plugin->ctx, plugin->on_start_execution_fn,
+                             plugin->plugin_obj, 1, &ctx_obj);
+
+    if (JS_IsException(result)) {
+        fprintf(stderr, "[SymFit] Error in onStartExecution:\n");
+        js_std_dump_error(plugin->ctx);
+    }
+
+    JS_FreeValue(plugin->ctx, result);
+    JS_FreeValue(plugin->ctx, ctx_obj);
 }
 
 
