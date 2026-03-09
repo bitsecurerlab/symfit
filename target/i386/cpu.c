@@ -62,7 +62,6 @@
 #include "disas/capstone.h"
 
 #define SymExpr void*
-#include "RuntimeCommon.h"
 
 /* Helpers for building CPUID[2] descriptors: */
 
@@ -5594,10 +5593,8 @@ static void x86_cpu_initfn(Object *obj)
     FeatureWord w;
 
     memset(cpu->env_exprs, 0, sizeof(cpu->env_exprs));
-    _sym_register_expression_region(cpu->env_exprs, sizeof(cpu->env_exprs));
     /* map shadow memory for registers and cc_* */
     memset(env->shadow_regs, 0, sizeof(env->shadow_regs)+24);
-    _sym_register_expression_region((void*)env->shadow_regs, sizeof(env->shadow_regs)+24);
 
     env->nr_dies = 1;
     cpu_set_cpustate_pointers(cpu);

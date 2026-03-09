@@ -75,7 +75,7 @@ docker run --rm -i \
   -e "TAINT_OPTIONS=taint_file=/workdir/stdin_input" \
   -w /workdir \
   ghcr.io/bitsecurerlab/symfit:latest \
-  /bin/sh -c "cat /workdir/stdin_input | /workspace/build/symsan/bin/fgtest /workspace/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64 /binary"
+  /bin/sh -c "cat /workdir/stdin_input | /workspace/build/symsan/bin/fgtest /workspace/build/symfit-symsan/x86_64-linux-user/symfit-x86_64 /binary"
 
 echo
 if [ -d "$WORK_DIR/output" ] && [ "$(ls -A $WORK_DIR/output 2>/dev/null)" ]; then

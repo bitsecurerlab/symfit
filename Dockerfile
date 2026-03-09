@@ -27,7 +27,7 @@ RUN apt-get update && \
       libopus-dev libmp3lame-dev libmpg123-dev libasound2-dev \
       # boost & friends
       libboost-all-dev texinfo \
-      # Rust (symcc/symsan ecosystems sometimes need it)
+      # Rust (symsan toolchain may need it)
       cargo \
     && rm -rf /var/lib/apt/lists/*
 
@@ -61,4 +61,3 @@ RUN chmod +x ./build.sh && ./build.sh all -j"$(nproc)"
 
 # Default shell
 CMD ["/bin/bash"]
-

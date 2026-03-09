@@ -6516,7 +6516,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     case 0xc2: /* ret im */
         if (qemu_loglevel_mask(CPU_LOG_SYM_BLK_CNT)) {
             TCGv_i64 tmp_const = tcg_const_i64(1);
-            gen_helper_sym_block_count(tmp_const);
+            gen_helper_symsan_block_count(tmp_const);
             tcg_temp_free_i64(tmp_const);
         }
         val = x86_ldsw_code(env, s);
@@ -6533,7 +6533,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     case 0xc3: /* ret */
         if (qemu_loglevel_mask(CPU_LOG_SYM_BLK_CNT)) {
             TCGv_i64 tmp_const = tcg_const_i64(1);
-            gen_helper_sym_block_count(tmp_const);
+            gen_helper_symsan_block_count(tmp_const);
             tcg_temp_free_i64(tmp_const);
         }
         ot = gen_pop_T0(s);

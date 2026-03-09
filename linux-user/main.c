@@ -46,7 +46,6 @@
 #include "crypto/init.h"
 
 #define SymExpr void*
-#include "RuntimeCommon.h"
 #include "dfsan_interface.h"
 
 char *exec_path;

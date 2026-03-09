@@ -277,7 +277,7 @@ Here's how an LLM agent might use this server:
 
 The MCP server wraps SymFit's core functionality:
 
-1. **Symbolic Execution**: Uses SymFit's modified QEMU (`symqemu-x86_64`) and the `fgtest` driver to run binaries with symbolic inputs
+1. **Symbolic Execution**: Uses SymFit's modified QEMU (`symfit-x86_64`) and the `fgtest` driver to run binaries with symbolic inputs
 
 2. **Path Exploration**: For each input, SymFit analyzes branch conditions and generates new inputs that explore different execution paths
 

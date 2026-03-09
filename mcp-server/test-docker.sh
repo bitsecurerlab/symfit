@@ -55,7 +55,7 @@ docker run --rm \
   -w /workdir \
   ghcr.io/bitsecurerlab/symfit:latest \
   /workspace/build/symsan/bin/fgtest \
-  /workspace/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64 \
+  /workspace/build/symfit-symsan/x86_64-linux-user/symfit-x86_64 \
   /binary
 
 echo

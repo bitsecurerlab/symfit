@@ -31,7 +31,6 @@
 #include "qapi/visitor.h"
 
 #define SymExpr void*
-#include "RuntimeCommon.h"
 
 static inline void set_feature(CPUARMState *env, int feature)
 {
@@ -103,7 +102,6 @@ static const ARMCPRegInfo cortex_a72_a57_a53_cp_reginfo[] = {
 static void init_env_exprs(ARMCPU *cpu)
 {
     memset(cpu->env_exprs, 0, sizeof(cpu->env_exprs));
-    _sym_register_expression_region(cpu->env_exprs, sizeof(cpu->env_exprs));
 }
 
 static void aarch64_a57_initfn(Object *obj)

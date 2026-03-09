@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
 TEST_BINARY="${TEST_BINARY:-$SCRIPT_DIR/test}"
-SYMFIT="${SYMFIT:-$BUILD_DIR/symfit-symsan/x86_64-linux-user/symqemu-x86_64}"
+SYMFIT="${SYMFIT:-$BUILD_DIR/symfit-symsan/x86_64-linux-user/symfit-x86_64}"
 FGTEST="${FGTEST:-$BUILD_DIR/symsan/bin/fgtest}"
 
 # Working directories
@@ -44,10 +44,10 @@ else
 fi
 
 if [ ! -f "$SYMFIT" ]; then
-    echo "ERROR: symqemu-x86_64 not found at: $SYMFIT"
+    echo "ERROR: symfit-x86_64 not found at: $SYMFIT"
     exit 1
 else
-    echo "✓ symqemu found: $SYMFIT"
+    echo "✓ symfit found: $SYMFIT"
 fi
 echo ""
 

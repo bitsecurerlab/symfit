@@ -123,7 +123,7 @@ docker run ... \
   -e "SYMCC_INPUT_FILE=/workdir/testfile" \
   -e "TAINT_OPTIONS=taint_file=/workdir/testfile" \
   symfit:latest \
-  fgtest symqemu /binary
+  fgtest symfit /binary
 ```
 
 ### With Stdin Mode
@@ -132,7 +132,7 @@ docker run ... -i \
   -e "SYMCC_INPUT_FILE=/workdir/testfile" \
   -e "TAINT_OPTIONS=taint_file=/workdir/testfile" \
   symfit:latest \
-  /bin/sh -c "cat /workdir/testfile | fgtest symqemu /binary"
+  /bin/sh -c "cat /workdir/testfile | fgtest symfit /binary"
 ```
 
 The `-i` flag enables interactive mode for stdin piping.
@@ -255,7 +255,7 @@ chmod +x /path/to/binary
 | Input Source | File at specified path | Piped to stdin |
 | `input_filename` | Used | Ignored |
 | Docker `-i` flag | No | Yes |
-| Command | `fgtest symqemu /binary` | `cat file \| fgtest symqemu /binary` |
+| Command | `fgtest symfit /binary` | `cat file \| fgtest symfit /binary` |
 | Use Case | File-reading programs | Stdin-reading programs |
 | Default | ✓ Yes | No |
 

@@ -1,6 +1,6 @@
 ## What is SymFit?
 
-SymFit is a symbolic execution framework for analyzing binaries, supporting multiple backends such as SymCC and SymSan. This document provides instructions for building and running SymFit using Docker.
+SymFit is a symbolic execution framework for analyzing binaries built around the SymSan backend. This document provides instructions for building and running SymFit using Docker.
 
 ## Status
 
@@ -94,6 +94,7 @@ To manually run SymFit on a program:
 
 ```bash
 # Set environment variables
+# `fgtest` still uses the historical `SYMCC_*` variable names for I/O paths.
 export SYMCC_INPUT_FILE=/path/to/input
 export SYMCC_OUTPUT_DIR=/path/to/output
 export SYMCC_AFL_COVERAGE_MAP=/path/to/covmap
@@ -101,7 +102,7 @@ export TAINT_OPTIONS="taint_file=/path/to/input"
 
 # Run SymFit
 /path/to/build/symsan/bin/fgtest \
-  /path/to/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64 \
+  /path/to/build/symfit-symsan/x86_64-linux-user/symfit-x86_64 \
   /path/to/your/program
 ```
 
@@ -122,7 +123,7 @@ docker run --rm \
   -v /path/to/workdir:/workdir \
   ghcr.io/bitsecurerlab/symfit:latest \
   /workspace/build/symsan/bin/fgtest \
-  /workspace/build/symfit-symsan/x86_64-linux-user/symqemu-x86_64 \
+  /workspace/build/symfit-symsan/x86_64-linux-user/symfit-x86_64 \
   /binary
 ```
 

@@ -31,7 +31,7 @@ if [ -z "$SYMFIT_BUILD_DIR" ]; then
     SYMFIT_BUILD_DIR="../build"
 fi
 
-if [ ! -f "$SYMFIT_BUILD_DIR/symfit-symsan/x86_64-linux-user/symqemu-x86_64" ]; then
+if [ ! -f "$SYMFIT_BUILD_DIR/symfit-symsan/x86_64-linux-user/symfit-x86_64" ]; then
     echo "WARNING: SymFit QEMU binary not found at $SYMFIT_BUILD_DIR"
     echo "  You may need to run ./build.sh from the project root"
 else

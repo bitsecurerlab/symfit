@@ -34,7 +34,7 @@
 
 ### Technical Details
 - Docker runs with `-i` flag in stdin mode for interactive stdin handling
-- Uses shell wrapper: `cat input_file | fgtest symqemu binary`
+- Uses shell wrapper: `cat input_file | fgtest symfit binary`
 - Input file path still required for SymFit taint tracking (`TAINT_OPTIONS=taint_file=...`)
 - `input_filename` parameter ignored when `use_stdin` is true
 

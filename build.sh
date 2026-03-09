@@ -6,16 +6,13 @@ set -euo pipefail
 # -----------------------------
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Submodule sources (added via: external/symcc, external/symsan)
-SYMCC_SRC="${SYMCC_SRC:-"$ROOT/external/symcc"}"
+# Submodule sources
 SYMSAN_SRC="${SYMSAN_SRC:-"$ROOT/external/symsan"}"
 SYMFIT_SRC="${SYMFIT_SRC:-"$ROOT"}"   # symfit = this repo
 
 # Build roots
 BUILD_DIR="${BUILD_DIR:-"$ROOT/build"}"
-SYMCC_BUILD="${SYMCC_BUILD:-"$BUILD_DIR/symcc"}"
 SYMSAN_BUILD="${SYMSAN_BUILD:-"$BUILD_DIR/symsan"}"
-#SYMFIT_SYMCC_BUILD="${SYMFIT_SYMCC_BUILD:-"$BUILD_DIR/symfit-symcc"}"
 SYMFIT_SYMSAN_BUILD="${SYMFIT_SYMSAN_BUILD:-"$BUILD_DIR/symfit-symsan"}"
 
 # Toolchain / perf
@@ -25,7 +22,6 @@ JOBS="${JOBS:-$CORES_DEFAULT}"
 
 # Build type & switches
 DEBUG=0
-CMAKE_BUILD_TYPE="RelWithDebInfo"     # for symcc; symsan uses Release (like your original)
 SYMSAN_DEBUG="OFF"
 
 # -----------------------------
@@ -43,19 +39,6 @@ need_dir() {
 # -----------------------------
 # Target builders
 # -----------------------------
-build_symcc() {
-  need_dir "$SYMCC_SRC"
-  mkcd "$SYMCC_BUILD"
-  log "Configuring SymCC in $SYMCC_BUILD (src=$SYMCC_SRC)"
-  cmake -G Ninja \
-    -DQSYM_BACKEND=ON \
-    -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
-    -DZ3_TRUST_SYSTEM_VERSION=ON \
-    "${SYMCC_SRC}"
-  log "Building SymCC"
-  ninja -j"${JOBS}" all
-}
-
 build_symsan() {
   need_dir "$SYMSAN_SRC"
   mkcd "$SYMSAN_BUILD"
@@ -71,7 +54,7 @@ build_symsan() {
 }
 
 configure_symfit_common() {
-  local backend="$1"           # symcc | symsan
+  local backend="$1"
   local bdir="$2"              # build dir
 
   LLVM_CONFIG_BIN="${LLVM_CONFIG_BIN:-llvm-config-12}"
@@ -104,16 +87,12 @@ configure_symfit_common() {
     --target-list=x86_64-linux-user \
     --enable-capstone=git         \
     --disable-werror              \
-    --symcc-source="${SYMCC_SRC}" \
-    --symcc-build="${SYMCC_BUILD}" \
-    --symsan-source="${SYMSAN_SRC}" \
     --symsan-build="${SYMSAN_BUILD}"
 
   log "Building symfit (${backend}) in ${bdir}"
   make -j"${JOBS}"
 }
 
-#build_symfit_symcc()   { configure_symfit_common "symcc"  "$SYMFIT_SYMCC_BUILD"; }
 build_symfit_symsan()  { configure_symfit_common "symsan" "$SYMFIT_SYMSAN_BUILD"; }
 
 # -----------------------------
@@ -124,7 +103,6 @@ cat <<'EOF'
 Usage: ./build.sh [targets] [options]
 
 Targets (default: all)
-  symcc            Build SymCC
   symsan           Build Symsan
   symfit-symsan    Build symfit (Symsan backend)
   all              Build everything above in order
@@ -136,13 +114,13 @@ Options
   --print-paths    Print effective paths and exit
 
 Environment overrides
-  SYMCC_SRC, SYMSAN_SRC, SYMFIT_SRC
-  BUILD_DIR, SYMCC_BUILD, SYMSAN_BUILD, SYMFIT_SYMSAN_BUILD
+  SYMSAN_SRC, SYMFIT_SRC
+  BUILD_DIR, SYMSAN_BUILD, SYMFIT_SYMSAN_BUILD
   CLANG_VER, JOBS
 
 Examples:
   ./build.sh all
-  JOBS=32 ./build.sh symcc symsan
+  JOBS=32 ./build.sh symsan symfit-symsan
   ./build.sh --debug all
 EOF
 }
@@ -152,7 +130,7 @@ PRINT_PATHS=0
 
 while (( "$#" )); do
   case "$1" in
-    symcc|symsan|symfit-symsan|all)
+    symsan|symfit-symsan|all)
       TARGETS+=("$1"); shift;;
     --debug)
       DEBUG=1; SYMSAN_DEBUG="ON"; shift;;
@@ -176,11 +154,9 @@ fi
 if [[ $PRINT_PATHS -eq 1 ]]; then
   cat <<EOF
 ROOT                 = ${ROOT}
-SYMCC_SRC            = ${SYMCC_SRC}
 SYMSAN_SRC           = ${SYMSAN_SRC}
 SYMFIT_SRC           = ${SYMFIT_SRC}
 BUILD_DIR            = ${BUILD_DIR}
-SYMCC_BUILD          = ${SYMCC_BUILD}
 SYMSAN_BUILD         = ${SYMSAN_BUILD}
 SYMFIT_SYMSAN_BUILD  = ${SYMFIT_SYMSAN_BUILD}
 CLANG_VER            = ${CLANG_VER}
@@ -191,18 +167,16 @@ EOF
 fi
 
 # Ensure build dirs exist
-mkdir -p "${SYMCC_BUILD}" "${SYMSAN_BUILD}" "${SYMFIT_SYMSAN_BUILD}"
+mkdir -p "${SYMSAN_BUILD}" "${SYMFIT_SYMSAN_BUILD}"
 
 # -----------------------------
 # Execution
 # -----------------------------
 for t in "${TARGETS[@]}"; do
   case "$t" in
-    symcc)           build_symcc;;
     symsan)          build_symsan;;
     symfit-symsan)   build_symfit_symsan;;
     all)
-      build_symcc
       build_symsan
       build_symfit_symsan
       ;;
@@ -210,4 +184,3 @@ for t in "${TARGETS[@]}"; do
 done
 
 log "Done."
-

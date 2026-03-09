@@ -923,8 +923,20 @@ void HELPER(symsan_check_state_no_sse)(CPUArchState *env) {
     }
 }
 
+void HELPER(symsan_block_count)(uint64_t is_print) {
+    if (second_ccache_flag) {
+        ++symbolic_count;
+    } else {
+        ++concrete_count;
+    }
+    if (is_print) {
+        fprintf(stderr, "symbolic count %ld concrete count %ld total %ld\n",
+                symbolic_count, concrete_count,
+                symbolic_count + concrete_count);
+    }
+}
+
 // void HELPER(symsan_notify_call)(uint64_t func_addr)
 // {
 //     addContextRecording(func_addr);
 // }
-
