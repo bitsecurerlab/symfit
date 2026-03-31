@@ -5076,9 +5076,16 @@ esac
 ##########################################
 # SymSan
 if test -e "${symsan_source}/runtime/dfsan_interface.h"; then
+    # Source-tree layout
     QEMU_CFLAGS="$QEMU_CFLAGS -I${symsan_source}/runtime -I${symsan_source}/include"
+elif test -e "${symsan_source}/include/symsan/dfsan_interface.h"; then
+    # Alternate source-tree layout
+    QEMU_CFLAGS="$QEMU_CFLAGS -I${symsan_source}/include/symsan -I${symsan_source}/include"
+elif test -e "${symsan_build}/include/symsan/dfsan_interface.h"; then
+    # Installed prebuilt layout
+    QEMU_CFLAGS="$QEMU_CFLAGS -I${symsan_build}/include/symsan -I${symsan_build}/include"
 else
-    feature_not_found "SymSan (source)" "Point --symsan-source to the SymSan source code"
+    feature_not_found "SymSan (headers)" "Provide headers in <source>/runtime or <symsan-build>/include/symsan"
 fi
 
 if test -e "${symsan_build}/lib/symsan/libdfsan_rt-x86_64.a"; then

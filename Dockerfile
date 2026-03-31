@@ -57,7 +57,8 @@ ENV CCACHE_DIR=/home/dev/.ccache \
 # Copy source code from host (excludes .git, build artifacts, etc. via .dockerignore)
 COPY . /workspace
 
-RUN chmod +x ./build.sh && ./build.sh all -j"$(nproc)"
+# Build SymFit using prebuilt Symsan release artifacts (no local external/symsan needed)
+RUN chmod +x ./build.sh && AUTO_DOWNLOAD_SYMSAN=1 ./build.sh all -j"$(nproc)"
 
 # Default shell
 CMD ["/bin/bash"]

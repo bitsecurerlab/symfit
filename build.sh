@@ -14,6 +14,11 @@ SYMFIT_SRC="${SYMFIT_SRC:-"$ROOT"}"   # symfit = this repo
 BUILD_DIR="${BUILD_DIR:-"$ROOT/build"}"
 SYMSAN_BUILD="${SYMSAN_BUILD:-"$BUILD_DIR/symsan"}"
 SYMFIT_SYMSAN_BUILD="${SYMFIT_SYMSAN_BUILD:-"$BUILD_DIR/symfit-symsan"}"
+SYMSAN_TARBALL="${SYMSAN_TARBALL:-}"
+SYMSAN_RELEASE_REPO="${SYMSAN_RELEASE_REPO:-bitsecurerlab/symsan}"
+SYMSAN_RELEASE_TAG="${SYMSAN_RELEASE_TAG:-latest}"
+SYMSAN_RELEASE_ASSET_PATTERN="${SYMSAN_RELEASE_ASSET_PATTERN:-\\.tar\\.gz$}"
+USE_PREBUILT_SYMSAN="${USE_PREBUILT_SYMSAN:-0}"
 
 # Toolchain / perf
 CLANG_VER="${CLANG_VER:-12}"          # override if different
@@ -34,6 +39,141 @@ mkcd() { mkdir -p "$1" && cd "$1"; }
 need_dir() {
   local d="$1"
   [[ -d "$d" ]] || die "Expected directory not found: $d"
+}
+
+need_file() {
+  local f="$1"
+  [[ -f "$f" ]] || die "Expected file not found: $f"
+}
+
+is_url() {
+  [[ "$1" =~ ^https?:// ]]
+}
+
+resolve_github_release_tarball_url() {
+  local repo="$1"
+  local tag="$2"
+  local pattern="$3"
+  local api_url=""
+  local api_json=""
+  local download_url=""
+
+  if [[ "$tag" == "latest" ]]; then
+    api_url="https://api.github.com/repos/${repo}/releases/latest"
+  else
+    api_url="https://api.github.com/repos/${repo}/releases/tags/${tag}"
+  fi
+
+  printf "\033[1;34m[build]\033[0m Querying GitHub release metadata: %s (%s)\n" "$repo" "$tag" >&2
+  if command -v curl >/dev/null 2>&1; then
+    api_json="$(curl -LfsS "$api_url")"
+  elif command -v wget >/dev/null 2>&1; then
+    api_json="$(wget -qO- "$api_url")"
+  else
+    die "Neither curl nor wget found; cannot query GitHub releases"
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    download_url="$(python3 -c 'import json, re, sys
+d = json.load(sys.stdin)
+p = re.compile(sys.argv[1])
+for a in d.get("assets", []):
+    n = a.get("name", "")
+    u = a.get("browser_download_url", "")
+    if p.search(n) and u:
+        print(u)
+        sys.exit(0)
+sys.exit(1)
+' "$pattern" <<<"$api_json" || true)"
+  else
+    download_url="$(printf "%s\n" "$api_json" | grep -oE 'https://[^"]+\.tar\.gz' | head -n1 || true)"
+  fi
+
+  [[ -n "$download_url" ]] || die "No release asset matched pattern '${pattern}' in ${repo} (${tag})"
+  printf "%s\n" "$download_url"
+}
+
+find_symsan_prefix() {
+  local root="$1"
+  if [[ -x "$root/bin/fgtest" ]]; then
+    printf '%s\n' "$root"
+    return 0
+  fi
+
+  local candidate
+  candidate="$(find "$root" -type f -name fgtest -path "*/bin/fgtest" -print -quit || true)"
+  if [[ -n "$candidate" ]]; then
+    dirname "$(dirname "$candidate")"
+    return 0
+  fi
+  return 1
+}
+
+install_symsan_from_tarball() {
+  local src="$1"
+  local tarball_path="$src"
+  local tmp=""
+  local extract_dir=""
+  local symsan_prefix=""
+
+  if is_url "$src"; then
+    need_dir "$BUILD_DIR"
+    tarball_path="$BUILD_DIR/$(basename "${src%%\?*}")"
+    if [[ -z "$(basename "$tarball_path")" || "$(basename "$tarball_path")" == "/" ]]; then
+      tarball_path="$BUILD_DIR/symsan-release.tar.gz"
+    fi
+    log "Downloading Symsan tarball: $src"
+    if command -v curl >/dev/null 2>&1; then
+      curl -LfsS "$src" -o "$tarball_path"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -qO "$tarball_path" "$src"
+    else
+      die "Neither curl nor wget found; cannot download $src"
+    fi
+  fi
+
+  need_file "$tarball_path"
+  tmp="$(mktemp -d)"
+
+  log "Extracting Symsan tarball into temporary directory"
+  tar -xf "$tarball_path" -C "$tmp"
+  extract_dir="$tmp"
+
+  if symsan_prefix="$(find_symsan_prefix "$extract_dir")"; then
+    rm -rf "$SYMSAN_BUILD"
+    mkdir -p "$SYMSAN_BUILD"
+    cp -a "$symsan_prefix"/. "$SYMSAN_BUILD"/
+  else
+    die "Could not find bin/fgtest in extracted tarball: $tarball_path"
+  fi
+
+  [[ -x "$SYMSAN_BUILD/bin/fgtest" ]] || die "Invalid Symsan install, missing executable: $SYMSAN_BUILD/bin/fgtest"
+  rm -rf "$tmp"
+  log "Installed Symsan artifacts to $SYMSAN_BUILD"
+}
+
+ensure_symsan_ready() {
+  if [[ "${AUTO_DOWNLOAD_SYMSAN:-0}" == "1" && -z "$SYMSAN_TARBALL" ]]; then
+    SYMSAN_TARBALL="$(resolve_github_release_tarball_url "$SYMSAN_RELEASE_REPO" "$SYMSAN_RELEASE_TAG" "$SYMSAN_RELEASE_ASSET_PATTERN")"
+  fi
+
+  if [[ -n "$SYMSAN_TARBALL" ]]; then
+    install_symsan_from_tarball "$SYMSAN_TARBALL"
+    return 0
+  fi
+
+  if [[ "$USE_PREBUILT_SYMSAN" == "1" ]]; then
+    [[ -x "$SYMSAN_BUILD/bin/fgtest" ]] || die "USE_PREBUILT_SYMSAN=1 but missing $SYMSAN_BUILD/bin/fgtest"
+    log "Using prebuilt Symsan at $SYMSAN_BUILD"
+    return 0
+  fi
+
+  if [[ -x "$SYMSAN_BUILD/bin/fgtest" ]]; then
+    log "Found existing Symsan artifacts at $SYMSAN_BUILD (skipping source build)"
+    return 0
+  fi
+
+  build_symsan
 }
 
 # -----------------------------
@@ -116,12 +256,23 @@ Options
 Environment overrides
   SYMSAN_SRC, SYMFIT_SRC
   BUILD_DIR, SYMSAN_BUILD, SYMFIT_SYMSAN_BUILD
+  SYMSAN_TARBALL         Path or URL to a prebuilt Symsan tarball
+  AUTO_DOWNLOAD_SYMSAN=1 Resolve and download a release tarball automatically
+  SYMSAN_RELEASE_REPO    GitHub repo for releases (default: bitsecurerlab/symsan)
+  SYMSAN_RELEASE_TAG     Release tag or 'latest' (default: latest)
+  SYMSAN_RELEASE_ASSET_PATTERN
+                         Regex for release asset name (default: \.tar\.gz$)
+  USE_PREBUILT_SYMSAN=1  Skip source build and use existing SYMSAN_BUILD
   CLANG_VER, JOBS
 
 Examples:
   ./build.sh all
   JOBS=32 ./build.sh symsan symfit-symsan
   ./build.sh --debug all
+  SYMSAN_TARBALL=/path/to/symsan.tar.gz ./build.sh all
+  SYMSAN_TARBALL=https://github.com/.../symsan.tar.gz ./build.sh all
+  AUTO_DOWNLOAD_SYMSAN=1 ./build.sh all
+  AUTO_DOWNLOAD_SYMSAN=1 SYMSAN_RELEASE_ASSET_PATTERN='linux.*x86_64.*\.tar\.gz$' ./build.sh all
 EOF
 }
 
@@ -159,6 +310,12 @@ SYMFIT_SRC           = ${SYMFIT_SRC}
 BUILD_DIR            = ${BUILD_DIR}
 SYMSAN_BUILD         = ${SYMSAN_BUILD}
 SYMFIT_SYMSAN_BUILD  = ${SYMFIT_SYMSAN_BUILD}
+SYMSAN_TARBALL       = ${SYMSAN_TARBALL:-<unset>}
+AUTO_DOWNLOAD_SYMSAN = ${AUTO_DOWNLOAD_SYMSAN:-0}
+SYMSAN_RELEASE_REPO  = ${SYMSAN_RELEASE_REPO}
+SYMSAN_RELEASE_TAG   = ${SYMSAN_RELEASE_TAG}
+SYMSAN_RELEASE_ASSET_PATTERN = ${SYMSAN_RELEASE_ASSET_PATTERN}
+USE_PREBUILT_SYMSAN  = ${USE_PREBUILT_SYMSAN}
 CLANG_VER            = ${CLANG_VER}
 JOBS                 = ${JOBS}
 DEBUG                = ${DEBUG} (symsan_debug=${SYMSAN_DEBUG})
@@ -174,10 +331,10 @@ mkdir -p "${SYMSAN_BUILD}" "${SYMFIT_SYMSAN_BUILD}"
 # -----------------------------
 for t in "${TARGETS[@]}"; do
   case "$t" in
-    symsan)          build_symsan;;
+    symsan)          ensure_symsan_ready;;
     symfit-symsan)   build_symfit_symsan;;
     all)
-      build_symsan
+      ensure_symsan_ready
       build_symfit_symsan
       ;;
   esac

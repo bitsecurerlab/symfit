@@ -672,7 +672,23 @@ static uint64_t symsan_setcond_internal(CPUArchState *env, uint64_t arg1, uint64
         g_assert_not_reached();
     }
     // fprintf(stderr, "sym branch 0x%lx\n", env->eip);
-    return __taint_trace_cmp(arg1_label, arg2_label, result_bits, result, predicate, arg1, arg2, env->eip);
+    if (!result) {
+        switch (predicate) {
+        case bveq:  predicate = bvneq; break;
+        case bvneq: predicate = bveq;  break;
+        case bvugt: predicate = bvule; break;
+        case bvuge: predicate = bvult; break;
+        case bvult: predicate = bvuge; break;
+        case bvule: predicate = bvugt; break;
+        case bvsgt: predicate = bvsle; break;
+        case bvsge: predicate = bvslt; break;
+        case bvslt: predicate = bvsge; break;
+        case bvsle: predicate = bvsgt; break;
+        default:
+            g_assert_not_reached();
+        }
+    }
+    return __taint_trace_cmp(arg1_label, arg2_label, result_bits, predicate, arg1, arg2, env->eip);
 }
 
 uint64_t HELPER(symsan_setcond_i32)(CPUArchState *env, uint32_t arg1, uint64_t arg1_label,
@@ -698,8 +714,8 @@ static uint64_t symsan_load_guest_internal(CPUArchState *env, target_ulong addr,
     if (addr_label) {
         // fprintf(stderr, "sym load addr 0x%lx eip 0x%lx\n", addr, env->eip);
         dfsan_label addr_label_new = \
-            dfsan_union(addr_label, CONST_LABEL, Equal, 64, addr, 0);
-        __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, true, Equal, 0, 0, env->eip);
+            dfsan_union(addr_label, CONST_LABEL, bveq, 64, addr, 0);
+        __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, bveq, 0, 0, env->eip);
     }
 
     uint64_t res_label = dfsan_read_label((uint8_t*)host_addr, load_length);
@@ -755,8 +771,8 @@ static void symsan_store_guest_internal(CPUArchState *env, uint64_t value_label,
     if (addr_label) {
         // fprintf(stderr, "sym store addr 0x%lx eip 0x%lx\n", addr, env->eip);
         dfsan_label addr_label_new = \
-            dfsan_union(addr_label, CONST_LABEL, Equal, 64, addr, 0);
-        __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, true, Equal, 0, 0, env->eip);
+            dfsan_union(addr_label, CONST_LABEL, bveq, 64, addr, 0);
+        __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, bveq, 0, 0, env->eip);
     }
 
     //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
