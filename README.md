@@ -66,10 +66,11 @@ USE_PREBUILT_SYMSAN=1 SYMSAN_BUILD=/path/to/symsan ./build.sh symfit-symsan
 
 ### Option D: Build Symsan from source (legacy)
 
-To build both Symsan and SymFit from source, use:
+If you want to build Symsan from source, first clone Symsan separately, then pass `SYMSAN_SRC`:
 
 ```bash
-./build.sh all
+git clone https://github.com/bitsecurerlab/symsan.git /path/to/symsan
+SYMSAN_SRC=/path/to/symsan ./build.sh all
 ```
 
 This will compile SymFit with the SymSan backend. The build artifacts will be located in:
