@@ -48,6 +48,7 @@
 #include <utime.h>
 #include <sys/sysinfo.h>
 #include <sys/signalfd.h>
+#include <sys/syscall.h>
 //#include <sys/user.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
@@ -7697,7 +7698,11 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
             time_t host_time;
             if (get_user_sal(host_time, arg1))
                 return -TARGET_EFAULT;
-            return get_errno(stime(&host_time));
+#ifdef SYS_stime
+            return get_errno(syscall(SYS_stime, &host_time));
+#else
+            return -TARGET_ENOSYS;
+#endif
         }
 #endif
 #ifdef TARGET_NR_alarm /* not on alpha */
