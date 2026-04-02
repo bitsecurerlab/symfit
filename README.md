@@ -85,6 +85,16 @@ This will compile SymFit with the SymSan backend. The build artifacts will be lo
 - `build/symfit-symsan/` - SymFit QEMU binaries
 - `build/symsan/` - SymSan tools and libraries
 
+By default, `build.sh` builds both user targets:
+- `x86_64-linux-user/symfit-x86_64` (for x86_64 binaries)
+- `i386-linux-user/symfit-i386` (for i386 binaries)
+
+You can override this with:
+
+```bash
+SYMFIT_TARGET_LIST=x86_64-linux-user ./build.sh symfit-symsan
+```
+
 ## Using SymFit
 
 ### Basic Usage

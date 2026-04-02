@@ -19,6 +19,7 @@ SYMSAN_RELEASE_REPO="${SYMSAN_RELEASE_REPO:-bitsecurerlab/symsan}"
 SYMSAN_RELEASE_TAG="${SYMSAN_RELEASE_TAG:-latest}"
 SYMSAN_RELEASE_ASSET_PATTERN="${SYMSAN_RELEASE_ASSET_PATTERN:-\\.tar\\.gz$}"
 USE_PREBUILT_SYMSAN="${USE_PREBUILT_SYMSAN:-0}"
+SYMFIT_TARGET_LIST="${SYMFIT_TARGET_LIST:-x86_64-linux-user,i386-linux-user}"
 
 # Toolchain / perf
 CLANG_VER="${CLANG_VER:-12}"          # override if different
@@ -224,7 +225,7 @@ configure_symfit_common() {
     --disable-vte                 \
     --disable-opengl              \
     --disable-virglrenderer       \
-    --target-list=x86_64-linux-user \
+    --target-list="${SYMFIT_TARGET_LIST}" \
     --enable-capstone=git         \
     --disable-werror              \
     --symsan-build="${SYMSAN_BUILD}"
@@ -264,6 +265,7 @@ Environment overrides
                          Regex for release asset name (default: \.tar\.gz$)
   USE_PREBUILT_SYMSAN=1  Skip source build and use existing SYMSAN_BUILD
   CLANG_VER, JOBS
+  SYMFIT_TARGET_LIST     QEMU target list (default: x86_64-linux-user,i386-linux-user)
 
 Examples:
   ./build.sh all
@@ -316,6 +318,7 @@ SYMSAN_RELEASE_REPO  = ${SYMSAN_RELEASE_REPO}
 SYMSAN_RELEASE_TAG   = ${SYMSAN_RELEASE_TAG}
 SYMSAN_RELEASE_ASSET_PATTERN = ${SYMSAN_RELEASE_ASSET_PATTERN}
 USE_PREBUILT_SYMSAN  = ${USE_PREBUILT_SYMSAN}
+SYMFIT_TARGET_LIST   = ${SYMFIT_TARGET_LIST}
 CLANG_VER            = ${CLANG_VER}
 JOBS                 = ${JOBS}
 DEBUG                = ${DEBUG} (symsan_debug=${SYMSAN_DEBUG})
