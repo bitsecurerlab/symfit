@@ -255,6 +255,52 @@ static QDict *ia_handle_resume(int64_t id)
     return ia_make_ok_response(id, result);
 }
 
+static QDict *ia_handle_pause(int64_t id)
+{
+    QDict *result = qdict_new();
+    const char *status = NULL;
+    CPUState *cpu = NULL;
+    bool request_exit = false;
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_state.attached || !ia_state.current_cpu) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(result);
+        return ia_make_error_response(id, "not_attached", "backend is not attached");
+    }
+
+    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+        ia_state.block_budget = 0;
+        ia_state.instruction_budget = 0;
+        ia_state.stop_address_enabled = false;
+        ia_state.stop_address_set_enabled = false;
+        ia_state.stop_address_count = 0;
+        ia_state.stop_address_matched = false;
+        ia_state.start_paused = true;
+        ia_state.run_requested = false;
+        ia_state.pause_pending = true;
+        cpu = ia_state.current_cpu;
+        request_exit = cpu != NULL;
+    }
+    qemu_mutex_unlock(&ia_state.lock);
+
+    if (request_exit) {
+        cpu_exit(cpu);
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    while (ia_state.pause_pending &&
+           ia_state.exec_state != IA_EXEC_EXITED &&
+           !ia_state.shutting_down) {
+        qemu_cond_wait(&ia_state.cond, &ia_state.lock);
+    }
+    status = ia_status_string_locked();
+    qemu_mutex_unlock(&ia_state.lock);
+
+    qdict_put_str(result, "status", status);
+    return ia_make_ok_response(id, result);
+}
+
 static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
 {
     const char *addr_str;
@@ -962,6 +1008,9 @@ static QDict *ia_dispatch_request(QDict *request)
     }
     if (strcmp(method, "resume") == 0) {
         return ia_handle_resume(id);
+    }
+    if (strcmp(method, "pause") == 0) {
+        return ia_handle_pause(id);
     }
     if (strcmp(method, "resume_until_basic_block") == 0) {
         return ia_handle_resume_until_basic_block(id, params);

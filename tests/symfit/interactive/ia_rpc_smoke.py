@@ -36,10 +36,13 @@ def rpc_call(stream, req_id: int, method: str, params=None):
     try:
         stream.write((json.dumps(request) + "\n").encode())
         stream.flush()
-    except BrokenPipeError as exc:
-        raise RuntimeError(f"Broken pipe while sending method '{method}'") from exc
+    except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+        raise RuntimeError(f"RPC transport failed while sending method '{method}': {exc}") from exc
 
-    line = stream.readline()
+    try:
+        line = stream.readline()
+    except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+        raise RuntimeError(f"RPC transport failed while reading method '{method}': {exc}") from exc
     if not line:
         raise RuntimeError(f"No response for method '{method}'")
     resp = json.loads(line.decode())
@@ -215,6 +218,15 @@ def main():
         summary["resume"] = rpc_call(stream, req_id, "resume")
         req_id += 1
 
+        summary["pause"] = rpc_call(stream, req_id, "pause")
+        req_id += 1
+
+        summary["query_status_after_pause"] = rpc_call(stream, req_id, "query_status")
+        req_id += 1
+
+        summary["resume_after_pause"] = rpc_call(stream, req_id, "resume")
+        req_id += 1
+
         deadline = time.time() + args.exit_timeout
         status = None
         while time.time() < deadline:
@@ -223,9 +235,18 @@ def main():
                 req_id += 1
             except RuntimeError:
                 # Backend may exit and close RPC socket immediately after resume.
-                if proc.poll() == 0:
+                rc = proc.poll()
+                if rc == 0:
                     status = {"status": "exited"}
                     break
+                if rc is None:
+                    time.sleep(0.05)
+                    rc = proc.poll()
+                    if rc == 0:
+                        status = {"status": "exited"}
+                        break
+                if rc is not None:
+                    raise RuntimeError(f"backend exited unexpectedly with status {rc}")
                 raise
             if status.get("status") == "exited":
                 break
