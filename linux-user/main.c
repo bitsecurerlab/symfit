@@ -44,6 +44,7 @@
 #include "target_elf.h"
 #include "cpu_loop-common.h"
 #include "crypto/init.h"
+#include "ia-rpc.h"
 
 #define SymExpr void*
 #include "dfsan_interface.h"
@@ -834,6 +835,8 @@ int main(int argc, char **argv, char **envp)
     tcg_region_init();
 
     target_cpu_copy_regs(env, regs);
+    ia_rpc_init(cpu);
+    ia_rpc_set_exec_state(IA_EXEC_PAUSED);
 
     if (gdbstub_port) {
         if (gdbserver_start(gdbstub_port) < 0) {

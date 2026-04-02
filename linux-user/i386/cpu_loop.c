@@ -21,6 +21,7 @@
 #include "qemu-common.h"
 #include "qemu.h"
 #include "cpu_loop-common.h"
+#include "../ia-rpc.h"
 #ifdef CONFIG_2nd_CCACHE
 int noSymbolicData = 1;
 #endif
@@ -92,9 +93,12 @@ void cpu_loop(CPUX86State *env)
     target_siginfo_t info;
 
     for(;;) {
+        ia_wait_if_paused();
+        ia_rpc_set_exec_state(IA_EXEC_RUNNING);
         cpu_exec_start(cs);
         trapnr = cpu_exec(cs);
         cpu_exec_end(cs);
+        ia_rpc_set_exec_state(IA_EXEC_PAUSED);
         process_queued_cpu_work(cs);
 
         switch(trapnr) {

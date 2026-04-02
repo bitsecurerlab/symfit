@@ -24,6 +24,9 @@
 #include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
 #include "exec/address-spaces.h"
+#ifdef CONFIG_USER_ONLY
+#include "linux-user/ia-rpc.h"
+#endif
 
 void helper_outb(CPUX86State *env, uint32_t port, uint32_t data)
 {
@@ -205,6 +208,24 @@ void helper_rdtscp(CPUX86State *env)
     helper_rdtsc(env);
     env->regs[R_ECX] = (uint32_t)(env->tsc_aux);
 }
+
+#ifdef CONFIG_USER_ONLY
+void helper_ia_tb_start(CPUX86State *env, target_ulong pc)
+{
+    CPUState *cs = env_cpu(env);
+
+    ia_on_basic_block_executed(cs, pc);
+}
+
+void helper_ia_insn_start(CPUX86State *env, target_ulong pc)
+{
+    CPUState *cs = env_cpu(env);
+
+    if (ia_should_stop_before_instruction(cs, pc)) {
+        cpu_exit(cs);
+    }
+}
+#endif
 
 void helper_rdpmc(CPUX86State *env)
 {

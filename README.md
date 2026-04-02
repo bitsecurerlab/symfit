@@ -19,6 +19,14 @@ SymFit now includes an MCP (Model Context Protocol) server that enables LLM agen
 
 See [mcp-server/README.md](mcp-server/README.md) for setup instructions and [mcp-server/EXAMPLES.md](mcp-server/EXAMPLES.md) for usage examples.
 
+## Interactive + Scripting Roadmap
+
+The branch development plan for interactive analysis and scripting is documented in:
+
+- [docs/interactive_scripting_contract.md](docs/interactive_scripting_contract.md)
+
+This contract defines a versioned backend RPC surface that can support both interactive debugging-style workflows and symbolic execution commands through a unified API.
+
 ## Quick Start with Docker
 
 You can check out our ready-to-use Docker container on GitHub Container Registry:
@@ -109,6 +117,48 @@ To see detailed execution information:
 ```bash
 DEBUG=1 ./run.sh
 ```
+
+### IA/RPC Smoke Test
+
+To validate interactive IA/RPC commands end-to-end against a local build:
+
+```bash
+cd tests/symfit/interactive
+./run_ia_rpc_smoke.sh
+```
+
+By default this runs `symfit-x86_64 /bin/sleep 2` to keep the target alive long
+enough for run-control commands.
+
+This smoke test exercises:
+
+- `capabilities`
+- `query_status`
+- `get_registers`
+- `read_memory`
+- `list_memory_maps`
+- `disassemble`
+- `single_step`
+- `resume_until_basic_block`
+- `resume_until_address`
+- `resume_until_any_address`
+- `resume`
+
+Useful overrides:
+
+```bash
+# Default runner is direct. To force fgtest wrapper:
+RUNNER=fgtest ./run_ia_rpc_smoke.sh
+
+# Override paths
+SYMFIT=/path/to/symfit-x86_64 FGTEST=/path/to/fgtest ./run_ia_rpc_smoke.sh
+
+# Test a specific target program
+TARGET=/path/to/your/program ./run_ia_rpc_smoke.sh -- --arg1 --arg2
+```
+
+Note: some `fgtest` builds print `Usage: fgtest target input` and do not support
+wrapping SymFit (`fgtest <symfit> <target>`). In that case, use `RUNNER=direct`.
 
 ### Environment Variables
 

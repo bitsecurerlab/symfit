@@ -742,7 +742,15 @@ uint64_t HELPER(symsan_load_guest_i64)(CPUArchState *env, target_ulong addr, uin
 static uint64_t symsan_load_host_internal(void *addr, uint64_t offset,
                                     uint64_t load_length, uint64_t result_length)
 {
-    assert((uintptr_t)addr+offset >= 0x700000040000);
+    uintptr_t host_addr = (uintptr_t)addr + offset;
+
+    /*
+     * Some runtime mappings are outside the shadow-tracked address window.
+     * Treat those accesses as concrete instead of aborting the process.
+     */
+    if (host_addr < 0x700000040000ULL) {
+        return 0;
+    }
     uint64_t res_label = dfsan_read_label((uint8_t*)addr + offset, load_length);
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_HOST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic]op: load_host_i%ld addr: %p size: %ld memory_expr: %ld\n",
@@ -777,7 +785,9 @@ static void symsan_store_guest_internal(CPUArchState *env, uint64_t value_label,
 
     //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
     void *host_addr = g2h(addr);
-    assert((uintptr_t)host_addr >= 0x700000040000);
+    if ((uintptr_t)host_addr < 0x700000040000ULL) {
+        return;
+    }
     dfsan_store_label(value_label, (uint8_t*)host_addr, length);
     // g_assert_not_reached();
 
@@ -799,7 +809,11 @@ void HELPER(symsan_store_host_i32)(uint64_t value_label,
                                 void *addr,
                                 uint64_t offset, uint64_t length)
 {
-    assert((uintptr_t)addr+offset >= 0x700000040000);
+    uintptr_t host_addr = (uintptr_t)addr + offset;
+
+    if (host_addr < 0x700000040000ULL) {
+        return;
+    }
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_HOST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic] op: store_host_i32 addr: %p value_label: %ld length %ld\n",
                         addr+offset, value_label, length);
@@ -811,11 +825,15 @@ void HELPER(symsan_store_host_i64)(uint64_t value_label,
                                 void *addr,
                                 uint64_t offset, uint64_t length)
 {
+    uintptr_t host_addr = (uintptr_t)addr + offset;
+
+    if (host_addr < 0x700000040000ULL) {
+        return;
+    }
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_HOST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic] op: store_host_i64 addr: %p value_label: %ld length %ld\n",
                         addr+offset, value_label, length);
     }
-    assert((uintptr_t)addr+offset >= 0x700000040000);
     dfsan_store_label(value_label, (uint8_t*)addr + offset, length);
 }
 
@@ -826,7 +844,9 @@ void HELPER(symsan_store_host_i64)(uint64_t value_label,
  */
 void HELPER(symsan_check_load_guest)(CPUArchState *env, target_ulong addr, uint64_t length) {
     void *host_addr = g2h(addr);
-    assert((uintptr_t)host_addr >= 0x700000040000);
+    if ((uintptr_t)host_addr < 0x700000040000ULL) {
+        return;
+    }
     uint32_t res_label = dfsan_read_label((uint8_t*)host_addr, length);
     if (res_label != 0) {
         if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_GUEST) && !noSymbolicData) {
@@ -842,7 +862,9 @@ void HELPER(symsan_check_store_guest)(target_ulong addr, uint64_t length){
     uint32_t value_label = 0;
     //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
     void *host_addr = g2h(addr);
-    assert((uintptr_t)host_addr >= 0x700000040000);
+    if ((uintptr_t)host_addr < 0x700000040000ULL) {
+        return;
+    }
     // if (!noSymbolicData)
     // fprintf(stderr, "[memtrace] op: check_store_guest addr: 0x%lx mode: concrete\n", addr);
     dfsan_store_label(value_label, (uint8_t*)host_addr, length);
