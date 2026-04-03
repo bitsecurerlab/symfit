@@ -127,6 +127,9 @@ def main():
         )
         req_id += 1
 
+        summary["query_status_after_symbolize"] = rpc_call(stream, req_id, "query_status")
+        req_id += 1
+
         summary["read_memory_rsp_after"] = rpc_call(
             stream,
             req_id,
@@ -241,6 +244,12 @@ def main():
             return 1
         if rax_after.get("label") == "0x0":
             print("Expected rax to receive a non-zero symbolic label", file=sys.stderr)
+            return 1
+        if summary["query_status_initial"].get("execution_mode") != "concrete":
+            print("Expected initial paused state to start in concrete mode", file=sys.stderr)
+            return 1
+        if summary["query_status_after_symbolize"].get("execution_mode") != "symbolic":
+            print("Expected symbolization to switch execution mode to symbolic", file=sys.stderr)
             return 1
 
         return 0

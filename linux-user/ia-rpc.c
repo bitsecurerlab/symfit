@@ -99,6 +99,21 @@ static void ia_trace_emit_backend_ready(void)
     fflush(ia_state.trace_file);
 }
 
+static bool ia_symbolic_mode_active(void)
+{
+    return second_ccache_flag != 0;
+}
+
+static void ia_ensure_symbolic_mode_active(void)
+{
+    if (!ia_symbolic_mode_active()) {
+        second_ccache_flag = 1;
+    }
+    if (noSymbolicData != 0) {
+        noSymbolicData = 0;
+    }
+}
+
 static void ia_trace_close_locked(void)
 {
     if (ia_state.trace_file) {
@@ -460,6 +475,7 @@ static QDict *ia_handle_query_status(int64_t id)
 
     qemu_mutex_lock(&ia_state.lock);
     qdict_put_str(result, "status", ia_status_string_locked());
+    qdict_put_str(result, "execution_mode", ia_symbolic_mode_active() ? "symbolic" : "concrete");
     if (ia_state.has_exit_code) {
         qdict_put_int(result, "exit_code", ia_state.exit_code);
     }
@@ -1222,6 +1238,7 @@ static QDict *ia_handle_symbolize_memory(int64_t id, QDict *params)
         dfsan_label label = dfsan_create_label((int)i);
         dfsan_store_label(label, (uint8_t *)host_ptr + i, 1);
     }
+    ia_ensure_symbolic_mode_active();
     ia_append_memory_labels(bytes, host_ptr, (size_t)size);
     unlock_user(host_ptr, (abi_ulong)addr, 0);
 
@@ -1284,6 +1301,7 @@ static QDict *ia_handle_symbolize_register(int64_t id, QDict *params)
         return ia_make_error_response(id, "internal_error", "failed to create symbolic register label");
     }
     *shadow = reg_label;
+    ia_ensure_symbolic_mode_active();
     value_hex = g_strdup_printf("0x%" PRIx64, value);
     label_hex = g_strdup_printf("0x%x", reg_label);
     qdict_put_str(result, "register", name);
