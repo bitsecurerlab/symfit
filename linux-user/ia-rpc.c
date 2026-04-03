@@ -2,6 +2,7 @@
 
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -48,6 +49,7 @@ typedef struct IAState {
     uint64_t last_insn_pc;
     uint64_t last_matched_pc;
     FILE *trace_file;
+    char *trace_path;
     uint64_t trace_seq;
     QemuThread server_thread;
 } IAState;
@@ -94,6 +96,63 @@ static void ia_trace_emit_backend_ready(void)
         (double)g_get_real_time() / 1000000.0
     );
     fflush(ia_state.trace_file);
+}
+
+static void ia_trace_close_locked(void)
+{
+    if (ia_state.trace_file) {
+        fclose(ia_state.trace_file);
+        ia_state.trace_file = NULL;
+    }
+}
+
+static bool ia_trace_open_locked(const char *requested_path, Error **errp)
+{
+    g_autofree char *trace_path = NULL;
+    g_autofree char *trace_dir = NULL;
+    int fd = -1;
+
+    ia_trace_close_locked();
+    g_clear_pointer(&ia_state.trace_path, g_free);
+    ia_state.trace_seq = 0;
+
+    if (requested_path && requested_path[0] != '\0') {
+        trace_path = g_strdup(requested_path);
+        fd = open(trace_path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+    } else {
+        const char *socket_path = ia_state.socket_path ? ia_state.socket_path : g_get_tmp_dir();
+        trace_dir = g_path_get_dirname(socket_path);
+        trace_path = g_strdup_printf("%s/symfit-trace-XXXXXX", trace_dir);
+        fd = g_mkstemp(trace_path);
+    }
+
+    if (fd < 0) {
+        error_setg(errp, "failed to create trace file: %s", strerror(errno));
+        return false;
+    }
+
+    ia_state.trace_file = fdopen(fd, "a+");
+    if (!ia_state.trace_file) {
+        close(fd);
+        error_setg(errp, "failed to open trace file stream: %s", strerror(errno));
+        return false;
+    }
+
+    setvbuf(ia_state.trace_file, NULL, _IOLBF, 0);
+    ia_state.trace_path = g_strdup(trace_path);
+    ia_trace_emit_backend_ready();
+    return true;
+}
+
+static void ia_trace_append_status_locked(QDict *dict)
+{
+    qdict_put_bool(dict, "trace_active", ia_state.trace_file != NULL);
+    if (ia_state.trace_path) {
+        qdict_put_str(dict, "trace_file", ia_state.trace_path);
+    }
+    if (ia_state.trace_file) {
+        qdict_put_str(dict, "trace_kind", "basic_block");
+    }
 }
 
 static const char *ia_status_string_locked(void)
@@ -214,6 +273,7 @@ static QDict *ia_handle_query_status(int64_t id)
     if (ia_state.has_exit_code) {
         qdict_put_int(result, "exit_code", ia_state.exit_code);
     }
+    ia_trace_append_status_locked(result);
     qemu_mutex_unlock(&ia_state.lock);
     return ia_make_ok_response(id, result);
 }
@@ -231,7 +291,7 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_bool(caps, "list_memory_maps", true);
     qdict_put_bool(caps, "take_snapshot", false);
     qdict_put_bool(caps, "restore_snapshot", false);
-    qdict_put_bool(caps, "trace_basic_block", ia_state.trace_file != NULL);
+    qdict_put_bool(caps, "trace_basic_block", true);
     qdict_put_bool(caps, "trace_branch", false);
     qdict_put_bool(caps, "trace_memory", false);
     qdict_put_bool(caps, "trace_syscall", false);
@@ -239,6 +299,57 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_bool(caps, "run_until_any_address", true);
     qdict_put_bool(caps, "single_step", true);
     qdict_put(result, "capabilities", caps);
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_start_trace(int64_t id, QDict *params)
+{
+    bool basic_block = true;
+    QDict *result = qdict_new();
+    Error *err = NULL;
+    g_autofree char *message = NULL;
+
+    if (params) {
+        basic_block = qdict_get_try_bool(params, "basic_block", true);
+    }
+    if (!basic_block) {
+        qobject_unref(result);
+        return ia_make_error_response(id, "unsupported_feature", "only basic_block tracing is supported");
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_state.attached || !ia_state.current_cpu) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(result);
+        return ia_make_error_response(id, "not_attached", "backend is not attached");
+    }
+    if (ia_state.trace_file == NULL) {
+        if (!ia_trace_open_locked(NULL, &err)) {
+            qemu_mutex_unlock(&ia_state.lock);
+            qobject_unref(result);
+            message = g_strdup(error_get_pretty(err));
+            error_free(err);
+            return ia_make_error_response(id, "internal_error", message ? message : "failed to start trace");
+        }
+    }
+    ia_trace_append_status_locked(result);
+    qemu_mutex_unlock(&ia_state.lock);
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_stop_trace(int64_t id)
+{
+    QDict *result = qdict_new();
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_state.attached || !ia_state.current_cpu) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(result);
+        return ia_make_error_response(id, "not_attached", "backend is not attached");
+    }
+    ia_trace_close_locked();
+    ia_trace_append_status_locked(result);
+    qemu_mutex_unlock(&ia_state.lock);
     return ia_make_ok_response(id, result);
 }
 
@@ -1012,6 +1123,12 @@ static QDict *ia_dispatch_request(QDict *request)
     if (strcmp(method, "pause") == 0) {
         return ia_handle_pause(id);
     }
+    if (strcmp(method, "start_trace") == 0) {
+        return ia_handle_start_trace(id, params);
+    }
+    if (strcmp(method, "stop_trace") == 0) {
+        return ia_handle_stop_trace(id);
+    }
     if (strcmp(method, "resume_until_basic_block") == 0) {
         return ia_handle_resume_until_basic_block(id, params);
     }
@@ -1110,6 +1227,7 @@ void ia_rpc_init(CPUState *cpu)
     struct sockaddr_un addr;
     const char *socket_path = getenv("IA_RPC_SOCKET");
     const char *trace_path = getenv("IA_TRACE_FILE");
+    Error *err = NULL;
 
     if (!socket_path || !*socket_path) {
         return;
@@ -1169,17 +1287,13 @@ void ia_rpc_init(CPUState *cpu)
     ia_state.last_insn_pc = 0;
     ia_state.last_matched_pc = 0;
     ia_state.trace_seq = 0;
-    if (ia_state.trace_file) {
-        fclose(ia_state.trace_file);
-        ia_state.trace_file = NULL;
-    }
+    ia_trace_close_locked();
+    g_clear_pointer(&ia_state.trace_path, g_free);
     if (trace_path && trace_path[0] != '\0') {
-        ia_state.trace_file = fopen(trace_path, "a");
-        if (!ia_state.trace_file) {
-            error_report("ia-rpc: failed to open IA_TRACE_FILE %s: %s", trace_path, strerror(errno));
-        } else {
-            setvbuf(ia_state.trace_file, NULL, _IOLBF, 0);
-            ia_trace_emit_backend_ready();
+        err = NULL;
+        if (!ia_trace_open_locked(trace_path, &err)) {
+            error_report("ia-rpc: %s", error_get_pretty(err));
+            error_free(err);
         }
     }
     ia_state.exec_state = IA_EXEC_PAUSED;
@@ -1208,10 +1322,8 @@ void ia_rpc_shutdown(void)
         unlink(ia_state.socket_path);
         g_clear_pointer(&ia_state.socket_path, g_free);
     }
-    if (ia_state.trace_file) {
-        fclose(ia_state.trace_file);
-        ia_state.trace_file = NULL;
-    }
+    ia_trace_close_locked();
+    g_clear_pointer(&ia_state.trace_path, g_free);
     qemu_mutex_unlock(&ia_state.lock);
 }
 

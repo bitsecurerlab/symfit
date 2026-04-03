@@ -144,6 +144,7 @@ This smoke test exercises:
 
 - `capabilities`
 - `query_status`
+- `start_trace`
 - `get_registers`
 - `read_memory`
 - `list_memory_maps`
@@ -152,6 +153,7 @@ This smoke test exercises:
 - `resume_until_basic_block`
 - `resume_until_address`
 - `resume_until_any_address`
+- `stop_trace`
 - `resume`
 
 Useful overrides:
@@ -169,6 +171,69 @@ TARGET=/path/to/your/program ./run_ia_rpc_smoke.sh -- --arg1 --arg2
 
 Note: some `fgtest` builds print `Usage: fgtest target input` and do not support
 wrapping SymFit (`fgtest <symfit> <target>`). In that case, use `RUNNER=direct`.
+
+### IA/RPC Trace Smoke Test
+
+To validate the RPC-managed trace flow end to end:
+
+```bash
+cd tests/symfit/interactive
+./run_ia_rpc_trace_smoke.sh
+```
+
+This trace smoke test exercises:
+
+- `start_trace`
+- `query_status`
+- `resume`
+- `pause`
+- `stop_trace`
+
+It also verifies that the returned trace artifact path exists and contains
+events.
+
+### IA/RPC Reference Client
+
+For manual probing of a single IA/RPC method, use the reference client:
+
+```bash
+cd tests/symfit/interactive
+./run_ia_rpc_client.sh --spawn --method capabilities --pretty --target /bin/sleep -- 2
+```
+
+You can also call a specific method with parameters:
+
+```bash
+cd tests/symfit/interactive
+./run_ia_rpc_client.sh \
+  --spawn \
+  --method get_registers \
+  --params-json '{"names":["rip","rsp","rax"]}' \
+  --pretty \
+  --target /bin/sleep \
+  -- 2
+```
+
+Tracing is now exposed through RPC as well. For example, to start a basic-block
+trace, inspect status, and stop tracing in one spawned session:
+
+```bash
+cd tests/symfit/interactive
+SOCKET_PATH="$PWD/../../../mcp-workdir/ia-client.sock" \
+./run_ia_rpc_client.sh \
+  --spawn \
+  --sequence-json '[
+    {"method":"start_trace","params":{"basic_block":true}},
+    {"method":"query_status"},
+    {"method":"stop_trace"}
+  ]' \
+  --pretty \
+  --target /bin/sleep \
+  -- 2
+```
+
+This client is intended as a minimal example for `dynamiq` integration and for
+manual backend debugging. It is not a replacement for the smoke test.
 
 ### Environment Variables
 
