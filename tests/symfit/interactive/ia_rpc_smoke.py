@@ -127,6 +127,14 @@ def main():
         )
         req_id += 1
 
+        summary["get_symbolic_expression"] = rpc_call(
+            stream,
+            req_id,
+            "get_symbolic_expression",
+            {"label": summary["symbolize_register"]["label"]},
+        )
+        req_id += 1
+
         summary["query_status_after_symbolize"] = rpc_call(stream, req_id, "query_status")
         req_id += 1
 
@@ -244,6 +252,10 @@ def main():
             return 1
         if rax_after.get("label") == "0x0":
             print("Expected rax to receive a non-zero symbolic label", file=sys.stderr)
+            return 1
+        expression = summary["get_symbolic_expression"].get("expression", "")
+        if not expression:
+            print("Expected a non-empty symbolic expression", file=sys.stderr)
             return 1
         if summary["query_status_initial"].get("execution_mode") != "concrete":
             print("Expected initial paused state to start in concrete mode", file=sys.stderr)
