@@ -21,6 +21,7 @@
 #include "disas/capstone.h"
 #include "target/i386/cpu.h"
 #include "ia-rpc.h"
+#include "dfsan_interface.h"
 
 typedef struct IAState {
     QemuMutex lock;
@@ -218,6 +219,195 @@ static bool ia_copy_requested_names(QList *names, const char **out_names, size_t
     return true;
 }
 
+static QDict *ia_make_symbolic_byte_entry(size_t offset, dfsan_label label)
+{
+    QDict *entry = qdict_new();
+    g_autofree char *label_hex = g_strdup_printf("0x%x", label);
+
+    qdict_put_int(entry, "offset", (int64_t)offset);
+    qdict_put_str(entry, "label", label_hex);
+    qdict_put_bool(entry, "symbolic", label != 0);
+    return entry;
+}
+
+static void ia_append_memory_labels(QList *bytes, const uint8_t *host_ptr, size_t size)
+{
+    size_t i;
+
+    for (i = 0; i < size; i++) {
+        dfsan_label label = dfsan_read_label(host_ptr + i, 1);
+        qlist_append(bytes, ia_make_symbolic_byte_entry(i, label));
+    }
+}
+
+#if defined(TARGET_X86_64) || defined(TARGET_I386)
+static bool ia_lookup_register_binding(CPUX86State *env, const char *name,
+                                       target_ulong **out_shadow, uint64_t *out_value,
+                                       uint32_t *out_width_bits, int *out_reg_index)
+{
+    if (strcmp(name, "esp") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_ESP]; }
+        if (out_value) { *out_value = env->regs[R_ESP]; }
+        if (out_width_bits) { *out_width_bits = 32; }
+        if (out_reg_index) { *out_reg_index = R_ESP; }
+    } else if (strcmp(name, "ebp") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_EBP]; }
+        if (out_value) { *out_value = env->regs[R_EBP]; }
+        if (out_width_bits) { *out_width_bits = 32; }
+        if (out_reg_index) { *out_reg_index = R_EBP; }
+    } else if (strcmp(name, "eax") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_EAX]; }
+        if (out_value) { *out_value = env->regs[R_EAX]; }
+        if (out_width_bits) { *out_width_bits = 32; }
+        if (out_reg_index) { *out_reg_index = R_EAX; }
+    } else if (strcmp(name, "ebx") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_EBX]; }
+        if (out_value) { *out_value = env->regs[R_EBX]; }
+        if (out_width_bits) { *out_width_bits = 32; }
+        if (out_reg_index) { *out_reg_index = R_EBX; }
+    } else if (strcmp(name, "ecx") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_ECX]; }
+        if (out_value) { *out_value = env->regs[R_ECX]; }
+        if (out_width_bits) { *out_width_bits = 32; }
+        if (out_reg_index) { *out_reg_index = R_ECX; }
+    } else if (strcmp(name, "edx") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_EDX]; }
+        if (out_value) { *out_value = env->regs[R_EDX]; }
+        if (out_width_bits) { *out_width_bits = 32; }
+        if (out_reg_index) { *out_reg_index = R_EDX; }
+    } else if (strcmp(name, "esi") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_ESI]; }
+        if (out_value) { *out_value = env->regs[R_ESI]; }
+        if (out_width_bits) { *out_width_bits = 32; }
+        if (out_reg_index) { *out_reg_index = R_ESI; }
+    } else if (strcmp(name, "edi") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_EDI]; }
+        if (out_value) { *out_value = env->regs[R_EDI]; }
+        if (out_width_bits) { *out_width_bits = 32; }
+        if (out_reg_index) { *out_reg_index = R_EDI; }
+#if defined(TARGET_X86_64)
+    } else if (strcmp(name, "rsp") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_ESP]; }
+        if (out_value) { *out_value = env->regs[R_ESP]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_ESP; }
+    } else if (strcmp(name, "rbp") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_EBP]; }
+        if (out_value) { *out_value = env->regs[R_EBP]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_EBP; }
+    } else if (strcmp(name, "rax") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_EAX]; }
+        if (out_value) { *out_value = env->regs[R_EAX]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_EAX; }
+    } else if (strcmp(name, "rbx") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_EBX]; }
+        if (out_value) { *out_value = env->regs[R_EBX]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_EBX; }
+    } else if (strcmp(name, "rcx") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_ECX]; }
+        if (out_value) { *out_value = env->regs[R_ECX]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_ECX; }
+    } else if (strcmp(name, "rdx") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_EDX]; }
+        if (out_value) { *out_value = env->regs[R_EDX]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_EDX; }
+    } else if (strcmp(name, "rsi") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_ESI]; }
+        if (out_value) { *out_value = env->regs[R_ESI]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_ESI; }
+    } else if (strcmp(name, "rdi") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_EDI]; }
+        if (out_value) { *out_value = env->regs[R_EDI]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_EDI; }
+    } else if (strcmp(name, "r8") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_R8]; }
+        if (out_value) { *out_value = env->regs[R_R8]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_R8; }
+    } else if (strcmp(name, "r9") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_R9]; }
+        if (out_value) { *out_value = env->regs[R_R9]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_R9; }
+    } else if (strcmp(name, "r10") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_R10]; }
+        if (out_value) { *out_value = env->regs[R_R10]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_R10; }
+    } else if (strcmp(name, "r11") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_R11]; }
+        if (out_value) { *out_value = env->regs[R_R11]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_R11; }
+    } else if (strcmp(name, "r12") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_R12]; }
+        if (out_value) { *out_value = env->regs[R_R12]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_R12; }
+    } else if (strcmp(name, "r13") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_R13]; }
+        if (out_value) { *out_value = env->regs[R_R13]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_R13; }
+    } else if (strcmp(name, "r14") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_R14]; }
+        if (out_value) { *out_value = env->regs[R_R14]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_R14; }
+    } else if (strcmp(name, "r15") == 0) {
+        if (out_shadow) { *out_shadow = &env->shadow_regs[R_R15]; }
+        if (out_value) { *out_value = env->regs[R_R15]; }
+        if (out_width_bits) { *out_width_bits = 64; }
+        if (out_reg_index) { *out_reg_index = R_R15; }
+#endif
+    } else {
+        return false;
+    }
+
+    return true;
+}
+
+static bool ia_lookup_register_shadow(CPUX86State *env, const char *name,
+                                      uint64_t *out_value, dfsan_label *out_label,
+                                      uint32_t *out_width_bits)
+{
+    target_ulong *shadow = NULL;
+    int reg_index = -1;
+
+    if (strcmp(name, "pc") == 0 || strcmp(name, "eip") == 0) {
+        *out_value = env->eip;
+        *out_label = 0;
+        if (out_width_bits) {
+            *out_width_bits = 32;
+        }
+        return true;
+#if defined(TARGET_X86_64)
+    } else if (strcmp(name, "rip") == 0) {
+        *out_value = env->eip;
+        *out_label = 0;
+        if (out_width_bits) {
+            *out_width_bits = 64;
+        }
+        return true;
+#endif
+    } else if (!ia_lookup_register_binding(env, name, &shadow, out_value, out_width_bits, &reg_index)) {
+        return false;
+    }
+
+    *out_label = *shadow;
+
+    return true;
+}
+
+#endif
+
 #if defined(TARGET_X86_64) || defined(TARGET_I386)
 static bool ia_lookup_register(CPUX86State *env, const char *name, uint64_t *out)
 {
@@ -287,6 +477,9 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_bool(caps, "pause_resume", true);
     qdict_put_bool(caps, "read_registers", true);
     qdict_put_bool(caps, "read_memory", true);
+    qdict_put_bool(caps, "read_symbolic_memory", true);
+    qdict_put_bool(caps, "symbolize_memory", true);
+    qdict_put_bool(caps, "symbolize_register", true);
     qdict_put_bool(caps, "disassemble", true);
     qdict_put_bool(caps, "list_memory_maps", true);
     qdict_put_bool(caps, "take_snapshot", false);
@@ -771,6 +964,7 @@ static QDict *ia_handle_get_registers(int64_t id, QDict *params)
     CPUState *cpu;
     CPUX86State *env;
     QDict *regs = qdict_new();
+    QDict *symbolic_regs = qdict_new();
     QDict *result = qdict_new();
     size_t i;
 
@@ -780,6 +974,7 @@ static QDict *ia_handle_get_registers(int64_t id, QDict *params)
     if (names && !qlist_empty(names)) {
         if (!ia_copy_requested_names(names, requested, &count)) {
             qobject_unref(regs);
+            qobject_unref(symbolic_regs);
             qobject_unref(result);
             return ia_make_error_response(id, "invalid_params", "names must be an array of register strings");
         }
@@ -790,12 +985,14 @@ static QDict *ia_handle_get_registers(int64_t id, QDict *params)
     if (!ia_state.attached || !ia_state.current_cpu) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(regs);
+        qobject_unref(symbolic_regs);
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
     if (ia_state.exec_state == IA_EXEC_RUNNING) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(regs);
+        qobject_unref(symbolic_regs);
         qobject_unref(result);
         return ia_make_error_response(id, "invalid_state", "registers are only available while paused");
     }
@@ -805,14 +1002,28 @@ static QDict *ia_handle_get_registers(int64_t id, QDict *params)
     env = (CPUX86State *)cpu->env_ptr;
     for (i = 0; i < count; i++) {
         uint64_t value;
+        dfsan_label label;
+        g_autofree char *label_hex = NULL;
         g_autofree char *hex = NULL;
         if (!ia_lookup_register(env, name_list[i], &value)) {
             continue;
         }
         hex = g_strdup_printf("0x%" PRIx64, value);
         qdict_put_str(regs, name_list[i], hex);
+
+        if (!ia_lookup_register_shadow(env, name_list[i], &value, &label, NULL)) {
+            continue;
+        }
+        {
+            QDict *sym_reg = qdict_new();
+            label_hex = g_strdup_printf("0x%x", label);
+            qdict_put_bool(sym_reg, "symbolic", label != 0);
+            qdict_put_str(sym_reg, "label", label_hex);
+            qdict_put(symbolic_regs, name_list[i], sym_reg);
+        }
     }
     qdict_put(result, "registers", regs);
+    qdict_put(result, "symbolic_registers", symbolic_regs);
     return ia_make_ok_response(id, result);
 #endif
 }
@@ -873,11 +1084,214 @@ static QDict *ia_handle_read_memory(int64_t id, QDict *params)
     for (int64_t i = 0; i < size; i++) {
         sprintf(bytes_hex + (i * 2), "%02x", buf[i]);
     }
+    {
+        void *label_ptr = lock_user(VERIFY_READ, (abi_ulong)addr, size, 0);
+        QList *symbolic_bytes = qlist_new();
+        if (!label_ptr && size > 0) {
+            qobject_unref(symbolic_bytes);
+            qobject_unref(result);
+            return ia_make_error_response(id, "invalid_address", "guest symbolic memory read failed");
+        }
+        if (size > 0) {
+            ia_append_memory_labels(symbolic_bytes, label_ptr, (size_t)size);
+            unlock_user(label_ptr, (abi_ulong)addr, 0);
+        }
+        qdict_put(result, "symbolic_bytes", symbolic_bytes);
+    }
     norm_addr = g_strdup_printf("0x%" PRIx64, addr);
     qdict_put_str(result, "address", norm_addr);
     qdict_put_int(result, "size", size);
     qdict_put_str(result, "bytes", bytes_hex);
     return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_read_symbolic_memory(int64_t id, QDict *params)
+{
+    const char *addr_str;
+    uint64_t addr;
+    int64_t size;
+    void *host_ptr;
+    QList *bytes = qlist_new();
+    g_autofree char *norm_addr = NULL;
+    QDict *result = qdict_new();
+
+    if (!params) {
+        qobject_unref(bytes);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+    addr_str = qdict_get_try_str(params, "address");
+    if (!addr_str || qemu_strtou64(addr_str, NULL, 0, &addr) != 0) {
+        qobject_unref(bytes);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "address must be a hex string");
+    }
+    size = qdict_get_try_int(params, "size", -1);
+    if (size < 0 || size > 256) {
+        qobject_unref(bytes);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "size must be between 0 and 256");
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_state.attached || !ia_state.current_cpu) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(bytes);
+        qobject_unref(result);
+        return ia_make_error_response(id, "not_attached", "backend is not attached");
+    }
+    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(bytes);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_state", "symbolic memory reads are only available while paused");
+    }
+    qemu_mutex_unlock(&ia_state.lock);
+
+    host_ptr = lock_user(VERIFY_READ, (abi_ulong)addr, size, 0);
+    if (!host_ptr && size > 0) {
+        qobject_unref(bytes);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_address", "guest symbolic memory read failed");
+    }
+
+    if (size > 0) {
+        ia_append_memory_labels(bytes, host_ptr, (size_t)size);
+        unlock_user(host_ptr, (abi_ulong)addr, 0);
+    }
+
+    norm_addr = g_strdup_printf("0x%" PRIx64, addr);
+    qdict_put_str(result, "address", norm_addr);
+    qdict_put_int(result, "size", size);
+    qdict_put(result, "bytes", bytes);
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_symbolize_memory(int64_t id, QDict *params)
+{
+    const char *addr_str;
+    uint64_t addr;
+    int64_t size;
+    void *host_ptr;
+    QList *bytes = qlist_new();
+    g_autofree char *norm_addr = NULL;
+    QDict *result = qdict_new();
+    int64_t i;
+
+    if (!params) {
+        qobject_unref(bytes);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+    addr_str = qdict_get_try_str(params, "address");
+    if (!addr_str || qemu_strtou64(addr_str, NULL, 0, &addr) != 0) {
+        qobject_unref(bytes);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "address must be a hex string");
+    }
+    size = qdict_get_try_int(params, "size", -1);
+    if (size <= 0 || size > 256) {
+        qobject_unref(bytes);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "size must be between 1 and 256");
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_state.attached || !ia_state.current_cpu) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(bytes);
+        qobject_unref(result);
+        return ia_make_error_response(id, "not_attached", "backend is not attached");
+    }
+    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(bytes);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_state", "symbolization is only available while paused");
+    }
+    qemu_mutex_unlock(&ia_state.lock);
+
+    host_ptr = lock_user(VERIFY_WRITE, (abi_ulong)addr, size, 0);
+    if (!host_ptr) {
+        qobject_unref(bytes);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_address", "guest memory symbolization failed");
+    }
+
+    for (i = 0; i < size; i++) {
+        dfsan_label label = dfsan_create_label((int)i);
+        dfsan_store_label(label, (uint8_t *)host_ptr + i, 1);
+    }
+    ia_append_memory_labels(bytes, host_ptr, (size_t)size);
+    unlock_user(host_ptr, (abi_ulong)addr, 0);
+
+    norm_addr = g_strdup_printf("0x%" PRIx64, addr);
+    qdict_put_str(result, "address", norm_addr);
+    qdict_put_int(result, "size", size);
+    qdict_put(result, "bytes", bytes);
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_symbolize_register(int64_t id, QDict *params)
+{
+#if !defined(TARGET_X86_64) && !defined(TARGET_I386)
+    return ia_make_error_response(id, "unsupported_arch", "symbolize_register is only implemented for x86 targets");
+#else
+    const char *name;
+    CPUState *cpu;
+    CPUX86State *env;
+    target_ulong *shadow = NULL;
+    uint64_t value = 0;
+    uint32_t width_bits = 0;
+    dfsan_label reg_label;
+    QDict *result = qdict_new();
+    g_autofree char *value_hex = NULL;
+    g_autofree char *label_hex = NULL;
+
+    if (!params) {
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+    name = qdict_get_try_str(params, "register");
+    if (!name) {
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "register must be provided");
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_state.attached || !ia_state.current_cpu) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(result);
+        return ia_make_error_response(id, "not_attached", "backend is not attached");
+    }
+    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_state", "symbolization is only available while paused");
+    }
+    cpu = ia_state.current_cpu;
+    qemu_mutex_unlock(&ia_state.lock);
+
+    env = (CPUX86State *)cpu->env_ptr;
+    if (!ia_lookup_register_binding(env, name, &shadow, &value, &width_bits, NULL)) {
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "register is not supported for symbolization");
+    }
+
+    reg_label = dfsan_create_label(0);
+    if (reg_label == 0) {
+        qobject_unref(result);
+        return ia_make_error_response(id, "internal_error", "failed to create symbolic register label");
+    }
+    *shadow = reg_label;
+    value_hex = g_strdup_printf("0x%" PRIx64, value);
+    label_hex = g_strdup_printf("0x%x", reg_label);
+    qdict_put_str(result, "register", name);
+    qdict_put_str(result, "value", value_hex);
+    qdict_put_bool(result, "symbolic", true);
+    qdict_put_str(result, "label", label_hex);
+    return ia_make_ok_response(id, result);
+#endif
 }
 
 static QDict *ia_handle_list_memory_maps(int64_t id)
@@ -1146,6 +1560,15 @@ static QDict *ia_dispatch_request(QDict *request)
     }
     if (strcmp(method, "read_memory") == 0) {
         return ia_handle_read_memory(id, params);
+    }
+    if (strcmp(method, "read_symbolic_memory") == 0) {
+        return ia_handle_read_symbolic_memory(id, params);
+    }
+    if (strcmp(method, "symbolize_memory") == 0) {
+        return ia_handle_symbolize_memory(id, params);
+    }
+    if (strcmp(method, "symbolize_register") == 0) {
+        return ia_handle_symbolize_register(id, params);
     }
     if (strcmp(method, "list_memory_maps") == 0) {
         return ia_handle_list_memory_maps(id);

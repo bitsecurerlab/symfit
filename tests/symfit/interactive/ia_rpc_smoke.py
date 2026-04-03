@@ -62,6 +62,7 @@ def main():
         summary["registers"] = regs
 
         rip = regs["registers"]["rip"]
+        rsp = regs["registers"]["rsp"]
         summary["resume_until_address"] = rpc_call(
             stream,
             req_id,
@@ -90,6 +91,47 @@ def main():
             req_id,
             "read_memory",
             {"address": rip, "size": 16},
+        )
+        req_id += 1
+
+        summary["read_memory_rsp_before"] = rpc_call(
+            stream,
+            req_id,
+            "read_memory",
+            {"address": rsp, "size": 8},
+        )
+        req_id += 1
+
+        summary["symbolize_memory"] = rpc_call(
+            stream,
+            req_id,
+            "symbolize_memory",
+            {"address": rsp, "size": 8, "name": "stack_probe"},
+        )
+        req_id += 1
+
+        rax_before = summary["registers"]["symbolic_registers"]["rax"]
+        summary["symbolize_register"] = rpc_call(
+            stream,
+            req_id,
+            "symbolize_register",
+            {"register": "rax", "name": "acc_probe"},
+        )
+        req_id += 1
+
+        summary["registers_after_symbolize_register"] = rpc_call(
+            stream,
+            req_id,
+            "get_registers",
+            {"names": ["rax"]},
+        )
+        req_id += 1
+
+        summary["read_memory_rsp_after"] = rpc_call(
+            stream,
+            req_id,
+            "read_memory",
+            {"address": rsp, "size": 8},
         )
         req_id += 1
 
@@ -173,6 +215,32 @@ def main():
 
         if summary["query_status_final"].get("status") != "exited":
             print("Timed out waiting for exited status", file=sys.stderr)
+            return 1
+
+        rsp_reg = summary["registers"]["symbolic_registers"]["rsp"]
+        if rsp_reg.get("symbolic"):
+            print("Expected rsp to start concrete in symbolic view", file=sys.stderr)
+            return 1
+
+        before_bytes = summary["read_memory_rsp_before"]["symbolic_bytes"]
+        after_bytes = summary["read_memory_rsp_after"]["symbolic_bytes"]
+        if any(entry.get("symbolic") for entry in before_bytes):
+            print("Expected stack probe bytes to start concrete", file=sys.stderr)
+            return 1
+        if not all(entry.get("symbolic") for entry in after_bytes):
+            print("Expected stack probe bytes to become symbolic", file=sys.stderr)
+            return 1
+
+        rax_after = summary["registers_after_symbolize_register"]["symbolic_registers"]["rax"]
+        if rax_before.get("symbolic"):
+            print("Expected rax to start concrete in symbolic view", file=sys.stderr)
+            return 1
+
+        if not rax_after.get("symbolic"):
+            print("Expected rax to become symbolic", file=sys.stderr)
+            return 1
+        if rax_after.get("label") == "0x0":
+            print("Expected rax to receive a non-zero symbolic label", file=sys.stderr)
             return 1
 
         return 0
