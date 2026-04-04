@@ -71,8 +71,14 @@ Current v1 behavior:
 - the backend starts in `paused` state
 - clients should wait for the Unix socket to appear before issuing RPCs
 - `query_status` reports one of: `idle`, `running`, `paused`, `exited`
-- once the target exits, `query_status` may briefly report `exited`, but clients
-  must also tolerate the RPC socket closing as part of normal session shutdown
+- normal `exit`/`exit_group` and fatal synchronous crash delivery pause first when
+  IA/RPC is active, so clients can inspect registers, memory, path constraints,
+  and backtrace-relevant state before teardown
+- while such a terminal pause is active, `query_status.status` remains `paused`
+  and `pending_termination: true` describes the queued terminal condition
+- `resume` finalizes a pending terminal condition
+- `close` explicitly tears down a pending terminal condition without further guest
+  inspection
 - `exit_code` is reported when available in the `query_status` result
 
 ## Core Interactive Methods (v1)
@@ -116,6 +122,12 @@ Returns:
 
 - `status`: `idle`, `running`, `paused`, or `exited`
 - `exit_code`: optional integer when the target has exited
+- `pending_termination`: boolean indicating that exit or fatal crash delivery has
+  been converted into an inspectable pause
+- `termination_kind`: optional string: `exit`, `exit_group`, or `signal`
+- `termination_signal`: optional integer when `termination_kind == "signal"`
+- `termination_si_code`: optional integer when `termination_kind == "signal"`
+- `termination_fault_address`: optional hex string when `termination_kind == "signal"`
 - `pending_stdin_bytes`: queued stdin bytes not yet consumed by the guest
 - `pending_symbolic_stdin_bytes`: queued symbolic stdin bytes not yet consumed
 
@@ -134,6 +146,17 @@ Requests that a running target stop at the next safe pause point.
 Returns:
 
 - `status`: typically `paused` or `exited`
+
+### `close`
+
+Behavior:
+
+- valid during a terminal pause (`pending_termination: true`)
+- finalizes the queued terminal condition and tears the backend down
+
+Returns:
+
+- an empty result object on success
 
 ### `get_registers`
 
@@ -461,10 +484,13 @@ Client guidance:
 - treat `capabilities` as the feature gate for optional UI/actions
 - only issue register, memory-map, memory-read, and disassembly requests while paused
 - expect address-like values in results to be hex strings
-- expect some run-control requests to return `status: "exited"` if the target finishes
+- if `pending_termination: true`, the backend is intentionally paused at a terminal
+  condition and inspection requests remain valid
+- use `resume` to let the queued terminal condition complete, or `close` to tear
+  the session down immediately
 - treat trace file paths returned by RPC as backend-created artifacts
-- if the socket closes after a `resume`-style request, treat that as a normal terminal
-  condition and confirm process exit separately if needed
+- if the socket closes after a `resume` or `close` that finalized a terminal
+  condition, treat that as a normal terminal shutdown
 
 ## Dynamiq Adapter Checklist
 

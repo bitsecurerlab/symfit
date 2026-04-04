@@ -94,6 +94,9 @@ void cpu_loop(CPUX86State *env)
 
     for(;;) {
         ia_wait_if_paused();
+        if (ia_rpc_finalize_pending_termination(env)) {
+            continue;
+        }
         ia_rpc_set_exec_state(IA_EXEC_RUNNING);
         cpu_exec_start(cs);
         trapnr = cpu_exec(cs);
@@ -144,6 +147,10 @@ void cpu_loop(CPUX86State *env)
             info.si_errno = 0;
             info.si_code = TARGET_SI_KERNEL;
             info._sifields._sigfault._addr = 0;
+            if (ia_rpc_pause_on_signal(info.si_signo, info.si_code,
+                                       info._sifields._sigfault._addr)) {
+                break;
+            }
             queue_signal(env, info.si_signo, QEMU_SI_FAULT, &info);
             break;
         case EXCP0D_GPF:
@@ -158,6 +165,10 @@ void cpu_loop(CPUX86State *env)
                 info.si_errno = 0;
                 info.si_code = TARGET_SI_KERNEL;
                 info._sifields._sigfault._addr = 0;
+                if (ia_rpc_pause_on_signal(info.si_signo, info.si_code,
+                                           info._sifields._sigfault._addr)) {
+                    break;
+                }
                 queue_signal(env, info.si_signo, QEMU_SI_FAULT, &info);
             }
             break;
@@ -169,6 +180,10 @@ void cpu_loop(CPUX86State *env)
             else
                 info.si_code = TARGET_SEGV_ACCERR;
             info._sifields._sigfault._addr = env->cr[2];
+            if (ia_rpc_pause_on_signal(info.si_signo, info.si_code,
+                                       info._sifields._sigfault._addr)) {
+                break;
+            }
             queue_signal(env, info.si_signo, QEMU_SI_FAULT, &info);
             break;
         case EXCP00_DIVZ:
@@ -183,6 +198,10 @@ void cpu_loop(CPUX86State *env)
                 info.si_errno = 0;
                 info.si_code = TARGET_FPE_INTDIV;
                 info._sifields._sigfault._addr = env->eip;
+                if (ia_rpc_pause_on_signal(info.si_signo, info.si_code,
+                                           info._sifields._sigfault._addr)) {
+                    break;
+                }
                 queue_signal(env, info.si_signo, QEMU_SI_FAULT, &info);
             }
             break;
@@ -226,6 +245,10 @@ void cpu_loop(CPUX86State *env)
             info.si_errno = 0;
             info.si_code = TARGET_ILL_ILLOPN;
             info._sifields._sigfault._addr = env->eip;
+            if (ia_rpc_pause_on_signal(info.si_signo, info.si_code,
+                                       info._sifields._sigfault._addr)) {
+                break;
+            }
             queue_signal(env, info.si_signo, QEMU_SI_FAULT, &info);
             break;
         case EXCP_INTERRUPT:

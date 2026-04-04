@@ -7306,6 +7306,9 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
         }
 
         cpu_list_unlock();
+        if (ia_rpc_pause_on_exit((int)arg1, false)) {
+            return -TARGET_QEMU_ESIGRETURN;
+        }
         preexit_cleanup(cpu_env, arg1);
         _exit(arg1);
         return 0; /* avoid warning */
@@ -9300,6 +9303,9 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 #ifdef __NR_exit_group
         /* new thread calls */
     case TARGET_NR_exit_group:
+        if (ia_rpc_pause_on_exit((int)arg1, true)) {
+            return -TARGET_QEMU_ESIGRETURN;
+        }
         preexit_cleanup(cpu_env, arg1);
         return get_errno(exit_group(arg1));
 #endif

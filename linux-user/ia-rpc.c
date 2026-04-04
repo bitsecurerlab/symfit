@@ -59,6 +59,12 @@ typedef struct IAState {
     IAExecState exec_state;
     int exit_code;
     bool has_exit_code;
+    bool pending_termination;
+    bool close_requested;
+    IATerminationKind termination_kind;
+    int termination_signal;
+    int termination_si_code;
+    uint64_t termination_fault_addr;
     int listen_fd;
     char *socket_path;
     CPUState *current_cpu;
@@ -153,6 +159,29 @@ static void ia_trace_emit_backend_ready(void)
         (double)g_get_real_time() / 1000000.0
     );
     fflush(ia_state.trace_file);
+}
+
+static void ia_clear_run_control_locked(void)
+{
+    ia_state.block_budget = 0;
+    ia_state.instruction_budget = 0;
+    ia_state.stop_address_enabled = false;
+    ia_state.stop_address_set_enabled = false;
+    ia_state.stop_address_count = 0;
+    ia_state.stop_address_matched = false;
+    ia_state.stop_address = 0;
+    ia_state.last_matched_pc = 0;
+    ia_state.pause_pending = false;
+}
+
+static void ia_enter_terminal_pause_locked(void)
+{
+    ia_clear_run_control_locked();
+    ia_state.start_paused = true;
+    ia_state.run_requested = false;
+    ia_state.close_requested = false;
+    ia_state.exec_state = IA_EXEC_PAUSED;
+    qemu_cond_broadcast(&ia_state.cond);
 }
 
 static const char *ia_label_op_name(uint16_t op)
@@ -1025,6 +1054,7 @@ static bool ia_lookup_register(CPUX86State *env, const char *name, uint64_t *out
 static QDict *ia_handle_query_status(int64_t id)
 {
     QDict *result = qdict_new();
+    g_autofree char *fault_hex = NULL;
 
     qemu_mutex_lock(&ia_state.lock);
     qdict_put_str(result, "status", ia_status_string_locked());
@@ -1034,6 +1064,26 @@ static QDict *ia_handle_query_status(int64_t id)
                   ia_state.pending_symbolic_stdin_bytes);
     if (ia_state.has_exit_code) {
         qdict_put_int(result, "exit_code", ia_state.exit_code);
+    }
+    qdict_put_bool(result, "pending_termination", ia_state.pending_termination);
+    if (ia_state.pending_termination) {
+        switch (ia_state.termination_kind) {
+        case IA_TERM_EXIT:
+            qdict_put_str(result, "termination_kind", "exit");
+            break;
+        case IA_TERM_EXIT_GROUP:
+            qdict_put_str(result, "termination_kind", "exit_group");
+            break;
+        case IA_TERM_SIGNAL:
+            qdict_put_str(result, "termination_kind", "signal");
+            qdict_put_int(result, "termination_signal", ia_state.termination_signal);
+            qdict_put_int(result, "termination_si_code", ia_state.termination_si_code);
+            fault_hex = g_strdup_printf("0x%" PRIx64, ia_state.termination_fault_addr);
+            qdict_put_str(result, "termination_fault_address", fault_hex);
+            break;
+        default:
+            break;
+        }
     }
     ia_trace_append_status_locked(result);
     qemu_mutex_unlock(&ia_state.lock);
@@ -1054,6 +1104,7 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_bool(caps, "read_path_constraints", true);
     qdict_put_bool(caps, "read_recent_path_constraints", true);
     qdict_put_bool(caps, "queue_stdin_chunk", true);
+    qdict_put_bool(caps, "close", true);
     qdict_put_bool(caps, "symbolize_memory", true);
     qdict_put_bool(caps, "symbolize_register", true);
     qdict_put_bool(caps, "disassemble", true);
@@ -1128,7 +1179,9 @@ static QDict *ia_handle_resume(int64_t id)
 
     qemu_mutex_lock(&ia_state.lock);
     ia_state.run_requested = true;
-    ia_state.exec_state = IA_EXEC_RUNNING;
+    if (!ia_state.pending_termination) {
+        ia_state.exec_state = IA_EXEC_RUNNING;
+    }
     qemu_cond_signal(&ia_state.cond);
     qemu_mutex_unlock(&ia_state.lock);
 
@@ -1181,6 +1234,26 @@ static QDict *ia_handle_pause(int64_t id)
     return ia_make_ok_response(id, result);
 }
 
+static QDict *ia_handle_close(int64_t id)
+{
+    QDict *result = qdict_new();
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_state.pending_termination) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_state",
+                                      "close is only supported during terminal pause");
+    }
+    ia_state.close_requested = true;
+    ia_state.start_paused = false;
+    ia_state.run_requested = true;
+    qemu_cond_signal(&ia_state.cond);
+    qemu_mutex_unlock(&ia_state.lock);
+
+    return ia_make_ok_response(id, result);
+}
+
 static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
 {
     const char *addr_str;
@@ -1212,10 +1285,14 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING || ia_state.pause_pending) {
+    if (ia_state.exec_state == IA_EXEC_RUNNING || ia_state.pause_pending ||
+        ia_state.pending_termination) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(result);
-        return ia_make_error_response(id, "invalid_state", "backend is already running");
+        return ia_make_error_response(id, "invalid_state",
+                                      ia_state.pending_termination
+                                      ? "backend is in terminal pause"
+                                      : "backend is already running");
     }
 
     ia_state.stop_address_enabled = true;
@@ -1295,10 +1372,14 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING || ia_state.pause_pending) {
+    if (ia_state.exec_state == IA_EXEC_RUNNING || ia_state.pause_pending ||
+        ia_state.pending_termination) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(result);
-        return ia_make_error_response(id, "invalid_state", "backend is already running");
+        return ia_make_error_response(id, "invalid_state",
+                                      ia_state.pending_termination
+                                      ? "backend is in terminal pause"
+                                      : "backend is already running");
     }
 
     QLIST_FOREACH_ENTRY(addresses, entry) {
@@ -1393,10 +1474,14 @@ static QDict *ia_handle_resume_until_basic_block(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING || ia_state.pause_pending) {
+    if (ia_state.exec_state == IA_EXEC_RUNNING || ia_state.pause_pending ||
+        ia_state.pending_termination) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(result);
-        return ia_make_error_response(id, "invalid_state", "backend is already running");
+        return ia_make_error_response(id, "invalid_state",
+                                      ia_state.pending_termination
+                                      ? "backend is in terminal pause"
+                                      : "backend is already running");
     }
 
     ia_state.block_budget = (uint64_t)count;
@@ -1459,10 +1544,14 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING || ia_state.pause_pending) {
+    if (ia_state.exec_state == IA_EXEC_RUNNING || ia_state.pause_pending ||
+        ia_state.pending_termination) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(result);
-        return ia_make_error_response(id, "invalid_state", "backend is already running");
+        return ia_make_error_response(id, "invalid_state",
+                                      ia_state.pending_termination
+                                      ? "backend is in terminal pause"
+                                      : "backend is already running");
     }
 
     ia_state.block_budget = 0;
@@ -2115,6 +2204,9 @@ static QDict *ia_dispatch_request(QDict *request)
     if (strcmp(method, "pause") == 0) {
         return ia_handle_pause(id);
     }
+    if (strcmp(method, "close") == 0) {
+        return ia_handle_close(id);
+    }
     if (strcmp(method, "start_trace") == 0) {
         return ia_handle_start_trace(id, params);
     }
@@ -2356,6 +2448,103 @@ void ia_wait_if_paused(void)
         ia_state.exec_state = IA_EXEC_RUNNING;
     }
     qemu_mutex_unlock(&ia_state.lock);
+}
+
+bool ia_rpc_pause_on_exit(int code, bool group_exit)
+{
+    if (!ia_state.enabled) {
+        return false;
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    ia_state.pending_termination = true;
+    ia_state.termination_kind = group_exit ? IA_TERM_EXIT_GROUP : IA_TERM_EXIT;
+    ia_state.termination_signal = 0;
+    ia_state.termination_si_code = 0;
+    ia_state.termination_fault_addr = 0;
+    ia_state.exit_code = code;
+    ia_state.has_exit_code = true;
+    ia_enter_terminal_pause_locked();
+    qemu_mutex_unlock(&ia_state.lock);
+    return true;
+}
+
+bool ia_rpc_pause_on_signal(int sig, int si_code, uint64_t fault_addr)
+{
+    if (!ia_state.enabled) {
+        return false;
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    ia_state.pending_termination = true;
+    ia_state.termination_kind = IA_TERM_SIGNAL;
+    ia_state.termination_signal = sig;
+    ia_state.termination_si_code = si_code;
+    ia_state.termination_fault_addr = fault_addr;
+    ia_state.has_exit_code = false;
+    ia_enter_terminal_pause_locked();
+    qemu_mutex_unlock(&ia_state.lock);
+    return true;
+}
+
+bool ia_rpc_finalize_pending_termination(CPUArchState *env)
+{
+    IATerminationKind kind;
+    int code;
+    int sig;
+    int si_code;
+    uint64_t fault_addr;
+
+    if (!ia_state.enabled) {
+        return false;
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_state.pending_termination || ia_state.start_paused) {
+        qemu_mutex_unlock(&ia_state.lock);
+        return false;
+    }
+
+    kind = ia_state.termination_kind;
+    code = ia_state.exit_code;
+    sig = ia_state.termination_signal;
+    si_code = ia_state.termination_si_code;
+    fault_addr = ia_state.termination_fault_addr;
+    ia_state.pending_termination = false;
+    ia_state.termination_kind = IA_TERM_NONE;
+    ia_state.termination_signal = 0;
+    ia_state.termination_si_code = 0;
+    ia_state.termination_fault_addr = 0;
+    ia_state.close_requested = false;
+    ia_state.exec_state = IA_EXEC_RUNNING;
+    qemu_mutex_unlock(&ia_state.lock);
+
+    switch (kind) {
+    case IA_TERM_EXIT:
+        preexit_cleanup(env, code);
+        _exit(code);
+        break;
+    case IA_TERM_EXIT_GROUP:
+        preexit_cleanup(env, code);
+        _exit(code);
+        break;
+    case IA_TERM_SIGNAL: {
+        target_siginfo_t info;
+        memset(&info, 0, sizeof(info));
+        info.si_signo = sig;
+        info.si_errno = 0;
+        info.si_code = si_code;
+        info._sifields._sigfault._addr = (abi_ulong)fault_addr;
+        queue_signal(env, sig, QEMU_SI_FAULT, &info);
+        process_pending_signals(env);
+        return true;
+    }
+    case IA_TERM_NONE:
+    default:
+        break;
+    }
+
+    return true;
 }
 
 void ia_rpc_set_exec_state(IAExecState state)
