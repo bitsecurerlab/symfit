@@ -222,7 +222,13 @@ void helper_ia_insn_start(CPUX86State *env, target_ulong pc)
     CPUState *cs = env_cpu(env);
 
     if (ia_should_stop_before_instruction(cs, pc)) {
-        cpu_exit(cs);
+        /*
+         * Follow the same internal-unwind pattern used by SymFit's
+         * concrete->symbolic cache switch: raise a dedicated async
+         * exception with a restore PC, and let linux-user consume it
+         * without delivering a guest-visible signal.
+         */
+        raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
     }
 }
 #endif
