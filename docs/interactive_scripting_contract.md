@@ -97,6 +97,7 @@ Optional (recommended):
 - `get_symbolic_expression`
 - `get_path_constraints`
 - `get_recent_path_constraints`
+- `queue_stdin_chunk`
 - `start_trace`
 - `stop_trace`
 
@@ -115,6 +116,8 @@ Returns:
 
 - `status`: `idle`, `running`, `paused`, or `exited`
 - `exit_code`: optional integer when the target has exited
+- `pending_stdin_bytes`: queued stdin bytes not yet consumed by the guest
+- `pending_symbolic_stdin_bytes`: queued symbolic stdin bytes not yet consumed
 
 ### `resume`
 
@@ -319,6 +322,31 @@ Returns:
 - `count`: number of entries returned
 - `truncated`: whether older entries were omitted
 
+### `queue_stdin_chunk`
+
+Behavior:
+
+- records metadata for a pending stdin write
+- does not itself write bytes into the target stdin pipe
+- entries are consumed in order by successful `read(fd=0, ...)` syscalls
+- concrete and symbolic chunks may be mixed in the same stdin stream
+- only bytes consumed from symbolic chunks become symbolic in guest memory
+
+Parameters:
+
+- `size`: positive integer
+- `symbolic`: optional boolean, default `false`
+
+Returns:
+
+- `size`: echoed queued chunk size
+- `symbolic`: echoed symbolic mode
+- `stream_offset`: symbolic stdin stream offset reserved for this chunk, or `0x0`
+  for concrete chunks
+- `pending_stdin_bytes`: total queued stdin bytes not yet consumed
+- `pending_symbolic_stdin_bytes`: total queued symbolic stdin bytes not yet
+  consumed
+
 ### `start_trace`
 
 Behavior:
@@ -366,6 +394,7 @@ Current v1 capability flags:
 - `read_symbolic_expression`
 - `read_path_constraints`
 - `read_recent_path_constraints`
+- `queue_stdin_chunk`
 - `symbolize_memory`
 - `symbolize_register`
 

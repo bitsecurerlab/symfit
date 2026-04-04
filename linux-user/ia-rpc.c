@@ -83,6 +83,17 @@ typedef struct IAState {
     } path_constraints[256];
     size_t path_constraints_head;
     size_t path_constraints_count;
+    struct {
+        uint64_t stream_offset;
+        uint64_t remaining;
+        uint64_t chunk_offset;
+        bool symbolic;
+    } stdin_chunks[256];
+    size_t stdin_chunks_head;
+    size_t stdin_chunks_count;
+    uint64_t stdin_stream_next_offset;
+    uint64_t pending_stdin_bytes;
+    uint64_t pending_symbolic_stdin_bytes;
     QemuThread server_thread;
 } IAState;
 
@@ -501,6 +512,47 @@ static QDict *ia_handle_get_recent_path_constraints(int64_t id, QDict *params)
     return ia_make_ok_response(id, result);
 }
 
+static QDict *ia_handle_queue_stdin_chunk(int64_t id, QDict *params)
+{
+    int64_t size;
+    bool symbolic;
+    uint64_t stream_offset = 0;
+    g_autofree char *stream_offset_hex = NULL;
+    Error *err = NULL;
+    QDict *result = qdict_new();
+
+    if (!params) {
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+
+    size = qdict_get_try_int(params, "size", -1);
+    if (size <= 0) {
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "size must be >= 1");
+    }
+    symbolic = qdict_get_try_bool(params, "symbolic", false);
+
+    if (!ia_rpc_queue_stdin_chunk((uint64_t)size, symbolic, &stream_offset, &err)) {
+        const char *message = error_get_pretty(err);
+        QDict *resp = ia_make_error_response(id, "invalid_state", message);
+        error_free(err);
+        qobject_unref(result);
+        return resp;
+    }
+
+    stream_offset_hex = g_strdup_printf("0x%" PRIx64, stream_offset);
+    qemu_mutex_lock(&ia_state.lock);
+    qdict_put_int(result, "size", size);
+    qdict_put_bool(result, "symbolic", symbolic);
+    qdict_put_str(result, "stream_offset", stream_offset_hex);
+    qdict_put_int(result, "pending_stdin_bytes", ia_state.pending_stdin_bytes);
+    qdict_put_int(result, "pending_symbolic_stdin_bytes",
+                  ia_state.pending_symbolic_stdin_bytes);
+    qemu_mutex_unlock(&ia_state.lock);
+    return ia_make_ok_response(id, result);
+}
+
 static bool ia_symbolic_mode_active(void)
 {
     return second_ccache_flag != 0;
@@ -514,6 +566,105 @@ static void ia_ensure_symbolic_mode_active(void)
     if (noSymbolicData != 0) {
         noSymbolicData = 0;
     }
+}
+
+static void ia_symbolize_stdin_segment(uint8_t *host_ptr, size_t size,
+                                       uint64_t stream_offset)
+{
+    size_t i;
+
+    if (!host_ptr || size == 0) {
+        return;
+    }
+    for (i = 0; i < size; i++) {
+        dfsan_label label = dfsan_create_label((int)(stream_offset + i));
+        dfsan_store_label(label, host_ptr + i, 1);
+    }
+    ia_ensure_symbolic_mode_active();
+}
+
+bool ia_rpc_queue_stdin_chunk(uint64_t size, bool symbolic,
+                              uint64_t *stream_offset, Error **errp)
+{
+    size_t tail;
+    uint64_t chunk_stream_offset = 0;
+
+    if (size == 0) {
+        error_setg(errp, "size must be >= 1");
+        return false;
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (ia_state.stdin_chunks_count >= ARRAY_SIZE(ia_state.stdin_chunks)) {
+        qemu_mutex_unlock(&ia_state.lock);
+        error_setg(errp, "stdin chunk queue is full");
+        return false;
+    }
+
+    if (symbolic) {
+        chunk_stream_offset = ia_state.stdin_stream_next_offset;
+        ia_state.stdin_stream_next_offset += size;
+        ia_state.pending_symbolic_stdin_bytes += size;
+    }
+
+    tail = (ia_state.stdin_chunks_head + ia_state.stdin_chunks_count) %
+           ARRAY_SIZE(ia_state.stdin_chunks);
+    ia_state.stdin_chunks[tail].stream_offset = chunk_stream_offset;
+    ia_state.stdin_chunks[tail].remaining = size;
+    ia_state.stdin_chunks[tail].chunk_offset = 0;
+    ia_state.stdin_chunks[tail].symbolic = symbolic;
+    ia_state.stdin_chunks_count++;
+    ia_state.pending_stdin_bytes += size;
+    qemu_mutex_unlock(&ia_state.lock);
+
+    if (stream_offset) {
+        *stream_offset = chunk_stream_offset;
+    }
+    return true;
+}
+
+void ia_rpc_consume_stdin_read(int fd, void *host_buf, size_t size)
+{
+    uint8_t *cursor = host_buf;
+    size_t remaining = size;
+
+    if (fd != 0 || !host_buf || size == 0) {
+        return;
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    while (remaining > 0 && ia_state.stdin_chunks_count > 0) {
+        size_t head = ia_state.stdin_chunks_head;
+        size_t consumed = MIN((uint64_t)remaining,
+                              ia_state.stdin_chunks[head].remaining);
+        uint64_t stream_offset =
+            ia_state.stdin_chunks[head].stream_offset +
+            ia_state.stdin_chunks[head].chunk_offset;
+        bool symbolic = ia_state.stdin_chunks[head].symbolic;
+
+        ia_state.stdin_chunks[head].remaining -= consumed;
+        ia_state.stdin_chunks[head].chunk_offset += consumed;
+        ia_state.pending_stdin_bytes -= consumed;
+        if (symbolic) {
+            ia_state.pending_symbolic_stdin_bytes -= consumed;
+        }
+
+        if (ia_state.stdin_chunks[head].remaining == 0) {
+            ia_state.stdin_chunks_head =
+                (ia_state.stdin_chunks_head + 1) %
+                ARRAY_SIZE(ia_state.stdin_chunks);
+            ia_state.stdin_chunks_count--;
+        }
+
+        qemu_mutex_unlock(&ia_state.lock);
+        if (symbolic) {
+            ia_symbolize_stdin_segment(cursor, consumed, stream_offset);
+        }
+        cursor += consumed;
+        remaining -= consumed;
+        qemu_mutex_lock(&ia_state.lock);
+    }
+    qemu_mutex_unlock(&ia_state.lock);
 }
 
 static void ia_trace_close_locked(void)
@@ -878,6 +1029,9 @@ static QDict *ia_handle_query_status(int64_t id)
     qemu_mutex_lock(&ia_state.lock);
     qdict_put_str(result, "status", ia_status_string_locked());
     qdict_put_str(result, "execution_mode", ia_symbolic_mode_active() ? "symbolic" : "concrete");
+    qdict_put_int(result, "pending_stdin_bytes", ia_state.pending_stdin_bytes);
+    qdict_put_int(result, "pending_symbolic_stdin_bytes",
+                  ia_state.pending_symbolic_stdin_bytes);
     if (ia_state.has_exit_code) {
         qdict_put_int(result, "exit_code", ia_state.exit_code);
     }
@@ -899,6 +1053,7 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_bool(caps, "read_symbolic_expression", true);
     qdict_put_bool(caps, "read_path_constraints", true);
     qdict_put_bool(caps, "read_recent_path_constraints", true);
+    qdict_put_bool(caps, "queue_stdin_chunk", true);
     qdict_put_bool(caps, "symbolize_memory", true);
     qdict_put_bool(caps, "symbolize_register", true);
     qdict_put_bool(caps, "disassemble", true);
@@ -1992,6 +2147,9 @@ static QDict *ia_dispatch_request(QDict *request)
     }
     if (strcmp(method, "get_recent_path_constraints") == 0) {
         return ia_handle_get_recent_path_constraints(id, params);
+    }
+    if (strcmp(method, "queue_stdin_chunk") == 0) {
+        return ia_handle_queue_stdin_chunk(id, params);
     }
     if (strcmp(method, "read_symbolic_memory") == 0) {
         return ia_handle_read_symbolic_memory(id, params);

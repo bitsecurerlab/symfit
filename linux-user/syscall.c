@@ -112,6 +112,7 @@
 #include "qemu/guest-random.h"
 #include "qapi/error.h"
 #include "fd-trans.h"
+#include "ia-rpc.h"
 
 #ifndef CLONE_IO
 #define CLONE_IO                0x80000000      /* Clone io context */
@@ -7327,6 +7328,9 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                 noSymbolicData = 0;
                 // fprintf(stderr, "read from tainted file at %p\n", p);
                 second_ccache_flag = 1;
+            }
+            if (ret > 0) {
+                ia_rpc_consume_stdin_read(arg1, p, ret);
             }
             unlock_user(p, arg2, ret);
         }

@@ -4,6 +4,7 @@
 #include "qemu/osdep.h"
 #include "qemu/thread.h"
 #include "qemu/typedefs.h"
+#include "qapi/error.h"
 #include "dfsan_interface.h"
 
 typedef enum IAExecState {
@@ -21,5 +22,8 @@ void ia_wait_if_paused(void);
 bool ia_should_stop_before_instruction(CPUState *cpu, vaddr pc);
 void ia_on_basic_block_executed(CPUState *cpu, vaddr pc);
 void ia_rpc_record_path_constraint(uint64_t pc, dfsan_label label, bool taken);
+bool ia_rpc_queue_stdin_chunk(uint64_t size, bool symbolic,
+                              uint64_t *stream_offset, Error **errp);
+void ia_rpc_consume_stdin_read(int fd, void *host_buf, size_t size);
 
 #endif
