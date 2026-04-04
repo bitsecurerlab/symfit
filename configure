@@ -5090,8 +5090,7 @@ fi
 
 if test -e "${symsan_build}/lib/symsan/libdfsan_rt-x86_64.a"; then
     LDFLAGS="$LDFLAGS -Wl,--no-as-needed -ldl"
-    libs_cpu="-L${symsan_build}/lib/symsan -ldfsan_rt-x86_64 -lZ3Solver $libs_cpu"
-    libs_cpu="-Wl,-rpath,${symsan_build}/lib/symsan $libs_cpu"
+    libs_cpu="${symsan_build}/lib/symsan/libdfsan_rt-x86_64.a ${symsan_build}/lib/symsan/libZ3Solver.a -lz3 -lc++ -lc++abi -lunwind $libs_cpu"
 else
     feature_not_found "SymSan (runtime)" "Point --symsan-build to the SymSan build directory"
 fi

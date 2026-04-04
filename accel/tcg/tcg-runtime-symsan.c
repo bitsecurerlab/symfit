@@ -7,8 +7,25 @@
 #include "tcg.h"
 #include "qemu/cutils.h"
 #include "dfsan_interface.h"
+#include "linux-user/ia-rpc.h"
 extern CPUArchState *global_env;
 #define CONST_LABEL 0
+
+static bool ia_debug_path_constraints_enabled(void)
+{
+    static int cached = -1;
+    if (cached == -1) {
+        const char *env = getenv("IA_DEBUG_PATH_CONSTRAINTS");
+        cached = (env && env[0] && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+void __attribute__((weak)) ia_rpc_record_path_constraint(uint64_t pc,
+                                                         dfsan_label label,
+                                                         bool taken)
+{
+}
 
 static const uint64_t kShadowMask = ~0x700000000000;
 static inline void *shadow_for(uint64_t ptr) {
@@ -629,12 +646,23 @@ static uint64_t symsan_setcond_internal(CPUArchState *env, uint64_t arg1, uint64
                                   uint64_t arg2, uint64_t arg2_label,
                                   int32_t cond, uint64_t result, uint8_t result_bits)
 {
+    dfsan_label label;
+
     // if (!noSymbolicData)
     // fprintf(stderr, "setcond_i%d push constraint eip: 0x%lx %s arg1: 0x%ld arg2: 0x%ld\n",
     //          result_bits, env->eip, (arg1_label == 0 && arg2_label == 0) ? "Concrete" : "Symbolic",
     //          arg1, arg2);
 
     BINARY_HELPER_ENSURE_EXPRESSIONS;
+
+    if (ia_debug_path_constraints_enabled()) {
+        fprintf(stderr,
+                "[ia-pc] setcond pc=0x%lx bits=%u cond=%d arg1=0x%lx label1=0x%lx arg2=0x%lx label2=0x%lx result=%lu\n",
+                (unsigned long)env->eip, result_bits, cond,
+                (unsigned long)arg1, (unsigned long)arg1_label,
+                (unsigned long)arg2, (unsigned long)arg2_label,
+                (unsigned long)result);
+    }
 
     uint32_t predicate = 0;
     switch (cond) {
@@ -688,7 +716,18 @@ static uint64_t symsan_setcond_internal(CPUArchState *env, uint64_t arg1, uint64
             g_assert_not_reached();
         }
     }
-    return __taint_trace_cmp(arg1_label, arg2_label, result_bits, predicate, arg1, arg2, env->eip);
+    label = __taint_trace_cmp(arg1_label, arg2_label, result_bits, predicate,
+                              arg1, arg2, env->eip);
+    if (ia_debug_path_constraints_enabled()) {
+        fprintf(stderr,
+                "[ia-pc] traced pc=0x%lx label=0x%x taken=%lu predicate=%u\n",
+                (unsigned long)env->eip, label, (unsigned long)(result != 0),
+                predicate);
+    }
+    if (label != 0) {
+        ia_rpc_record_path_constraint(env->eip, label, result != 0);
+    }
+    return label;
 }
 
 uint64_t HELPER(symsan_setcond_i32)(CPUArchState *env, uint32_t arg1, uint64_t arg1_label,

@@ -94,6 +94,9 @@ Optional (recommended):
 - `resume_until_basic_block`
 - `resume_until_any_address`
 - `disassemble`
+- `get_symbolic_expression`
+- `get_path_constraints`
+- `get_recent_path_constraints`
 - `start_trace`
 - `stop_trace`
 
@@ -259,6 +262,63 @@ Returns:
 
 - `instructions`: array of objects with `address`, `size`, `bytes`, and `text`
 
+### `get_symbolic_expression`
+
+Behavior:
+
+- valid while paused
+
+Parameters:
+
+- `label`: symbolic label encoded as a hex string
+
+Returns:
+
+- `label`: normalized label hex string
+- `expression`: formatted symbolic expression string
+- `op`: label op name
+- `size`: label bit width or boolean width marker
+- `left_label`, `right_label`, `op1`, `op2`: backend label metadata
+
+### `get_path_constraints`
+
+Behavior:
+
+- valid while paused
+- `label` must identify a branch-condition label
+- returns the nested path-constraint closure associated with that root label
+- the returned `constraints` list excludes the root label itself
+- constraint ordering is deterministic but does not imply execution order
+
+Parameters:
+
+- `label`: branch-condition label encoded as a hex string
+
+Returns:
+
+- `root`: symbolic-label object for the requested branch-condition label
+- `constraints`: array of symbolic-label objects for nested constraints
+- `count`: number of nested constraints returned
+
+### `get_recent_path_constraints`
+
+Behavior:
+
+- returns recently observed symbolic path constraints from the current session
+- entries are returned newest first
+- a path constraint is recorded from the backend's symbolic condition handling
+- entries are suitable roots for `get_path_constraints(label)`
+
+Parameters:
+
+- `limit`: optional integer from 1 to 256, default `16`
+
+Returns:
+
+- `constraints`: array of symbolic-label objects with additional `pc` and `taken`
+- `count`: number of entries returned
+- `truncated`: whether older entries were omitted
+
 ### `start_trace`
 
 Behavior:
@@ -303,6 +363,11 @@ Current v1 capability flags:
 - `single_step`
 - `run_until_address`
 - `trace_basic_block`
+- `read_symbolic_expression`
+- `read_path_constraints`
+- `read_recent_path_constraints`
+- `symbolize_memory`
+- `symbolize_register`
 
 The backend may also expose additional capability flags for not-yet-implemented
 features. Clients should gate behavior only on flags they understand.
