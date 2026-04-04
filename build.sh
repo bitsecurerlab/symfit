@@ -198,13 +198,36 @@ configure_symfit_common() {
   local backend="$1"
   local bdir="$2"              # build dir
 
-  LLVM_CONFIG_BIN="${LLVM_CONFIG_BIN:-llvm-config-12}"
-  if command -v "$LLVM_CONFIG_BIN" >/dev/null 2>&1; then
-    LLVM_INCLUDEDIR="$($LLVM_CONFIG_BIN --includedir)"
-  else
-    # Fallback to common Ubuntu path
-    LLVM_INCLUDEDIR="/usr/lib/llvm-12/include"
+  LLVM_CONFIG_BIN="${LLVM_CONFIG_BIN:-}"
+  LLVM_INCLUDEDIR="${LLVM_INCLUDEDIR:-}"
+
+  if [[ -z "${LLVM_INCLUDEDIR}" ]]; then
+    if [[ -n "${LLVM_CONFIG_BIN}" ]] && command -v "$LLVM_CONFIG_BIN" >/dev/null 2>&1; then
+      LLVM_INCLUDEDIR="$($LLVM_CONFIG_BIN --includedir)"
+    else
+      local llvm_cfg
+      for llvm_cfg in llvm-config llvm-config-18 llvm-config-17 llvm-config-16 llvm-config-15 llvm-config-14 llvm-config-13 llvm-config-12; do
+        if command -v "$llvm_cfg" >/dev/null 2>&1; then
+          LLVM_CONFIG_BIN="$llvm_cfg"
+          LLVM_INCLUDEDIR="$($llvm_cfg --includedir)"
+          break
+        fi
+      done
+    fi
   fi
+
+  if [[ -z "${LLVM_INCLUDEDIR}" || ! -f "${LLVM_INCLUDEDIR}/llvm/IR/Instruction.def" ]]; then
+    local llvm_root
+    for llvm_root in /usr/lib/llvm-18 /usr/lib/llvm-17 /usr/lib/llvm-16 /usr/lib/llvm-15 /usr/lib/llvm-14 /usr/lib/llvm-13 /usr/lib/llvm-12; do
+      if [[ -f "${llvm_root}/include/llvm/IR/Instruction.def" ]]; then
+        LLVM_INCLUDEDIR="${llvm_root}/include"
+        break
+      fi
+    done
+  fi
+
+  [[ -n "${LLVM_INCLUDEDIR}" && -f "${LLVM_INCLUDEDIR}/llvm/IR/Instruction.def" ]] \
+    || die "Could not find LLVM include dir containing llvm/IR/Instruction.def. Set LLVM_INCLUDEDIR or LLVM_CONFIG_BIN."
 
   need_dir "$SYMFIT_SRC"
   mkcd "$bdir"
