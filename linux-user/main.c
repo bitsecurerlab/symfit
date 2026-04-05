@@ -23,6 +23,7 @@
 #include "sysemu/tcg.h"
 #include "qemu-version.h"
 #include <sys/syscall.h>
+#include <sys/personality.h>
 #include <sys/resource.h>
 
 #include "qapi/error.h"
@@ -101,6 +102,16 @@ const char *qemu_uname_release;
    we allocate a bigger stack. Need a better solution, for example
    by remapping the process stack directly at the right place */
 unsigned long guest_stack_size = 8 * 1024 * 1024UL;
+
+static void disable_host_aslr(void)
+{
+    int pers = personality(0xffffffffU);
+
+    if (pers == -1) {
+        return;
+    }
+    personality(pers | ADDR_NO_RANDOMIZE);
+}
 
 void gemu_log(const char *fmt, ...)
 {
@@ -639,6 +650,12 @@ int main(int argc, char **argv, char **envp)
     qemu_add_opts(&qemu_trace_opts);
 
     optind = parse_args(argc, argv);
+
+    /*
+     * Disable host-side ASLR before reserving guest address space and loading
+     * the guest image so linux-user guest mappings are more stable across runs.
+     */
+    disable_host_aslr();
 
     if (!trace_init_backends()) {
         exit(1);
