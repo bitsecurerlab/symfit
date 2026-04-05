@@ -58,6 +58,3 @@
 [submodule "roms/opensbi"]
 	path = roms/opensbi
 	url = 	https://git.qemu.org/git/opensbi.git
-[submodule "external/symsan"]
-	path = external/symsan
-	url = https://github.com/bitsecurerlab/symsan.git

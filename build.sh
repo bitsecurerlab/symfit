@@ -6,9 +6,8 @@ set -euo pipefail
 # -----------------------------
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# External sources
-SYMSAN_ROOT="${SYMSAN_ROOT:-/mnt/d/git/symsan}"
-SYMSAN_SRC="${SYMSAN_SRC:-"$SYMSAN_ROOT"}"
+# Source repos
+SYMSAN_SRC="${SYMSAN_SRC:-}"
 SYMFIT_SRC="${SYMFIT_SRC:-"$ROOT"}"   # symfit = this repo
 
 # Build roots
@@ -178,6 +177,7 @@ ensure_symsan_ready() {
 # Target builders
 # -----------------------------
 build_symsan() {
+  [[ -n "$SYMSAN_SRC" ]] || die "SYMSAN_SRC must point to a standalone Symsan checkout"
   need_dir "$SYMSAN_SRC"
   mkdir -p "$SYMSAN_BUILD_DIR" "$SYMSAN_INSTALL"
   log "Configuring Symsan (clang-${CLANG_VER}), debug=${SYMSAN_DEBUG}"
@@ -316,6 +316,7 @@ Environment overrides
   SYMSAN_RELEASE_ASSET_PATTERN
                          Regex for release asset name (default: \.tar\.gz$)
   USE_PREBUILT_SYMSAN=1  Skip source build and use existing SYMSAN_INSTALL
+  SYMSAN_SRC             Path to a standalone Symsan checkout for source builds
   SYMSAN_BUILD           Backward-compatible alias for SYMSAN_INSTALL
   CLANG_VER, JOBS
   SYMFIT_TARGET_LIST     QEMU target list (default: x86_64-linux-user,i386-linux-user)
@@ -357,8 +358,7 @@ fi
 if [[ $PRINT_PATHS -eq 1 ]]; then
   cat <<EOF
 ROOT                 = ${ROOT}
-SYMSAN_ROOT          = ${SYMSAN_ROOT}
-SYMSAN_SRC           = ${SYMSAN_SRC}
+SYMSAN_SRC           = ${SYMSAN_SRC:-<unset>}
 SYMFIT_SRC           = ${SYMFIT_SRC}
 BUILD_DIR            = ${BUILD_DIR}
 SYMSAN_INSTALL       = ${SYMSAN_INSTALL}

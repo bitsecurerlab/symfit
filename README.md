@@ -37,36 +37,27 @@ docker pull ghcr.io/bitsecurerlab/symfit:latest
 
 ## Building SymFit
 
-SymFit now builds against a single Symsan checkout at `/mnt/d/git/symsan` to avoid having multiple copies and install trees in play.
+You can build SymFit against prebuilt Symsan artifacts (recommended), or point source builds at a standalone Symsan checkout via `SYMSAN_SRC=/path/to/symsan`.
 
-Default paths:
-- Symsan source: `/mnt/d/git/symsan`
-- Symsan build dir: `/mnt/d/git/symsan/build`
-- Symsan install/runtime dir: `/mnt/d/git/symsan/install`
-- SymFit build dir: `build/symfit-symsan/`
+If you already have a prebuilt Symsan install or release tarball, `build.sh` can use that directly. For source builds, clone Symsan separately and point `SYMSAN_SRC` at that checkout.
 
-If needed, clone Symsan there first:
-
-```bash
-git clone https://github.com/bitsecurerlab/symsan.git /mnt/d/git/symsan
-```
-
-Then build:
+Build with the default prebuilt/download flow:
 
 ```bash
 ./build.sh all
 ```
 
-Or just rebuild the SymFit binary against the existing Symsan install:
+Or rebuild SymFit against an existing Symsan install:
 
 ```bash
 ./build.sh symfit-symsan
 ```
 
-You can still override paths explicitly:
+For a source build, clone Symsan separately and pass `SYMSAN_SRC`:
 
 ```bash
-SYMSAN_ROOT=/path/to/symsan ./build.sh all
+git clone https://github.com/bitsecurerlab/symsan.git /path/to/symsan
+SYMSAN_SRC=/path/to/symsan ./build.sh all
 ```
 
 This will compile SymFit with the SymSan backend. The build artifacts will be located in:

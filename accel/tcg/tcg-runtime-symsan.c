@@ -924,7 +924,7 @@ static uint64_t symsan_setcond_internal(CPUArchState *env, uint64_t arg1, uint64
                         result_bits, arg1, arg2);
         __taint_trace_cmp(arg1_label, arg2_label, result_bits, predicate,
                           arg1, arg2, env->eip);
-        label = dfsan_union(cmp_label, CONST_LABEL, last_llvm_op + 9,
+        label = dfsan_union(cmp_label, CONST_LABEL, Ite,
                             result_bits, 0, 0);
         if (ia_debug_path_constraints_enabled()) {
             fprintf(stderr,
