@@ -46,7 +46,13 @@ extern size_t __attribute__((weak)) dfsan_get_nested_constraint_count(dfsan_labe
 extern size_t __attribute__((weak)) dfsan_get_nested_constraints(dfsan_label label,
                                                                  dfsan_label *out,
                                                                  size_t capacity);
+extern size_t dfsan_get_label_count(void);
+extern size_t dfsan_format_simplified_expression(dfsan_label label, char *out,
+                                                 size_t capacity);
 static bool ia_format_symbolic_expression_inner(GString *out, dfsan_label label, unsigned depth);
+
+#define IA_EXPR_MAX_DEPTH 24
+#define IA_EXPR_MAX_CHARS 2048
 
 typedef struct IAState {
     QemuMutex lock;
@@ -244,17 +250,35 @@ static bool ia_parse_label_param(QDict *params, const char *name,
 
 static QDict *ia_make_symbolic_label_entry(dfsan_label label)
 {
-    IADfsanLabelInfo *info = dfsan_get_label_info(label);
-    g_autoptr(GString) expr = NULL;
+    IADfsanLabelInfo *info = NULL;
     g_autofree char *label_hex = NULL;
+    g_autofree char *simplified = NULL;
     QDict *entry = qdict_new();
+    size_t needed;
+    size_t max_label = dfsan_get_label_count();
 
-    expr = g_string_new(NULL);
-    ia_format_symbolic_expression_inner(expr, label, 0);
+    if (label != 0 && label <= max_label) {
+        info = dfsan_get_label_info(label);
+    }
+
+    needed = 0;
+    if (info != NULL) {
+        needed = dfsan_format_simplified_expression(label, NULL, 0);
+    }
+    if (needed == 0) {
+        needed = strlen("<unavailable>");
+        simplified = g_strdup("<unavailable>");
+    } else {
+        simplified = g_malloc(needed + 1);
+        if (dfsan_format_simplified_expression(label, simplified, needed + 1) == 0) {
+            g_free(simplified);
+            simplified = g_strdup("<unavailable>");
+        }
+    }
     label_hex = g_strdup_printf("0x%x", label);
 
     qdict_put_str(entry, "label", label_hex);
-    qdict_put_str(entry, "expression", expr->str);
+    qdict_put_str(entry, "expression", simplified);
     qdict_put_str(entry, "op", ia_label_op_name(info ? info->op : 0xffff));
     if (info) {
         qdict_put_int(entry, "size", info->size);
@@ -277,24 +301,70 @@ static void ia_append_path_constraint_entry(QList *entries, uint64_t pc,
     qlist_append(entries, entry);
 }
 
-static void ia_append_type_suffix(GString *out, uint16_t size)
+static uint64_t ia_mask_for_bits(uint16_t size)
 {
-    if (size == 1) {
-        g_string_append(out, ":bool");
-        return;
+    if (size == 0 || size >= 64) {
+        return UINT64_MAX;
     }
-    g_string_append_printf(out, ":i%u", size);
+    return (1ULL << size) - 1ULL;
+}
+
+static void ia_append_subexpr_label(GString *out, dfsan_label label)
+{
+    g_string_append_printf(out, "<0x%x>", label);
+}
+
+static const char *ia_c_int_type_name(uint16_t size, bool is_signed)
+{
+    switch (size) {
+    case 8:
+        return is_signed ? "int8_t" : "uint8_t";
+    case 16:
+        return is_signed ? "int16_t" : "uint16_t";
+    case 32:
+        return is_signed ? "int32_t" : "uint32_t";
+    case 64:
+        return is_signed ? "int64_t" : "uint64_t";
+    default:
+        return is_signed ? "int64_t" : "uint64_t";
+    }
+}
+
+static int64_t ia_sign_extend_immediate(uint16_t size, uint64_t imm)
+{
+    uint64_t masked = imm & ia_mask_for_bits(size);
+
+    if (size == 0 || size >= 64) {
+        return (int64_t)masked;
+    }
+    if ((masked & (1ULL << (size - 1))) == 0) {
+        return (int64_t)masked;
+    }
+    return (int64_t)(masked | ~ia_mask_for_bits(size));
 }
 
 static void ia_append_immediate(GString *out, uint16_t size, uint64_t imm)
 {
+    uint64_t masked;
+    int64_t signed_value;
+
     if (size == 1) {
         g_string_append(out, imm ? "true" : "false");
-        ia_append_type_suffix(out, size);
         return;
     }
-    g_string_append_printf(out, "0x%" PRIx64, imm);
-    ia_append_type_suffix(out, size);
+
+    masked = imm & ia_mask_for_bits(size);
+    signed_value = ia_sign_extend_immediate(size, imm);
+
+    if (signed_value < 0 && signed_value >= -4096) {
+        g_string_append_printf(out, "%" PRId64, signed_value);
+        return;
+    }
+    if (masked <= 9) {
+        g_string_append_printf(out, "%" PRIu64, masked);
+        return;
+    }
+    g_string_append_printf(out, "0x%" PRIx64, masked);
 }
 
 static bool ia_append_operand(GString *out, dfsan_label child, uint16_t size, uint64_t imm, unsigned depth)
@@ -306,20 +376,54 @@ static bool ia_append_operand(GString *out, dfsan_label child, uint16_t size, ui
     return true;
 }
 
-static const char *ia_icmp_predicate_name(uint64_t predicate)
+static const char *ia_c_binary_op(uint16_t op)
+{
+    switch (op) {
+    case Add: return "+";
+    case Sub: return "-";
+    case Mul: return "*";
+    case UDiv:
+    case SDiv: return "/";
+    case URem:
+    case SRem: return "%";
+    case Shl: return "<<";
+    case LShr:
+    case AShr: return ">>";
+    case And: return "&";
+    case Or: return "|";
+    case Xor: return "^";
+    case Concat: return "/* concat */";
+    default: return NULL;
+    }
+}
+
+static const char *ia_icmp_predicate_symbol(uint64_t predicate)
 {
     switch ((uint32_t)predicate) {
-    case bveq: return "eq";
-    case bvneq: return "ne";
-    case bvugt: return "ugt";
-    case bvuge: return "uge";
-    case bvult: return "ult";
-    case bvule: return "ule";
-    case bvsgt: return "sgt";
-    case bvsge: return "sge";
-    case bvslt: return "slt";
-    case bvsle: return "sle";
-    default: return "unknown";
+    case bveq: return "==";
+    case bvneq: return "!=";
+    case bvugt:
+    case bvsgt: return ">";
+    case bvuge:
+    case bvsge: return ">=";
+    case bvult:
+    case bvslt: return "<";
+    case bvule:
+    case bvsle: return "<=";
+    default: return "??";
+    }
+}
+
+static bool ia_icmp_predicate_is_signed(uint64_t predicate)
+{
+    switch ((uint32_t)predicate) {
+    case bvsgt:
+    case bvsge:
+    case bvslt:
+    case bvsle:
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -327,14 +431,15 @@ static bool ia_format_symbolic_expression_inner(GString *out, dfsan_label label,
 {
     IADfsanLabelInfo *info;
     uint16_t op;
+    const char *binary_op;
 
     if (label == 0) {
         g_string_append(out, "concrete");
         return true;
     }
-    if (depth > 128) {
-        g_string_append(out, "<depth-limit>");
-        return false;
+    if (depth > IA_EXPR_MAX_DEPTH || out->len > IA_EXPR_MAX_CHARS) {
+        ia_append_subexpr_label(out, label);
+        return true;
     }
 
     info = dfsan_get_label_info(label);
@@ -347,35 +452,44 @@ static bool ia_format_symbolic_expression_inner(GString *out, dfsan_label label,
 
     if (info->op == 0) {
         g_string_append_printf(out, "input(%" PRIu64 ")", info->op1.i);
-        ia_append_type_suffix(out, info->size);
         return true;
     }
 
     switch (op) {
     case ZExt:
-    case SExt:
     case Trunc:
+        g_string_append_printf(out, "((%s)", ia_c_int_type_name(info->size, false));
+        g_string_append(out, " ");
+        ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
+        g_string_append(out, ")");
+        return true;
+    case SExt:
+        g_string_append_printf(out, "((%s)", ia_c_int_type_name(info->size, true));
+        g_string_append(out, " ");
+        ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
+        g_string_append(out, ")");
+        return true;
     case IntToPtr:
+        g_string_append(out, "((uintptr_t) ");
+        ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
+        g_string_append(out, ")");
+        return true;
     case PtrToInt:
-        g_string_append_printf(out, "%s", ia_label_op_name(info->op));
-        ia_append_type_suffix(out, info->size);
-        g_string_append(out, "(");
+        g_string_append_printf(out, "((%s) ", ia_c_int_type_name(info->size, false));
         ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
         g_string_append(out, ")");
         return true;
     case Extract:
-        g_string_append(out, "Extract");
-        ia_append_type_suffix(out, info->size);
-        g_string_append(out, "(");
+        g_string_append(out, "(((");
         ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
-        g_string_append_printf(out, ", offset=%" PRIu64 ", size=%u)", info->op2.i, info->size);
+        g_string_append_printf(out, ") >> %" PRIu64 ") & ", info->op2.i);
+        ia_append_immediate(out, info->size, ia_mask_for_bits(info->size));
+        g_string_append(out, ")");
         return true;
     case Load:
-        g_string_append(out, "Load");
-        ia_append_type_suffix(out, info->size);
-        g_string_append(out, "(base=");
+        g_string_append_printf(out, "load_%s(", ia_c_int_type_name(info->size, false));
         ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
-        g_string_append_printf(out, ", bytes=%u)", info->l2);
+        g_string_append_printf(out, ", %u)", info->l2);
         return true;
     case LoadAddr:
         g_string_append(out, "LoadAddr");
@@ -385,49 +499,60 @@ static bool ia_format_symbolic_expression_inner(GString *out, dfsan_label label,
         g_string_append_printf(out, ", bytes=%" PRIu64 ")", info->op1.i);
         return true;
     case Not:
-        g_string_append(out, "Not");
-        ia_append_type_suffix(out, info->size);
-        g_string_append(out, "(");
+        g_string_append(out, "(~");
         ia_append_operand(out, info->l2, info->size, info->op2.i, depth);
         g_string_append(out, ")");
         return true;
     case Neg:
-        g_string_append(out, "Neg");
-        ia_append_type_suffix(out, info->size);
-        g_string_append(out, "(");
+        g_string_append(out, "(-");
         ia_append_operand(out, info->l2, info->size, info->op2.i, depth);
         g_string_append(out, ")");
         return true;
     case ICmp:
-        g_string_append_printf(out, "ICmp[%s]", ia_icmp_predicate_name(info->op >> 8));
-        ia_append_type_suffix(out, 1);
         g_string_append(out, "(");
-        ia_append_operand(out, info->l1, info->op1.i ? 64 : info->size, info->op1.i, depth);
-        g_string_append(out, ", ");
-        ia_append_operand(out, info->l2, info->op2.i ? 64 : info->size, info->op2.i, depth);
+        if (ia_icmp_predicate_is_signed(info->op >> 8)) {
+            g_string_append_printf(out, "(%s)(", ia_c_int_type_name(info->size, true));
+            ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
+            g_string_append(out, ")");
+        } else {
+            ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
+        }
+        g_string_append_printf(out, " %s ", ia_icmp_predicate_symbol(info->op >> 8));
+        if (ia_icmp_predicate_is_signed(info->op >> 8)) {
+            g_string_append_printf(out, "(%s)(", ia_c_int_type_name(info->size, true));
+            ia_append_operand(out, info->l2, info->size, info->op2.i, depth);
+            g_string_append(out, ")");
+        } else {
+            ia_append_operand(out, info->l2, info->size, info->op2.i, depth);
+        }
         g_string_append(out, ")");
         return true;
     case fmemcmp:
-        g_string_append(out, "fmemcmp");
-        ia_append_type_suffix(out, 32);
-        g_string_append(out, "(");
+        g_string_append(out, "fmemcmp(");
         ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
         g_string_append(out, ", ");
         ia_append_operand(out, info->l2, info->size, info->op2.i, depth);
         g_string_append_printf(out, ", size=%u)", info->size);
         return true;
     case fsize:
-        g_string_append(out, "fsize");
-        ia_append_type_suffix(out, info->size);
-        g_string_append_printf(out, "(offset=%" PRIu64 ")", info->op1.i);
+        g_string_append_printf(out, "fsize(%" PRIu64 ")", info->op1.i);
         return true;
     default:
-        g_string_append(out, ia_label_op_name(info->op));
-        ia_append_type_suffix(out, info->size);
-        g_string_append(out, "(");
+        binary_op = ia_c_binary_op(op);
+        if (binary_op) {
+            g_string_append(out, "(");
+            ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
+            g_string_append_printf(out, " %s ", binary_op);
+            ia_append_operand(out, info->l2, info->size, info->op2.i, depth);
+            g_string_append(out, ")");
+            return true;
+        }
+        g_string_append_printf(out, "%s(", ia_label_op_name(info->op));
         ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
-        g_string_append(out, ", ");
-        ia_append_operand(out, info->l2, info->size, info->op2.i, depth);
+        if (info->l2 != 0 || info->op2.i != 0) {
+            g_string_append(out, ", ");
+            ia_append_operand(out, info->l2, info->size, info->op2.i, depth);
+        }
         g_string_append(out, ")");
         return true;
     }
@@ -478,7 +603,7 @@ static QDict *ia_handle_get_path_constraints(int64_t id, QDict *params)
         error_free(err);
         return resp;
     }
-    if (!dfsan_get_label_info(label)) {
+    if (label == 0 || label > dfsan_get_label_count() || !dfsan_get_label_info(label)) {
         return ia_make_error_response(id, "invalid_params", "label is not valid");
     }
     if (!dfsan_is_branch_condition_label ||
@@ -2602,8 +2727,18 @@ void ia_rpc_set_exit_code(int code)
 void ia_rpc_record_path_constraint(uint64_t pc, dfsan_label label, bool taken)
 {
     size_t idx;
+    size_t max_label;
 
     if (label == 0 || !ia_state.enabled) {
+        return;
+    }
+
+    max_label = dfsan_get_label_count();
+    if (label > max_label) {
+        fprintf(stderr,
+                "[ia-pc] dropping invalid path constraint label=0x%x pc=0x%" PRIx64
+                " taken=%d max_label=0x%zx\n",
+                label, pc, taken ? 1 : 0, max_label);
         return;
     }
 

@@ -203,9 +203,10 @@ $(QEMU_PROG_BUILD): config-devices.mak
 endif
 
 COMMON_LDADDS = ../libqemuutil.a
+CPU_LDADDS = $(filter %.a,$(libs_cpu))
 
 # build either PROG or PROGW
-$(QEMU_PROG_BUILD): $(all-obj-y) $(COMMON_LDADDS)
+$(QEMU_PROG_BUILD): $(all-obj-y) $(COMMON_LDADDS) $(CPU_LDADDS)
 	$(call LINK, $(filter-out %.mak, $^))
 ifdef CONFIG_DARWIN
 	$(call quiet-command,Rez -append $(SRC_PATH)/pc-bios/qemu.rsrc -o $@,"REZ","$(TARGET_DIR)$@")

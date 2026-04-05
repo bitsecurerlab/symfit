@@ -918,16 +918,23 @@ static uint64_t symsan_setcond_internal(CPUArchState *env, uint64_t arg1, uint64
             g_assert_not_reached();
         }
     }
-    label = __taint_trace_cmp(arg1_label, arg2_label, result_bits, predicate,
-                              arg1, arg2, env->eip);
-    if (ia_debug_path_constraints_enabled()) {
-        fprintf(stderr,
-                "[ia-pc] traced pc=0x%lx label=0x%x taken=%lu predicate=%u\n",
-                (unsigned long)env->eip, label, (unsigned long)(result != 0),
-                predicate);
-    }
-    if (label != 0) {
-        ia_rpc_record_path_constraint(env->eip, label, result != 0);
+    {
+        dfsan_label cmp_label =
+            dfsan_union(arg1_label, arg2_label, (predicate << 8) | ICmp,
+                        result_bits, arg1, arg2);
+        __taint_trace_cmp(arg1_label, arg2_label, result_bits, predicate,
+                          arg1, arg2, env->eip);
+        label = dfsan_union(cmp_label, CONST_LABEL, last_llvm_op + 9,
+                            result_bits, 0, 0);
+        if (ia_debug_path_constraints_enabled()) {
+            fprintf(stderr,
+                    "[ia-pc] traced pc=0x%lx cmp=0x%x ite=0x%x taken=%lu predicate=%u\n",
+                    (unsigned long)env->eip, cmp_label, label,
+                    (unsigned long)(result != 0), predicate);
+        }
+        if (cmp_label != 0) {
+            ia_rpc_record_path_constraint(env->eip, cmp_label, result != 0);
+        }
     }
     return label;
 }
