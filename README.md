@@ -37,53 +37,41 @@ docker pull ghcr.io/bitsecurerlab/symfit:latest
 
 ## Building SymFit
 
-You can build SymFit against prebuilt Symsan artifacts (recommended), without checking out `external/symsan` (the directory may be absent).
+SymFit now builds against a single Symsan checkout at `/mnt/d/git/symsan` to avoid having multiple copies and install trees in play.
 
-### Option A: Auto-download from GitHub releases
+Default paths:
+- Symsan source: `/mnt/d/git/symsan`
+- Symsan build dir: `/mnt/d/git/symsan/build`
+- Symsan install/runtime dir: `/mnt/d/git/symsan/install`
+- SymFit build dir: `build/symfit-symsan/`
+
+If needed, clone Symsan there first:
 
 ```bash
-AUTO_DOWNLOAD_SYMSAN=1 ./build.sh all
+git clone https://github.com/bitsecurerlab/symsan.git /mnt/d/git/symsan
 ```
 
-By default this pulls the first `.tar.gz` asset from `bitsecurerlab/symsan` `latest` release.
-
-You can narrow asset selection if needed:
+Then build:
 
 ```bash
-AUTO_DOWNLOAD_SYMSAN=1 \
-SYMSAN_RELEASE_ASSET_PATTERN='linux.*x86_64.*\.tar\.gz$' \
 ./build.sh all
 ```
 
-### Option B: Use Symsan release tarball URL/path directly
+Or just rebuild the SymFit binary against the existing Symsan install:
 
 ```bash
-SYMSAN_TARBALL=https://github.com/bitsecurerlab/symsan/releases/download/<tag>/<symsan-artifact>.tar.gz \
-  ./build.sh all
+./build.sh symfit-symsan
 ```
 
-`build.sh` will download/extract the tarball into `build/symsan/` and then build SymFit.
-
-### Option C: Use an already extracted Symsan directory
-
-If you already unpacked Symsan artifacts and they contain `bin/fgtest`:
+You can still override paths explicitly:
 
 ```bash
-USE_PREBUILT_SYMSAN=1 SYMSAN_BUILD=/path/to/symsan ./build.sh symfit-symsan
-```
-
-### Option D: Build Symsan from source (legacy)
-
-If you want to build Symsan from source, first clone Symsan separately, then pass `SYMSAN_SRC`:
-
-```bash
-git clone https://github.com/bitsecurerlab/symsan.git /path/to/symsan
-SYMSAN_SRC=/path/to/symsan ./build.sh all
+SYMSAN_ROOT=/path/to/symsan ./build.sh all
 ```
 
 This will compile SymFit with the SymSan backend. The build artifacts will be located in:
 - `build/symfit-symsan/` - SymFit QEMU binaries
-- `build/symsan/` - SymSan tools and libraries
+- `/mnt/d/git/symsan/install/` - SymSan tools and libraries used by SymFit
 
 By default, `build.sh` builds both user targets:
 - `x86_64-linux-user/symfit-x86_64` (for x86_64 binaries)
@@ -264,7 +252,7 @@ export SYMCC_AFL_COVERAGE_MAP=/path/to/covmap
 export TAINT_OPTIONS="taint_file=/path/to/input"
 
 # Run SymFit
-/path/to/build/symsan/bin/fgtest \
+/path/to/symsan/install/bin/fgtest \
   /path/to/build/symfit-symsan/x86_64-linux-user/symfit-x86_64 \
   /path/to/your/program
 ```
@@ -285,7 +273,7 @@ docker run --rm \
   -v /path/to/your/binary:/binary:ro \
   -v /path/to/workdir:/workdir \
   ghcr.io/bitsecurerlab/symfit:latest \
-  /workspace/build/symsan/bin/fgtest \
+  /mnt/d/git/symsan/install/bin/fgtest \
   /workspace/build/symfit-symsan/x86_64-linux-user/symfit-x86_64 \
   /binary
 ```

@@ -407,7 +407,7 @@ prefix="/usr/local"
 mandir="\${prefix}/share/man"
 datadir="\${prefix}/share"
 firmwarepath="\${prefix}/share/qemu-firmware"
-symsan_source="$source_path/external/symsan"
+symsan_source="/mnt/d/git/symsan"
 symsan_build=""
 qemu_docdir="\${prefix}/share/doc/qemu"
 bindir="\${prefix}/bin"
@@ -1712,7 +1712,7 @@ Advanced options (experts only):
   --sysconfdir=PATH        install config in PATH$confsuffix
   --localstatedir=PATH     install local state in PATH (set at runtime on win32)
   --firmwarepath=PATH      search PATH for firmware files
-  --symsan-build=PATH      PATH to the build directory of Symsan
+  --symsan-build=PATH      PATH to the installed runtime/libs of Symsan
   --with-confsuffix=SUFFIX suffix for QEMU data inside datadir/libdir/sysconfdir [$confsuffix]
   --with-pkgversion=VERS   use specified string as sub-version of the package
   --enable-debug           enable common debug build options
@@ -6342,7 +6342,7 @@ QEMU_LDFLAGS="$fdt_ldflags $QEMU_LDFLAGS"
 libs_softmmu="$pixman_libs $libs_softmmu"
 
 echo "SymSan source path $(eval echo $symsan_source)"
-echo "SymSan build path  $(eval echo $symsan_build)"
+echo "SymSan install path $(eval echo $symsan_build)"
 echo "Install prefix    $prefix"
 echo "BIOS directory    $(eval echo $qemu_datadir)"
 echo "firmware path     $(eval echo $firmwarepath)"

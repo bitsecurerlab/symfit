@@ -19,6 +19,7 @@
 #include "qapi/qmp/qnum.h"
 #include "qapi/qmp/qstring.h"
 #include "disas/capstone.h"
+#include "exec/tcg-runtime-symsan-ext.h"
 #include "target/i386/cpu.h"
 #include "ia-rpc.h"
 #include "dfsan_interface.h"
@@ -40,11 +41,11 @@ typedef struct IADfsanLabelInfo {
 } __attribute__((aligned(8), packed)) IADfsanLabelInfo;
 
 extern IADfsanLabelInfo *dfsan_get_label_info(dfsan_label label);
-extern int dfsan_is_branch_condition_label(dfsan_label label);
-extern size_t dfsan_get_nested_constraint_count(dfsan_label label);
-extern size_t dfsan_get_nested_constraints(dfsan_label label,
-                                           dfsan_label *out,
-                                           size_t capacity);
+extern int __attribute__((weak)) dfsan_is_branch_condition_label(dfsan_label label);
+extern size_t __attribute__((weak)) dfsan_get_nested_constraint_count(dfsan_label label);
+extern size_t __attribute__((weak)) dfsan_get_nested_constraints(dfsan_label label,
+                                                                 dfsan_label *out,
+                                                                 size_t capacity);
 static bool ia_format_symbolic_expression_inner(GString *out, dfsan_label label, unsigned depth);
 
 typedef struct IAState {
@@ -211,6 +212,7 @@ static const char *ia_label_op_name(uint16_t op)
     case ICmp: return "ICmp";
     case Alloca: return "Alloca";
     case Load: return "Load";
+    case LoadAddr: return "LoadAddr";
     case Extract: return "Extract";
     case Concat: return "Concat";
     case Arg: return "Arg";
@@ -375,6 +377,13 @@ static bool ia_format_symbolic_expression_inner(GString *out, dfsan_label label,
         ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
         g_string_append_printf(out, ", bytes=%u)", info->l2);
         return true;
+    case LoadAddr:
+        g_string_append(out, "LoadAddr");
+        ia_append_type_suffix(out, info->size);
+        g_string_append(out, "(addr=");
+        ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
+        g_string_append_printf(out, ", bytes=%" PRIu64 ")", info->op1.i);
+        return true;
     case Not:
         g_string_append(out, "Not");
         ia_append_type_suffix(out, info->size);
@@ -471,6 +480,12 @@ static QDict *ia_handle_get_path_constraints(int64_t id, QDict *params)
     }
     if (!dfsan_get_label_info(label)) {
         return ia_make_error_response(id, "invalid_params", "label is not valid");
+    }
+    if (!dfsan_is_branch_condition_label ||
+        !dfsan_get_nested_constraint_count ||
+        !dfsan_get_nested_constraints) {
+        return ia_make_error_response(id, "unsupported",
+                                      "path-constraint introspection is unavailable in the current Symsan runtime");
     }
     if (!dfsan_is_branch_condition_label(label)) {
         return ia_make_error_response(id, "invalid_params",
@@ -2338,6 +2353,7 @@ void ia_rpc_init(CPUState *cpu)
         return;
     }
 
+    symsan_reset_load_concretizations();
     qemu_mutex_init(&ia_state.lock);
     qemu_cond_init(&ia_state.cond);
     qemu_mutex_lock(&ia_state.lock);
@@ -2414,6 +2430,7 @@ void ia_rpc_shutdown(void)
     if (!ia_state.enabled) {
         return;
     }
+    symsan_reset_load_concretizations();
     qemu_mutex_lock(&ia_state.lock);
     ia_state.shutting_down = true;
     ia_state.attached = false;

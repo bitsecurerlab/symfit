@@ -3,6 +3,7 @@
 #include "exec/exec-all.h"
 #include "exec/helper-proto.h"
 #include "exec/cpu_ldst.h"
+#include "exec/tcg-runtime-symsan-ext.h"
 #include "qemu/qemu-print.h"
 #include "tcg.h"
 #include "qemu/cutils.h"
@@ -10,6 +11,184 @@
 #include "linux-user/ia-rpc.h"
 extern CPUArchState *global_env;
 #define CONST_LABEL 0
+
+typedef union SymsanRuntimeData {
+    uint64_t i;
+    float f;
+    double d;
+} SymsanRuntimeData;
+
+typedef struct SymsanRuntimeLabelInfo {
+    dfsan_label l1;
+    dfsan_label l2;
+    SymsanRuntimeData op1;
+    SymsanRuntimeData op2;
+    uint16_t op;
+    uint16_t size;
+    uint32_t hash;
+} __attribute__((aligned(8), packed)) SymsanRuntimeLabelInfo;
+
+extern SymsanRuntimeLabelInfo *dfsan_get_label_info(dfsan_label label);
+
+typedef struct SymLoadConcretization {
+    dfsan_label load_label;
+    dfsan_label addr_label;
+    target_ulong concrete_addr;
+    uint64_t concrete_value;
+    uint16_t width;
+    uint64_t pc;
+} SymLoadConcretization;
+
+static SymLoadConcretization sym_load_concretizations[1024];
+static size_t sym_load_concretizations_head;
+static size_t sym_load_concretizations_count;
+
+void symsan_reset_load_concretizations(void)
+{
+    sym_load_concretizations_head = 0;
+    sym_load_concretizations_count = 0;
+}
+
+static void symsan_record_load_concretization(dfsan_label addr_label,
+                                              dfsan_label load_label,
+                                              target_ulong concrete_addr,
+                                              uint64_t concrete_value,
+                                              uint16_t width,
+                                              uint64_t pc)
+{
+    size_t idx;
+
+    if (addr_label == 0) {
+        return;
+    }
+
+    idx = sym_load_concretizations_head;
+    sym_load_concretizations[idx].load_label = load_label;
+    sym_load_concretizations[idx].addr_label = addr_label;
+    sym_load_concretizations[idx].concrete_addr = concrete_addr;
+    sym_load_concretizations[idx].concrete_value = concrete_value;
+    sym_load_concretizations[idx].width = width;
+    sym_load_concretizations[idx].pc = pc;
+    sym_load_concretizations_head =
+        (idx + 1) % G_N_ELEMENTS(sym_load_concretizations);
+    if (sym_load_concretizations_count <
+        G_N_ELEMENTS(sym_load_concretizations)) {
+        sym_load_concretizations_count++;
+    }
+}
+
+bool symsan_find_load_concretization(dfsan_label addr_label,
+                                     uint16_t width,
+                                     target_ulong *concrete_addr,
+                                     uint64_t *pc)
+{
+    size_t i;
+
+    if (addr_label == 0) {
+        return false;
+    }
+
+    for (i = 0; i < sym_load_concretizations_count; i++) {
+        size_t idx = (sym_load_concretizations_head +
+                      G_N_ELEMENTS(sym_load_concretizations) - 1 - i) %
+                     G_N_ELEMENTS(sym_load_concretizations);
+        SymLoadConcretization *entry = &sym_load_concretizations[idx];
+
+        if (entry->addr_label != addr_label || entry->width != width) {
+            continue;
+        }
+        if (concrete_addr) {
+            *concrete_addr = entry->concrete_addr;
+        }
+        if (pc) {
+            *pc = entry->pc;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+bool symsan_find_load_concretization_for_label(dfsan_label load_label,
+                                               dfsan_label *addr_label,
+                                               target_ulong *concrete_addr,
+                                               uint64_t *concrete_value,
+                                               uint64_t *pc)
+{
+    size_t i;
+
+    if (load_label == 0) {
+        return false;
+    }
+
+    for (i = 0; i < sym_load_concretizations_count; i++) {
+        size_t idx = (sym_load_concretizations_head +
+                      G_N_ELEMENTS(sym_load_concretizations) - 1 - i) %
+                     G_N_ELEMENTS(sym_load_concretizations);
+        SymLoadConcretization *entry = &sym_load_concretizations[idx];
+
+        if (entry->load_label != load_label) {
+            continue;
+        }
+        if (addr_label) {
+            *addr_label = entry->addr_label;
+        }
+        if (concrete_addr) {
+            *concrete_addr = entry->concrete_addr;
+        }
+        if (concrete_value) {
+            *concrete_value = entry->concrete_value;
+        }
+        if (pc) {
+            *pc = entry->pc;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+static dfsan_label symsan_find_concretized_load_label(dfsan_label value_label)
+{
+    SymsanRuntimeLabelInfo *info;
+
+    if (value_label == 0) {
+        return 0;
+    }
+
+    info = dfsan_get_label_info(value_label);
+    if (!info) {
+        return 0;
+    }
+    if ((info->op & 0xff) == Load) {
+        return value_label;
+    }
+    if ((info->op & 0xff) == LoadAddr) {
+        return value_label;
+    }
+    if ((info->op & 0xff) == ZExt && info->l1 != 0) {
+        SymsanRuntimeLabelInfo *child = dfsan_get_label_info(info->l1);
+        if (child &&
+            (((child->op & 0xff) == Load) ||
+             ((child->op & 0xff) == LoadAddr))) {
+            return info->l1;
+        }
+    }
+    return 0;
+}
+
+static uint64_t symsan_read_concrete_load_value(const void *host_addr,
+                                                uint64_t load_length)
+{
+    uint64_t value = 0;
+
+    if (load_length == 0 || load_length > sizeof(value)) {
+        return 0;
+    }
+
+    memcpy(&value, host_addr, load_length);
+    return value;
+}
 
 static bool ia_debug_path_constraints_enabled(void)
 {
@@ -19,6 +198,29 @@ static bool ia_debug_path_constraints_enabled(void)
         cached = (env && env[0] && strcmp(env, "0") != 0) ? 1 : 0;
     }
     return cached != 0;
+}
+
+static void ia_debug_dump_gpr_shadows(CPUArchState *env, const char *tag)
+{
+#if defined(TARGET_X86_64) || defined(TARGET_I386)
+    if (!ia_debug_path_constraints_enabled()) {
+        return;
+    }
+    fprintf(stderr,
+            "[ia-debug] %s pc=0x%lx rax=0x%lx rbx=0x%lx rcx=0x%lx cc_dst=0x%lx cc_src=0x%lx cc_src2=0x%lx second_ccache=%d\n",
+            tag,
+            (unsigned long)env->eip,
+            (unsigned long)env->shadow_regs[R_EAX],
+            (unsigned long)env->shadow_regs[R_EBX],
+            (unsigned long)env->shadow_regs[R_ECX],
+            (unsigned long)env->shadow_cc_dst,
+            (unsigned long)env->shadow_cc_src,
+            (unsigned long)env->shadow_cc_src2,
+            second_ccache_flag);
+#else
+    (void)env;
+    (void)tag;
+#endif
 }
 
 void __attribute__((weak)) ia_rpc_record_path_constraint(uint64_t pc,
@@ -749,15 +951,47 @@ static uint64_t symsan_load_guest_internal(CPUArchState *env, target_ulong addr,
                                      uint64_t load_length, uint8_t result_length)
 {
     void *host_addr = g2h(addr);
-    
-    if (addr_label) {
-        // fprintf(stderr, "sym load addr 0x%lx eip 0x%lx\n", addr, env->eip);
-        dfsan_label addr_label_new = \
-            dfsan_union(addr_label, CONST_LABEL, bveq, 64, addr, 0);
-        __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, bveq, 0, 0, env->eip);
-    }
-
+    uint64_t concrete_value = symsan_read_concrete_load_value(host_addr,
+                                                              load_length);
     uint64_t res_label = dfsan_read_label((uint8_t*)host_addr, load_length);
+    if (addr_label) {
+        dfsan_label load_label;
+
+        /*
+         * Preserve existing content-based precision. Only synthesize a
+         * symbolic-address load node when the memory contents are concrete.
+         */
+        if (res_label == 0) {
+            load_label = dfsan_union(addr_label, CONST_LABEL, LoadAddr,
+                                     result_length * 8, load_length, 0);
+            res_label = load_label;
+        } else {
+            load_label = symsan_find_concretized_load_label(res_label);
+        }
+
+        /*
+         * Keep recording the concrete address choice out of band even while
+         * the legacy synthetic comparison remains the active solver path.
+         */
+        symsan_record_load_concretization(addr_label, load_label, addr,
+                                          concrete_value, load_length,
+                                          env->eip);
+        if (ia_debug_path_constraints_enabled()) {
+            fprintf(stderr,
+                    "[ia-debug] load_guest pc=0x%lx addr=0x%lx addr_label=0x%lx content_label=0x%lx load_label=0x%x concrete=0x%lx width=%lu\n",
+                    (unsigned long)env->eip,
+                    (unsigned long)addr,
+                    (unsigned long)addr_label,
+                    (unsigned long)dfsan_read_label((uint8_t *)host_addr, load_length),
+                    load_label,
+                    (unsigned long)concrete_value,
+                    (unsigned long)load_length);
+        }
+        dfsan_label addr_label_new =
+            dfsan_union(addr_label, CONST_LABEL, bveq, 64, addr, 0);
+        __taint_trace_cmp(addr_label_new, CONST_LABEL, 64, bveq,
+                          0, 0, env->eip);
+    }
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_GUEST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic]op: load_guest_i%d addr: 0x%lx host_addr: %p size: %ld memory_expr: %ld\n",
                      result_length*8, addr, host_addr, load_length, res_label);
@@ -978,6 +1212,7 @@ void HELPER(symsan_check_state)(CPUArchState *env) {
 
 void HELPER(symsan_check_state_no_sse)(CPUArchState *env) {
     int symbolic_flag = 0;
+    ia_debug_dump_gpr_shadows(env, "check_state_no_sse:before");
     for (int i=0; i<CPU_NB_REGS;i++) {
         if (env->shadow_regs[i]){
             symbolic_flag = 1;
@@ -993,6 +1228,7 @@ void HELPER(symsan_check_state_no_sse)(CPUArchState *env) {
         symbolic_flag = 1;
     }
     second_ccache_flag = symbolic_flag;
+    ia_debug_dump_gpr_shadows(env, "check_state_no_sse:after");
     // if (!noSymbolicData) fprintf(stderr, "block 0x%lx state %s\n", env->eip, second_ccache_flag?"symbolic":"concrete");
     if (second_ccache_flag == 0) {
         CPUState *cs = env_cpu(env);
