@@ -100,14 +100,6 @@ extern CPUArchState *global_env;
 
 #define TARGET_1024_MASK ~(TARGET_1024_SIZE - 1)
 #include "dfsan_interface.h"
-// shadow mask for x86_64.
-static const uint64_t kShadowMask = ~0x700000000000;
-static inline void *shadow_for_pg_start(void *ptr) {
-  return (void *) (((((uint64_t) ptr) & kShadowMask) << 2) & TARGET_PAGE_MASK);
-}
-static inline void *shadow_for(uint64_t ptr) {
-  return (void *) (((ptr) & kShadowMask) << 2);
-}
 #define PAGE_START(addr) ((uint64_t)(addr) & TARGET_1024_MASK)
 // #define PAGE_END(addr) PAGE_START(addr) + TARGET_PAGE_SIZE
 static inline size_t sizeof_tlb(CPUArchState *env, uintptr_t mmu_idx)
@@ -141,7 +133,7 @@ sym_ld_helper(CPUArchState *env, target_ulong addr, uint32_t oi)
                 //    host_addr, res_label, env->val_expr, load_length);
     target_ulong vaddr_page = addr & TARGET_1024_MASK;
     te = tlb_entry(env, mmu_idx, vaddr_page);
-    if (buffer_is_zero(shadow_for(PAGE_START(host_addr)), TARGET_1024_SIZE*4)) {
+    if (dfsan_region_is_concrete((void *)PAGE_START(host_addr), TARGET_1024_SIZE)) {
         // fprintf(stderr, "load addr_read 0x%p vaddr_page: 0x%lx addr_read: 0x%lx\n", te, vaddr_page, te->addr_read);
         // if (!cross_page_access(addr, load_length))
             // assert(te->addr_read!=vaddr_page);
@@ -161,8 +153,6 @@ check_ld_helper(CPUArchState *env, target_ulong addr, uint32_t oi, uintptr_t ret
     CPUTLBEntry *te;
     target_ulong vaddr_page;
     void *host_addr = g2h(addr);
-    // assert((uintptr_t)host_addr >= 0x700000040000);
-
     //printf("host addr %lx %p %p\n", addr, (uint8_t*)host_addr, host_addr);
     //void *memory_expr = _sym_read_memory((uint8_t*)host_addr, length, true);
     uint64_t res_label = dfsan_read_label((uint8_t*)host_addr, length);
@@ -182,7 +172,7 @@ check_ld_helper(CPUArchState *env, target_ulong addr, uint32_t oi, uintptr_t ret
     // fprintf(stderr, "check_load_guest\n");
     
     // Pass for corss-page access.
-    if (buffer_is_zero(shadow_for(PAGE_START(host_addr)), TARGET_1024_SIZE*4)) {
+    if (dfsan_region_is_concrete((void *)PAGE_START(host_addr), TARGET_1024_SIZE)) {
             // fprintf(stderr, "load addr_read 0x%lx vaddr_page: 0x%lx addr: 0x%lx\n", te->addr_read, vaddr_page, addr);
     // if (dfsan_concrete_page(host_addr)) {
         // if (!cross_page_access(addr, length))
@@ -242,7 +232,7 @@ sym_st_helper(CPUArchState *env, target_ulong addr, uint32_t oi)
         te->addr_read = -1;
     } else {
         // fprintf(stderr, "null write guest 0x%lx\n", global_env->eip);
-        if (buffer_is_zero(shadow_for(PAGE_START(host_addr)), TARGET_1024_SIZE*4)) {
+        if (dfsan_region_is_concrete((void *)PAGE_START(host_addr), TARGET_1024_SIZE)) {
         // if (dfsan_concrete_page(host_addr)) {
             // Should not enable this assert since we nullify the target address.
             // if (!cross_page_access(addr, length) && env->val_expr == 0)
@@ -272,7 +262,7 @@ check_st_helper(CPUArchState *env, target_ulong addr, uint32_t oi)
     vaddr_page = addr & TARGET_1024_MASK;
     te = tlb_entry(env, mmu_idx, vaddr_page);
     // Pass for corss-page access.
-    if (buffer_is_zero(shadow_for(PAGE_START(host_addr)), TARGET_1024_SIZE*4)) {
+    if (dfsan_region_is_concrete((void *)PAGE_START(host_addr), TARGET_1024_SIZE)) {
     // if (dfsan_concrete_page(host_addr)) {
         // Should not enable this assert since we nullify the target address.
         // fprintf(stderr, "store addr_read 0x%p vaddr_page: 0x%lx addr: 0x%lx\n", te, vaddr_page, addr);
