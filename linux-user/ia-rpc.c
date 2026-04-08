@@ -105,6 +105,7 @@ typedef struct IAState {
     size_t stdin_chunks_head;
     size_t stdin_chunks_count;
     uint64_t stdin_stream_next_offset;
+    uint64_t symbolic_value_next_offset;
     uint64_t pending_stdin_bytes;
     uint64_t pending_symbolic_stdin_bytes;
     QemuThread server_thread;
@@ -218,7 +219,6 @@ static const char *ia_label_op_name(uint16_t op)
     case ICmp: return "ICmp";
     case Alloca: return "Alloca";
     case Load: return "Load";
-    case LoadAddr: return "LoadAddr";
     case Extract: return "Extract";
     case Concat: return "Concat";
     case Arg: return "Arg";
@@ -491,13 +491,6 @@ static bool ia_format_symbolic_expression_inner(GString *out, dfsan_label label,
         ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
         g_string_append_printf(out, ", %u)", info->l2);
         return true;
-    case LoadAddr:
-        g_string_append(out, "LoadAddr");
-        ia_append_type_suffix(out, info->size);
-        g_string_append(out, "(addr=");
-        ia_append_operand(out, info->l1, info->size, info->op1.i, depth);
-        g_string_append_printf(out, ", bytes=%" PRIu64 ")", info->op1.i);
-        return true;
     case Not:
         g_string_append(out, "(~");
         ia_append_operand(out, info->l2, info->size, info->op2.i, depth);
@@ -735,6 +728,35 @@ static void ia_ensure_symbolic_mode_active(void)
     if (noSymbolicData != 0) {
         noSymbolicData = 0;
     }
+}
+
+static dfsan_label ia_create_symbolic_value_label(uint32_t width_bits,
+                                                  uint64_t base_offset)
+{
+    dfsan_label acc = 0;
+    uint32_t byte_count;
+    uint32_t i;
+
+    if (width_bits == 0 || (width_bits % 8) != 0) {
+        return 0;
+    }
+
+    byte_count = width_bits / 8;
+    for (i = 0; i < byte_count; i++) {
+        dfsan_label byte_label = dfsan_create_label((off_t)(base_offset + i));
+        if (byte_label == 0) {
+            return 0;
+        }
+        if (acc == 0) {
+            acc = byte_label;
+        } else {
+            acc = dfsan_union(acc, byte_label, Concat, (i + 1) * 8, 0, 0);
+            if (acc == 0) {
+                return 0;
+            }
+        }
+    }
+    return acc;
 }
 
 static void ia_symbolize_stdin_segment(uint8_t *host_ptr, size_t size,
@@ -2049,6 +2071,7 @@ static QDict *ia_handle_symbolize_register(int64_t id, QDict *params)
     target_ulong *shadow = NULL;
     uint64_t value = 0;
     uint32_t width_bits = 0;
+    uint64_t base_offset = 0;
     dfsan_label reg_label;
     QDict *result = qdict_new();
     g_autofree char *value_hex = NULL;
@@ -2084,7 +2107,12 @@ static QDict *ia_handle_symbolize_register(int64_t id, QDict *params)
         return ia_make_error_response(id, "invalid_params", "register is not supported for symbolization");
     }
 
-    reg_label = dfsan_create_label(0);
+    qemu_mutex_lock(&ia_state.lock);
+    base_offset = ia_state.symbolic_value_next_offset;
+    ia_state.symbolic_value_next_offset += MAX(1u, width_bits / 8);
+    qemu_mutex_unlock(&ia_state.lock);
+
+    reg_label = ia_create_symbolic_value_label(width_bits, base_offset);
     if (reg_label == 0) {
         qobject_unref(result);
         return ia_make_error_response(id, "internal_error", "failed to create symbolic register label");
@@ -2478,7 +2506,7 @@ void ia_rpc_init(CPUState *cpu)
         return;
     }
 
-    symsan_reset_load_concretizations();
+    symsan_reset_load_metadata();
     qemu_mutex_init(&ia_state.lock);
     qemu_cond_init(&ia_state.cond);
     qemu_mutex_lock(&ia_state.lock);
@@ -2555,7 +2583,7 @@ void ia_rpc_shutdown(void)
     if (!ia_state.enabled) {
         return;
     }
-    symsan_reset_load_concretizations();
+    symsan_reset_load_metadata();
     qemu_mutex_lock(&ia_state.lock);
     ia_state.shutting_down = true;
     ia_state.attached = false;
@@ -2724,7 +2752,7 @@ void ia_rpc_set_exit_code(int code)
     qemu_mutex_unlock(&ia_state.lock);
 }
 
-void ia_rpc_record_path_constraint(uint64_t pc, dfsan_label label, bool taken)
+void symsan_record_path_constraint(uint64_t pc, dfsan_label label, bool taken)
 {
     size_t idx;
     size_t max_label;

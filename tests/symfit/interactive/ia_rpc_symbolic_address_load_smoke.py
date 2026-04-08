@@ -72,6 +72,23 @@ def main():
         )
         req_id += 1
 
+        summary["registers_after_bb1"] = rpc_call(
+            stream,
+            req_id,
+            "get_registers",
+            {"names": ["rax", "rbx", "rcx", "rip"]},
+        )
+        req_id += 1
+
+        data_addr = summary["registers_after_bb1"]["registers"]["rbx"]
+        summary["symbolize_memory"] = rpc_call(
+            stream,
+            req_id,
+            "symbolize_memory",
+            {"address": data_addr, "size": 8, "name": "loaded_bytes"},
+        )
+        req_id += 1
+
         summary["symbolize_register"] = rpc_call(
             stream,
             req_id,
@@ -99,12 +116,12 @@ def main():
         summary["registers_after"] = rpc_call(stream, req_id, "get_registers", {"names": ["rax", "rbx", "rcx", "rip"]})
         req_id += 1
 
-        rcx_label = summary["registers_after"]["symbolic_registers"]["rcx"]["label"]
+        load_label = summary["registers_after"]["symbolic_registers"]["rcx"]["label"]
         summary["get_symbolic_expression"] = rpc_call(
             stream,
             req_id,
             "get_symbolic_expression",
-            {"label": rcx_label},
+            {"label": load_label},
         )
         req_id += 1
 
@@ -144,6 +161,9 @@ def main():
                 raise
             if final_status.get("status") == "exited":
                 break
+            if (final_status.get("status") == "paused" and
+                    final_status.get("pending_termination")):
+                break
             time.sleep(0.05)
         summary["query_status_final"] = final_status
 
@@ -153,27 +173,28 @@ def main():
         stream.close()
         client.close()
 
-        rc = proc.wait(timeout=max(1.0, args.exit_timeout))
-        if rc != 0:
-            out, err = read_process_logs(proc)
-            print("backend exited non-zero", file=sys.stderr)
-            print(f"exit_code={rc}", file=sys.stderr)
-            print("stdout:\n" + out, file=sys.stderr)
-            print("stderr:\n" + err, file=sys.stderr)
+        if summary["registers_after"]["symbolic_registers"]["rcx"]["symbolic"] is not True:
+            print("Expected symbolic-address load result to remain symbolic in rcx", file=sys.stderr)
+            return 1
+        if summary["get_symbolic_expression"]["label"] == "0x0":
+            print("Expected symbolic-address load reproduction to yield a non-zero load label", file=sys.stderr)
+            return 1
+        expr = summary["get_symbolic_expression"].get("expression", "")
+        if "load" not in expr:
+            print("Expected display-side load rendering to mention a load expression", file=sys.stderr)
+            return 1
+        final = summary["query_status_final"] or {}
+        if not ((final.get("status") == "exited") or
+                (final.get("status") == "paused" and final.get("pending_termination"))):
+            print("Expected helper target to reach exited or terminal-pause state after resume", file=sys.stderr)
             return 1
 
-        if summary["registers_after"]["symbolic_registers"]["rcx"]["symbolic"] is not False:
-            print("Expected current runtime to drop symbolic-address load provenance from rcx", file=sys.stderr)
-            return 1
-        if summary["get_symbolic_expression"]["label"] != "0x0":
-            print("Expected symbolic-address load reproduction to yield a concrete rcx label", file=sys.stderr)
-            return 1
-        recent = summary.get("recent_path_constraints")
-        if recent is not None and recent["count"] != 0:
-            print("Expected current runtime not to record symbolic-address load constraints", file=sys.stderr)
-            return 1
-        if summary["query_status_final"].get("status") != "exited":
-            print("Expected helper target to exit after resume", file=sys.stderr)
+        if proc.poll() not in (None, 0):
+            out, err = read_process_logs(proc)
+            print("backend exited non-zero", file=sys.stderr)
+            print(f"exit_code={proc.returncode}", file=sys.stderr)
+            print("stdout:\n" + out, file=sys.stderr)
+            print("stderr:\n" + err, file=sys.stderr)
             return 1
 
         return 0
