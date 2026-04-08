@@ -41,14 +41,22 @@ typedef struct IADfsanLabelInfo {
 } __attribute__((aligned(8), packed)) IADfsanLabelInfo;
 
 extern IADfsanLabelInfo *dfsan_get_label_info(dfsan_label label);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wredundant-decls"
 extern int __attribute__((weak)) dfsan_is_branch_condition_label(dfsan_label label);
+extern int __attribute__((weak)) dfsan_get_branch_direction(dfsan_label label,
+                                                            uint8_t *taken);
 extern size_t __attribute__((weak)) dfsan_get_nested_constraint_count(dfsan_label label);
 extern size_t __attribute__((weak)) dfsan_get_nested_constraints(dfsan_label label,
                                                                  dfsan_label *out,
                                                                  size_t capacity);
+extern size_t __attribute__((weak)) dfsan_get_nested_constraint_directions(dfsan_label label,
+                                                                           uint8_t *out,
+                                                                           size_t capacity);
 extern size_t dfsan_get_label_count(void);
 extern size_t dfsan_format_simplified_expression(dfsan_label label, char *out,
                                                  size_t capacity);
+#pragma GCC diagnostic pop
 static bool ia_format_symbolic_expression_inner(GString *out, dfsan_label label, unsigned depth);
 
 #define IA_EXPR_MAX_DEPTH 24
@@ -299,6 +307,14 @@ static void ia_append_path_constraint_entry(QList *entries, uint64_t pc,
     qdict_put_str(entry, "pc", pc_hex);
     qdict_put_bool(entry, "taken", taken);
     qlist_append(entries, entry);
+}
+
+static QDict *ia_make_symbolic_label_entry_with_taken(dfsan_label label, bool taken)
+{
+    QDict *entry = ia_make_symbolic_label_entry(label);
+
+    qdict_put_bool(entry, "taken", taken);
+    return entry;
 }
 
 static uint64_t ia_mask_for_bits(uint16_t size)
@@ -582,6 +598,8 @@ static QDict *ia_handle_get_path_constraints(int64_t id, QDict *params)
     dfsan_label label;
     size_t constraint_count;
     dfsan_label *constraint_labels = NULL;
+    uint8_t *constraint_directions = NULL;
+    uint8_t root_taken = 0;
     Error *err = NULL;
     QDict *result = NULL;
     QList *constraints = NULL;
@@ -600,8 +618,10 @@ static QDict *ia_handle_get_path_constraints(int64_t id, QDict *params)
         return ia_make_error_response(id, "invalid_params", "label is not valid");
     }
     if (!dfsan_is_branch_condition_label ||
+        !dfsan_get_branch_direction ||
         !dfsan_get_nested_constraint_count ||
-        !dfsan_get_nested_constraints) {
+        !dfsan_get_nested_constraints ||
+        !dfsan_get_nested_constraint_directions) {
         return ia_make_error_response(id, "unsupported",
                                       "path-constraint introspection is unavailable in the current Symsan runtime");
     }
@@ -613,20 +633,38 @@ static QDict *ia_handle_get_path_constraints(int64_t id, QDict *params)
     constraint_count = dfsan_get_nested_constraint_count(label);
     if (constraint_count > 0) {
         constraint_labels = g_new(dfsan_label, constraint_count);
+        constraint_directions = g_new0(uint8_t, constraint_count);
         constraint_count = dfsan_get_nested_constraints(label, constraint_labels,
                                                        constraint_count);
+        if (constraint_count > 0) {
+            size_t direction_count = dfsan_get_nested_constraint_directions(label,
+                                                                            constraint_directions,
+                                                                            constraint_count);
+            if (direction_count < constraint_count) {
+                constraint_count = direction_count;
+            }
+        }
+    }
+
+    if (!dfsan_get_branch_direction(label, &root_taken)) {
+        g_free(constraint_directions);
+        g_free(constraint_labels);
+        return ia_make_error_response(id, "internal_error",
+                                      "failed to recover branch direction for label");
     }
 
     result = qdict_new();
     constraints = qlist_new();
-    qdict_put(result, "root", ia_make_symbolic_label_entry(label));
+    qdict_put(result, "root", ia_make_symbolic_label_entry_with_taken(label, root_taken != 0));
     for (i = 0; i < constraint_count; i++) {
         qlist_append(constraints,
-                     ia_make_symbolic_label_entry(constraint_labels[i]));
+                     ia_make_symbolic_label_entry_with_taken(constraint_labels[i],
+                                                             constraint_directions[i] != 0));
     }
     qdict_put(result, "constraints", constraints);
     qdict_put_int(result, "count", constraint_count);
 
+    g_free(constraint_directions);
     g_free(constraint_labels);
     return ia_make_ok_response(id, result);
 }

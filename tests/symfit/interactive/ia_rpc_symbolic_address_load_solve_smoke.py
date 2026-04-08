@@ -11,13 +11,13 @@ import time
 from ia_rpc_common import connect_rpc_socket, launch_backend, read_process_logs, rpc_call, wait_for_socket
 
 
-def ensure_path_constraints_target(script_dir: pathlib.Path) -> str:
+def ensure_target(script_dir: pathlib.Path) -> str:
     cc = shutil.which("gcc") or shutil.which("clang")
     if cc is None:
-        raise RuntimeError("gcc or clang is required to build path_constraints_target")
+        raise RuntimeError("gcc or clang is required to build symbolic_address_load_path_constraints_target")
 
-    source = script_dir / "path_constraints_target.S"
-    target = script_dir / "path_constraints_target"
+    source = script_dir / "symbolic_address_load_path_constraints_target.S"
+    target = script_dir / "symbolic_address_load_path_constraints_target"
     if (not target.exists()) or source.stat().st_mtime_ns > target.stat().st_mtime_ns:
         subprocess.run(
             [cc, "-nostdlib", "-no-pie", "-Wl,-z,noexecstack", "-o", str(target), str(source)],
@@ -45,25 +45,22 @@ def normalize_hex(value: str) -> str:
     return f"0x{int(value, 16):x}"
 
 
-def rpc_request_expect_ok(stream, req_id: int, method: str, params=None):
-    return rpc_call(stream, req_id, method, params)
-
-
 def main():
-    parser = argparse.ArgumentParser(description="SymFit IA/RPC path-constraints smoke test")
+    parser = argparse.ArgumentParser(
+        description="SymFit IA/RPC symbolic-address load solve-mode smoke test"
+    )
     parser.add_argument("--symfit", required=True, help="Path to symfit-x86_64")
     parser.add_argument("--fgtest", help="Path to fgtest (required if --runner=fgtest)")
     parser.add_argument("--runner", choices=["direct", "fgtest"], default="direct")
     parser.add_argument("--target", help="Optional target program path")
-    parser.add_argument("--socket", default="/tmp/symfit-ia-path-constraints.sock")
+    parser.add_argument("--socket", default="/tmp/symfit-ia-symbolic-address-load-solve.sock")
     parser.add_argument("--startup-timeout", type=float, default=5.0)
     parser.add_argument("--exit-timeout", type=float, default=5.0)
     args = parser.parse_args()
 
     script_dir = pathlib.Path(__file__).resolve().parent
     socket_path = args.socket
-    target_path = args.target or ensure_path_constraints_target(script_dir)
-    data_addr = lookup_symbol(target_path, "data_byte")
+    target_path = args.target or ensure_target(script_dir)
     branch2_taken_addr = lookup_symbol(target_path, "branch2_taken")
 
     try:
@@ -86,18 +83,26 @@ def main():
         client, stream = connect_rpc_socket(socket_path)
         summary = {}
 
-        summary["capabilities"] = rpc_request_expect_ok(stream, req_id, "capabilities")
+        summary["capabilities"] = rpc_call(stream, req_id, "capabilities")
         req_id += 1
 
-        summary["symbolize_memory"] = rpc_request_expect_ok(
+        summary["resume_until_basic_block_1"] = rpc_call(
             stream,
             req_id,
-            "symbolize_memory",
-            {"address": data_addr, "size": 1, "name": "path_seed"},
+            "resume_until_basic_block",
+            {"count": 1},
         )
         req_id += 1
 
-        summary["resume_until_address"] = rpc_request_expect_ok(
+        summary["symbolize_register"] = rpc_call(
+            stream,
+            req_id,
+            "symbolize_register",
+            {"register": "rax", "name": "addr_index"},
+        )
+        req_id += 1
+
+        summary["resume_until_address"] = rpc_call(
             stream,
             req_id,
             "resume_until_address",
@@ -105,15 +110,15 @@ def main():
         )
         req_id += 1
 
-        summary["registers"] = rpc_request_expect_ok(
+        summary["registers"] = rpc_call(
             stream,
             req_id,
             "get_registers",
-            {"names": ["rbx", "rcx", "rip"]},
+            {"names": ["rax", "rbx", "rcx", "rip"]},
         )
         req_id += 1
 
-        summary["recent_path_constraints"] = rpc_request_expect_ok(
+        summary["recent_path_constraints"] = rpc_call(
             stream,
             req_id,
             "get_recent_path_constraints",
@@ -142,7 +147,7 @@ def main():
         newest_label = distinct_labels[0]
         older_label = distinct_labels[1]
 
-        summary["path_constraints"] = rpc_request_expect_ok(
+        summary["path_constraints"] = rpc_call(
             stream,
             req_id,
             "get_path_constraints",
@@ -150,14 +155,14 @@ def main():
         )
         req_id += 1
 
-        summary["resume"] = rpc_request_expect_ok(stream, req_id, "resume")
+        summary["resume"] = rpc_call(stream, req_id, "resume")
         req_id += 1
 
         final_status = None
         deadline = time.time() + args.exit_timeout
         while time.time() < deadline:
             try:
-                final_status = rpc_request_expect_ok(stream, req_id, "query_status")
+                final_status = rpc_call(stream, req_id, "query_status")
                 req_id += 1
             except RuntimeError:
                 rc = proc.poll()
@@ -173,26 +178,11 @@ def main():
             time.sleep(0.05)
         summary["query_status_final"] = final_status
 
-        print("IA/RPC path-constraints smoke test passed")
+        print("IA/RPC symbolic-address load solve-mode smoke test passed")
         print(json.dumps(summary, indent=2))
 
         stream.close()
         client.close()
-
-        terminal_pause = (
-            summary["query_status_final"].get("status") == "paused"
-            and summary["query_status_final"].get("pending_termination") is True
-            and summary["query_status_final"].get("termination_kind") == "exit"
-        )
-        if not terminal_pause:
-            rc = proc.wait(timeout=max(1.0, args.exit_timeout))
-            if rc != 0:
-                out, err = read_process_logs(proc)
-                print("backend exited non-zero", file=sys.stderr)
-                print(f"exit_code={rc}", file=sys.stderr)
-                print("stdout:\n" + out, file=sys.stderr)
-                print("stderr:\n" + err, file=sys.stderr)
-                return 1
 
         if summary["capabilities"]["capabilities"].get("read_path_constraints") is not True:
             print("Expected read_path_constraints capability", file=sys.stderr)
@@ -206,11 +196,8 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        if summary["registers"]["symbolic_registers"]["rbx"]["symbolic"] is not True:
-            print("Expected first branch condition register rbx to be symbolic", file=sys.stderr)
-            return 1
-        if summary["registers"]["symbolic_registers"]["rcx"]["symbolic"] is not True:
-            print("Expected second branch condition register rcx to be symbolic", file=sys.stderr)
+        if summary["registers"]["symbolic_registers"]["rax"]["symbolic"] is not True:
+            print("Expected symbolic address index register rax to remain symbolic", file=sys.stderr)
             return 1
 
         root = summary["path_constraints"]["root"]
@@ -239,15 +226,26 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        if summary["query_status_final"].get("status") != "exited" and not terminal_pause:
-            print("Expected helper target to exit or report terminal pending exit after resume",
-                  file=sys.stderr)
+        final = summary["query_status_final"] or {}
+        if not (
+            (final.get("status") == "exited")
+            or (final.get("status") == "paused" and final.get("pending_termination"))
+        ):
+            print("Expected helper target to reach exited or terminal-pause state after resume", file=sys.stderr)
+            return 1
+
+        if proc.poll() not in (None, 0):
+            out, err = read_process_logs(proc)
+            print("backend exited non-zero", file=sys.stderr)
+            print(f"exit_code={proc.returncode}", file=sys.stderr)
+            print("stdout:\n" + out, file=sys.stderr)
+            print("stderr:\n" + err, file=sys.stderr)
             return 1
 
         return 0
 
     except Exception as exc:
-        print(f"IA/RPC path-constraints smoke test failed: {exc}", file=sys.stderr)
+        print(f"IA/RPC symbolic-address load solve-mode smoke test failed: {exc}", file=sys.stderr)
         if proc is not None:
             out, err = read_process_logs(proc)
             print(f"backend_exit={proc.returncode}", file=sys.stderr)

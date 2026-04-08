@@ -960,11 +960,20 @@ static uint64_t symsan_load_guest_internal(CPUArchState *env, target_ulong addr,
         dfsan_label load_label = 0;
 
         /*
-         * Preserve content-based precision and attach the concrete address
-         * choice out of band to the existing load-root label when possible.
+         * Preserve content-based precision when the memory bytes are already
+         * symbolic. Otherwise, create a first-class Load label so the result
+         * remains symbolic and the side metadata can drive formatting/solving.
          */
         if (res_label != 0) {
             load_label = symsan_find_load_root_label(res_label);
+        } else if (load_length > 0 && load_length <= UINT16_MAX) {
+            load_label = dfsan_union(addr_label, (dfsan_label)load_length,
+                                     Load, load_length * 8, 0, 0);
+            if (load_label != 0 && load_length < 8) {
+                res_label = dfsan_union(load_label, CONST_LABEL, ZExt, 64, 0, 0);
+            } else {
+                res_label = load_label;
+            }
         }
 
         symsan_record_load_metadata(addr_label, load_label, addr,
