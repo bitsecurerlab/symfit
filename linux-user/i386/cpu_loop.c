@@ -107,6 +107,7 @@ void cpu_loop(CPUX86State *env)
         switch(trapnr) {
         case 0x80:
             /* linux syscall from int $0x80 */
+            ia_rpc_note_syscall_stop(env->regs[R_EAX]);
             ret = do_syscall(env,
                              env->regs[R_EAX],
                              env->regs[R_EBX],
@@ -125,6 +126,7 @@ void cpu_loop(CPUX86State *env)
 #ifndef TARGET_ABI32
         case EXCP_SYSCALL:
             /* linux syscall from syscall instruction */
+            ia_rpc_note_syscall_stop(env->regs[R_EAX]);
             ret = do_syscall(env,
                              env->regs[R_EAX],
                              env->regs[R_EDI],

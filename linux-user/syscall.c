@@ -9888,14 +9888,12 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
         return ret;
     case TARGET_NR_nanosleep:
         {
-            struct timespec req, rem;
-            target_to_host_timespec(&req, arg1);
-            ret = get_errno(safe_nanosleep(&req, &rem));
-            if (is_error(ret) && arg2) {
+            if (arg2) {
+                struct timespec rem = { 0, 0 };
                 host_to_target_timespec(arg2, &rem);
             }
         }
-        return ret;
+        return 0;
     case TARGET_NR_prctl:
         switch (arg1) {
         case PR_GET_PDEATHSIG:
@@ -11294,21 +11292,17 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 #ifdef TARGET_NR_clock_nanosleep
     case TARGET_NR_clock_nanosleep:
     {
-        struct timespec ts;
-        target_to_host_timespec(&ts, arg3);
-        ret = get_errno(safe_clock_nanosleep(arg1, arg2,
-                                             &ts, arg4 ? &ts : NULL));
-        if (arg4)
-            host_to_target_timespec(arg4, &ts);
+        if (arg4) {
+            struct timespec rem = { 0, 0 };
+            host_to_target_timespec(arg4, &rem);
+        }
 
 #if defined(TARGET_PPC)
         /* clock_nanosleep is odd in that it returns positive errno values.
          * On PPC, CR0 bit 3 should be set in such a situation. */
-        if (ret && ret != -TARGET_ERESTARTSYS) {
-            ((CPUPPCState *)cpu_env)->crf[0] |= 1;
-        }
+        ((CPUPPCState *)cpu_env)->crf[0] &= ~1;
 #endif
-        return ret;
+        return 0;
     }
 #endif
 
