@@ -101,13 +101,11 @@ void cpu_loop(CPUX86State *env)
         cpu_exec_start(cs);
         trapnr = cpu_exec(cs);
         cpu_exec_end(cs);
-        ia_rpc_set_exec_state(IA_EXEC_PAUSED);
         process_queued_cpu_work(cs);
 
         switch(trapnr) {
         case 0x80:
             /* linux syscall from int $0x80 */
-            ia_rpc_note_syscall_stop(env->regs[R_EAX]);
             ret = do_syscall(env,
                              env->regs[R_EAX],
                              env->regs[R_EBX],
@@ -126,7 +124,6 @@ void cpu_loop(CPUX86State *env)
 #ifndef TARGET_ABI32
         case EXCP_SYSCALL:
             /* linux syscall from syscall instruction */
-            ia_rpc_note_syscall_stop(env->regs[R_EAX]);
             ret = do_syscall(env,
                              env->regs[R_EAX],
                              env->regs[R_EDI],
@@ -272,6 +269,9 @@ void cpu_loop(CPUX86State *env)
             EXCP_DUMP(env, "qemu: 0x%08lx: unhandled CPU exception 0x%x - aborting\n",
                       (long)pc, trapnr);
             abort();
+        }
+        if (ia_rpc_should_pause_after_trap()) {
+            ia_rpc_set_exec_state(IA_EXEC_PAUSED);
         }
         process_pending_signals(env);
     }

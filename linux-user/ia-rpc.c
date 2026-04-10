@@ -2818,6 +2818,21 @@ void ia_rpc_note_syscall_stop(int num)
     qemu_mutex_unlock(&ia_state.lock);
 }
 
+bool ia_rpc_should_pause_after_trap(void)
+{
+    bool should_pause;
+
+    if (!ia_state.enabled) {
+        return false;
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    should_pause = ia_state.pause_pending;
+    qemu_mutex_unlock(&ia_state.lock);
+
+    return should_pause;
+}
+
 void ia_rpc_set_exit_code(int code)
 {
     if (!ia_state.enabled) {
