@@ -77,8 +77,6 @@ typedef struct IAState {
     bool pending_termination;
     bool close_requested;
     IATerminationKind termination_kind;
-    IAStopKind stop_kind;
-    int stop_syscall_num;
     int termination_signal;
     int termination_si_code;
     uint64_t termination_fault_addr;
@@ -192,16 +190,9 @@ static void ia_clear_run_control_locked(void)
     ia_state.pause_pending = false;
 }
 
-static void ia_clear_stop_metadata_locked(void)
-{
-    ia_state.stop_kind = IA_STOP_NONE;
-    ia_state.stop_syscall_num = -1;
-}
-
 static void ia_enter_terminal_pause_locked(void)
 {
     ia_clear_run_control_locked();
-    ia_clear_stop_metadata_locked();
     ia_state.start_paused = true;
     ia_state.run_requested = false;
     ia_state.close_requested = false;
@@ -1275,19 +1266,6 @@ static QDict *ia_handle_query_status(int64_t id)
         qdict_put_int(result, "exit_code", ia_state.exit_code);
     }
     qdict_put_bool(result, "pending_termination", ia_state.pending_termination);
-    switch (ia_state.stop_kind) {
-    case IA_STOP_SYSCALL:
-        qdict_put_str(result, "stop_kind", "syscall");
-        qdict_put_int(result, "stop_syscall_num", ia_state.stop_syscall_num);
-        break;
-    case IA_STOP_SLEEP:
-        qdict_put_str(result, "stop_kind", "sleep");
-        qdict_put_int(result, "stop_syscall_num", ia_state.stop_syscall_num);
-        break;
-    case IA_STOP_NONE:
-    default:
-        break;
-    }
     if (ia_state.pending_termination) {
         switch (ia_state.termination_kind) {
         case IA_TERM_EXIT:
@@ -1401,7 +1379,6 @@ static QDict *ia_handle_resume(int64_t id)
 
     qemu_mutex_lock(&ia_state.lock);
     ia_state.run_requested = true;
-    ia_clear_stop_metadata_locked();
     if (!ia_state.pending_termination) {
         ia_state.exec_state = IA_EXEC_RUNNING;
     }
@@ -2674,7 +2651,6 @@ void ia_wait_if_paused(void)
         qemu_cond_wait(&ia_state.cond, &ia_state.lock);
     }
     if (ia_state.run_requested) {
-        ia_clear_stop_metadata_locked();
         ia_state.start_paused = false;
         ia_state.run_requested = false;
         ia_state.exec_state = IA_EXEC_RUNNING;
@@ -2790,31 +2766,8 @@ void ia_rpc_set_exec_state(IAExecState state)
         ia_state.pause_pending = false;
         qemu_cond_broadcast(&ia_state.cond);
     } else if (state == IA_EXEC_EXITED) {
-        ia_clear_stop_metadata_locked();
         qemu_cond_broadcast(&ia_state.cond);
     }
-    qemu_mutex_unlock(&ia_state.lock);
-}
-
-void ia_rpc_note_syscall_stop(int num)
-{
-    if (!ia_state.enabled) {
-        return;
-    }
-
-    qemu_mutex_lock(&ia_state.lock);
-    ia_state.stop_kind = IA_STOP_SYSCALL;
-    ia_state.stop_syscall_num = num;
-#ifdef TARGET_NR_nanosleep
-    if (num == TARGET_NR_nanosleep) {
-        ia_state.stop_kind = IA_STOP_SLEEP;
-    }
-#endif
-#ifdef TARGET_NR_clock_nanosleep
-    if (num == TARGET_NR_clock_nanosleep) {
-        ia_state.stop_kind = IA_STOP_SLEEP;
-    }
-#endif
     qemu_mutex_unlock(&ia_state.lock);
 }
 

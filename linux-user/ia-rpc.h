@@ -21,16 +21,9 @@ typedef enum IATerminationKind {
     IA_TERM_SIGNAL,
 } IATerminationKind;
 
-typedef enum IAStopKind {
-    IA_STOP_NONE = 0,
-    IA_STOP_SYSCALL,
-    IA_STOP_SLEEP,
-} IAStopKind;
-
 void ia_rpc_init(CPUState *cpu);
 void ia_rpc_shutdown(void);
 void ia_rpc_set_exec_state(IAExecState state);
-void ia_rpc_note_syscall_stop(int num);
 bool ia_rpc_should_pause_after_trap(void);
 void ia_rpc_set_exit_code(int code);
 bool ia_rpc_pause_on_exit(int code, bool group_exit);

@@ -789,12 +789,6 @@ safe_syscall4(int, rt_sigtimedwait, const sigset_t *, these, siginfo_t *, uinfo,
               const struct timespec *, uts, size_t, sigsetsize)
 safe_syscall4(int, accept4, int, fd, struct sockaddr *, addr, socklen_t *, len,
               int, flags)
-safe_syscall2(int, nanosleep, const struct timespec *, req,
-              struct timespec *, rem)
-#ifdef TARGET_NR_clock_nanosleep
-safe_syscall4(int, clock_nanosleep, const clockid_t, clock, int, flags,
-              const struct timespec *, req, struct timespec *, rem)
-#endif
 #ifdef __NR_ipc
 safe_syscall6(int, ipc, int, call, long, first, long, second, long, third,
               void *, ptr, long, fifth)
