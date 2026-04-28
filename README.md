@@ -37,11 +37,16 @@ docker pull ghcr.io/bitsecurerlab/symfit:latest
 
 ## Building SymFit
 
-You can build SymFit against prebuilt Symsan artifacts (recommended), or point source builds at a standalone Symsan checkout via `SYMSAN_SRC=/path/to/symsan`.
+SymFit now carries its companion projects in-tree:
 
-If you already have a prebuilt Symsan install or release tarball, `build.sh` can use that directly. For source builds, clone Symsan separately and point `SYMSAN_SRC` at that checkout.
+- `symsan/` - Symsan compiler/runtime/solver sources used by the SymFit backend
+- `dynamiq/` - Python control and analysis tooling for live SymFit sessions
 
-Build with the default prebuilt/download flow:
+You can build SymFit against the in-tree Symsan source, prebuilt Symsan artifacts, or an external Symsan checkout via `SYMSAN_SRC=/path/to/symsan`.
+
+If you already have a prebuilt Symsan install or release tarball, `build.sh` can use that directly. For source builds, `build.sh` defaults to `./symsan`; set `SYMSAN_SRC` only when you want to build against a different checkout.
+
+Build everything from the monorepo defaults:
 
 ```bash
 ./build.sh all
@@ -53,20 +58,22 @@ Or rebuild SymFit against an existing Symsan install:
 ./build.sh symfit-symsan
 ```
 
-For a source build, clone Symsan separately and pass `SYMSAN_SRC`:
+For a source build against an external Symsan checkout, pass `SYMSAN_SRC`:
 
 ```bash
-git clone https://github.com/bitsecurerlab/symsan.git /path/to/symsan
 SYMSAN_SRC=/path/to/symsan ./build.sh all
 ```
 
 This will compile SymFit with the SymSan backend. The build artifacts will be located in:
 - `build/symfit-symsan/` - SymFit QEMU binaries
-- `/mnt/d/git/symsan/install/` - SymSan tools and libraries used by SymFit
+- `build/symsan/` - Symsan tools and libraries used by SymFit
 
-By default, `build.sh` builds both user targets:
+By default, `build.sh` builds user-mode and system-mode targets:
 - `x86_64-linux-user/symfit-x86_64` (for x86_64 binaries)
 - `i386-linux-user/symfit-i386` (for i386 binaries)
+- `aarch64-linux-user/symfit-aarch64` (for AArch64 binaries)
+- `x86_64-softmmu/qemu-system-x86_64`
+- `aarch64-softmmu/qemu-system-aarch64`
 
 You can override this with:
 
