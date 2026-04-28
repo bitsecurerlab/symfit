@@ -989,22 +989,6 @@ static uint64_t symsan_setcond_internal(CPUArchState *env, uint64_t arg1, uint64
         g_assert_not_reached();
     }
     // fprintf(stderr, "sym branch 0x%lx\n", env->eip);
-    if (!result) {
-        switch (predicate) {
-        case bveq:  predicate = bvneq; break;
-        case bvneq: predicate = bveq;  break;
-        case bvugt: predicate = bvule; break;
-        case bvuge: predicate = bvult; break;
-        case bvult: predicate = bvuge; break;
-        case bvule: predicate = bvugt; break;
-        case bvsgt: predicate = bvsle; break;
-        case bvsge: predicate = bvslt; break;
-        case bvslt: predicate = bvsge; break;
-        case bvsle: predicate = bvsgt; break;
-        default:
-            g_assert_not_reached();
-        }
-    }
     {
         dfsan_label cmp_label =
             dfsan_union(arg1_label, arg2_label, (predicate << 8) | ICmp,

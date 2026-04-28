@@ -243,6 +243,7 @@ static const char *ia_label_op_name(uint16_t op)
     case Arg: return "Arg";
     case fmemcmp: return "fmemcmp";
     case fsize: return "fsize";
+    case Ite: return "Ite";
     default: return "Unknown";
     }
 }
@@ -556,6 +557,15 @@ static bool ia_format_symbolic_expression_inner(GString *out, dfsan_label label,
         return true;
     case fsize:
         g_string_append_printf(out, "fsize(%" PRIu64 ")", info->op1.i);
+        return true;
+    case Ite:
+        g_string_append(out, "(");
+        ia_append_operand(out, info->l1, 1, info->op1.i, depth);
+        g_string_append(out, " ? ");
+        ia_append_immediate(out, info->size, 1);
+        g_string_append(out, " : ");
+        ia_append_immediate(out, info->size, 0);
+        g_string_append(out, ")");
         return true;
     default:
         binary_op = ia_c_binary_op(op);
@@ -1025,7 +1035,7 @@ static bool ia_copy_requested_names(QList *names, const char **out_names, size_t
 
     QLIST_FOREACH_ENTRY(names, entry) {
         QString *name = qobject_to(QString, qlist_entry_obj(entry));
-        if (!name || i >= 32) {
+        if (!name || i >= 64) {
             return false;
         }
         out_names[i++] = qstring_get_str(name);
@@ -1266,6 +1276,65 @@ static bool ia_lookup_register(CPUX86State *env, const char *name, uint64_t *out
         return false;
     }
     return true;
+}
+#endif
+
+#if defined(TARGET_AARCH64)
+static bool ia_parse_aarch64_xreg(const char *name, unsigned int *out_index)
+{
+    unsigned int index = 0;
+    const char *p = name;
+
+    if (*p != 'x') {
+        return false;
+    }
+    p++;
+    if (*p < '0' || *p > '9') {
+        return false;
+    }
+    while (*p >= '0' && *p <= '9') {
+        index = index * 10 + (unsigned int)(*p - '0');
+        if (index > 31) {
+            return false;
+        }
+        p++;
+    }
+    if (*p != '\0') {
+        return false;
+    }
+    *out_index = index;
+    return true;
+}
+
+static bool ia_lookup_register_shadow(CPUARMState *env, const char *name,
+                                      uint64_t *out_value, dfsan_label *out_label,
+                                      uint32_t *out_width_bits)
+{
+    unsigned int index;
+
+    if (strcmp(name, "pc") == 0) {
+        *out_value = env->pc;
+        *out_label = 0;
+    } else if (strcmp(name, "sp") == 0) {
+        *out_value = env->xregs[31];
+        *out_label = env->shadow_xregs[31];
+    } else if (ia_parse_aarch64_xreg(name, &index)) {
+        *out_value = env->xregs[index];
+        *out_label = env->shadow_xregs[index];
+    } else {
+        return false;
+    }
+    if (out_width_bits) {
+        *out_width_bits = 64;
+    }
+    return true;
+}
+
+static bool ia_lookup_register(CPUARMState *env, const char *name, uint64_t *out)
+{
+    dfsan_label label;
+
+    return ia_lookup_register_shadow(env, name, out, &label, NULL);
 }
 #endif
 
@@ -1827,20 +1896,28 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
 
 static QDict *ia_handle_get_registers(int64_t id, QDict *params)
 {
-#if !defined(TARGET_X86_64) && !defined(TARGET_I386)
-    return ia_make_error_response(id, "unsupported_arch", "get_registers is only implemented for x86 targets");
-#else
-#if defined(TARGET_X86_64)
+#if defined(TARGET_AARCH64)
+    static const char *default_names[] = {
+        "pc", "sp",
+        "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
+        "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
+        "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
+        "x24", "x25", "x26", "x27", "x28", "x29", "x30",
+    };
+#elif defined(TARGET_X86_64)
     static const char *default_names[] = {
         "rip", "rsp", "rbp", "rax", "rbx", "rcx", "rdx", "rsi", "rdi",
         "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
     };
-#else
+#elif defined(TARGET_I386)
     static const char *default_names[] = {
         "eip", "esp", "ebp", "eax", "ebx", "ecx", "edx", "esi", "edi",
     };
+#else
+    return ia_make_error_response(id, "unsupported_arch",
+                                  "get_registers is only implemented for x86 and AArch64 targets");
 #endif
-    const char *requested[32];
+    const char *requested[64];
     size_t count = G_N_ELEMENTS(default_names);
     QList *names = NULL;
     const char *const *name_list = default_names;
@@ -1908,7 +1985,6 @@ static QDict *ia_handle_get_registers(int64_t id, QDict *params)
     qdict_put(result, "registers", regs);
     qdict_put(result, "symbolic_registers", symbolic_regs);
     return ia_make_ok_response(id, result);
-#endif
 }
 
 static QDict *ia_handle_read_memory(int64_t id, QDict *params)
