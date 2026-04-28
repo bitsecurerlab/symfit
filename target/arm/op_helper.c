@@ -25,6 +25,9 @@
 #include "internals.h"
 #include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
+#ifdef CONFIG_USER_ONLY
+#include "linux-user/ia-rpc.h"
+#endif
 
 #define SIGNBIT (uint32_t)0x80000000
 #define SIGNBIT64 ((uint64_t)1 << 63)
@@ -68,6 +71,25 @@ void raise_exception_ra(CPUARMState *env, uint32_t excp, uint32_t syndrome,
     CPUState *cs = do_raise_exception(env, excp, syndrome, target_el);
     cpu_loop_exit_restore(cs, ra);
 }
+
+#ifdef CONFIG_USER_ONLY
+void HELPER(ia_tb_start)(CPUARMState *env, target_ulong pc)
+{
+    CPUState *cs = env_cpu(env);
+
+    ia_on_basic_block_executed(cs, pc);
+}
+
+void HELPER(ia_insn_start)(CPUARMState *env, target_ulong pc)
+{
+    CPUState *cs = env_cpu(env);
+
+    if (ia_should_stop_before_instruction(cs, pc)) {
+        cs->exception_index = EXCP_SWITCH;
+        cpu_loop_exit_restore(cs, GETPC());
+    }
+}
+#endif
 
 uint32_t HELPER(neon_tbl)(uint32_t ireg, uint32_t def, void *vn,
                           uint32_t maxindex)

@@ -123,7 +123,7 @@ sym_ld_helper(CPUArchState *env, target_ulong addr, uint32_t oi)
     CPUTLBEntry *te;
 
     void *host_addr = g2h(addr);
-    uint64_t res_label = dfsan_read_label((uint8_t*)host_addr, load_length);
+    uint64_t res_label = symsan_read_label_raw((uint8_t*)host_addr, load_length);
 
     env->val_expr = res_label;
     // if (res_label) {
@@ -133,7 +133,7 @@ sym_ld_helper(CPUArchState *env, target_ulong addr, uint32_t oi)
                 //    host_addr, res_label, env->val_expr, load_length);
     target_ulong vaddr_page = addr & TARGET_1024_MASK;
     te = tlb_entry(env, mmu_idx, vaddr_page);
-    if (dfsan_region_is_concrete((void *)PAGE_START(host_addr), TARGET_1024_SIZE)) {
+    if (symsan_region_is_concrete_raw((void *)PAGE_START(host_addr), TARGET_1024_SIZE)) {
         // fprintf(stderr, "load addr_read 0x%p vaddr_page: 0x%lx addr_read: 0x%lx\n", te, vaddr_page, te->addr_read);
         // if (!cross_page_access(addr, load_length))
             // assert(te->addr_read!=vaddr_page);
@@ -155,7 +155,7 @@ check_ld_helper(CPUArchState *env, target_ulong addr, uint32_t oi, uintptr_t ret
     void *host_addr = g2h(addr);
     //printf("host addr %lx %p %p\n", addr, (uint8_t*)host_addr, host_addr);
     //void *memory_expr = _sym_read_memory((uint8_t*)host_addr, length, true);
-    uint64_t res_label = dfsan_read_label((uint8_t*)host_addr, length);
+    uint64_t res_label = symsan_read_label_raw((uint8_t*)host_addr, length);
 
     vaddr_page = addr & TARGET_1024_MASK;
     te = tlb_entry(env, mmu_idx, vaddr_page);
@@ -172,7 +172,7 @@ check_ld_helper(CPUArchState *env, target_ulong addr, uint32_t oi, uintptr_t ret
     // fprintf(stderr, "check_load_guest\n");
     
     // Pass for corss-page access.
-    if (dfsan_region_is_concrete((void *)PAGE_START(host_addr), TARGET_1024_SIZE)) {
+    if (symsan_region_is_concrete_raw((void *)PAGE_START(host_addr), TARGET_1024_SIZE)) {
             // fprintf(stderr, "load addr_read 0x%lx vaddr_page: 0x%lx addr: 0x%lx\n", te->addr_read, vaddr_page, addr);
     // if (dfsan_concrete_page(host_addr)) {
         // if (!cross_page_access(addr, length))
@@ -232,7 +232,7 @@ sym_st_helper(CPUArchState *env, target_ulong addr, uint32_t oi)
         te->addr_read = -1;
     } else {
         // fprintf(stderr, "null write guest 0x%lx\n", global_env->eip);
-        if (dfsan_region_is_concrete((void *)PAGE_START(host_addr), TARGET_1024_SIZE)) {
+        if (symsan_region_is_concrete_raw((void *)PAGE_START(host_addr), TARGET_1024_SIZE)) {
         // if (dfsan_concrete_page(host_addr)) {
             // Should not enable this assert since we nullify the target address.
             // if (!cross_page_access(addr, length) && env->val_expr == 0)
@@ -262,7 +262,7 @@ check_st_helper(CPUArchState *env, target_ulong addr, uint32_t oi)
     vaddr_page = addr & TARGET_1024_MASK;
     te = tlb_entry(env, mmu_idx, vaddr_page);
     // Pass for corss-page access.
-    if (dfsan_region_is_concrete((void *)PAGE_START(host_addr), TARGET_1024_SIZE)) {
+    if (symsan_region_is_concrete_raw((void *)PAGE_START(host_addr), TARGET_1024_SIZE)) {
     // if (dfsan_concrete_page(host_addr)) {
         // Should not enable this assert since we nullify the target address.
         // fprintf(stderr, "store addr_read 0x%p vaddr_page: 0x%lx addr: 0x%lx\n", te, vaddr_page, addr);

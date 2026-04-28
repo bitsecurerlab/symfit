@@ -22,6 +22,7 @@
 #include "qemu.h"
 #include "cpu_loop-common.h"
 #include "qemu/guest-random.h"
+#include "../ia-rpc.h"
 
 #define get_user_code_u32(x, gaddr, env)                \
     ({ abi_long __r = get_user_u32((x), (gaddr));       \
@@ -80,6 +81,12 @@ void cpu_loop(CPUARMState *env)
     target_siginfo_t info;
 
     for (;;) {
+        ia_wait_if_paused();
+        if (ia_rpc_finalize_pending_termination(env)) {
+            continue;
+        }
+        ia_rpc_set_exec_state(IA_EXEC_RUNNING);
+
         cpu_exec_start(cs);
         trapnr = cpu_exec(cs);
         cpu_exec_end(cs);
@@ -137,9 +144,14 @@ void cpu_loop(CPUARMState *env)
         case EXCP_ATOMIC:
             cpu_exec_step_atomic(cs);
             break;
+        case EXCP_SWITCH:
+            break;
         default:
             EXCP_DUMP(env, "qemu: unhandled CPU exception 0x%x - aborting\n", trapnr);
             abort();
+        }
+        if (ia_rpc_should_pause_after_trap()) {
+            ia_rpc_set_exec_state(IA_EXEC_PAUSED);
         }
         process_pending_signals(env);
         /* Exception return on AArch64 always clears the exclusive monitor,

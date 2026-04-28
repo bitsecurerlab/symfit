@@ -3454,6 +3454,8 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 {
     TCGMemOp orig_memop;
     TCGv_i64 load_size;
+    TCGv saved_addr;
+    TCGv_i64 saved_addr_label;
 
     tcg_gen_req_mo(TCG_MO_LD_LD | TCG_MO_ST_LD);
     memop = tcg_canonicalize_memop(memop, 0, 0);
@@ -3469,22 +3471,42 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         }
     }
 
-    gen_ldst_i32(INDEX_op_qemu_ld_i32, val, addr, memop, idx);
+    /*
+     * The destination register can overlap the address base register, e.g.
+     * AArch64 "ldrb w0, [x0, #2]". Preserve both the concrete address and its
+     * label before the concrete load overwrites the destination.
+     */
+    saved_addr = tcg_temp_new();
+    saved_addr_label = tcg_temp_new_i64();
+    tcg_gen_mov_tl(saved_addr, addr);
+    tcg_gen_mov_i64(saved_addr_label, tcgv_i64_expr_num(addr));
+
     TCGv_i64 mmu_idx = tcg_const_i64(idx);
-    /* Perform the symbolic memory access. Doing so _after_ the concrete
-     * operation ensures that the target address is in the TLB. */
     load_size = tcg_const_i64(1 << (memop & MO_SIZE));
-    if(second_ccache_flag) {
+    if (!second_ccache_flag) {
+        /*
+         * Check before the concrete load so a switch to symbolic mode
+         * replays the instruction with pre-load architectural state. This is
+         * required when the load destination overlaps the address register.
+         */
+        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
+                                           mmu_idx);
+    }
+
+    gen_ldst_i32(INDEX_op_qemu_ld_i32, val, addr, memop, idx);
+
+    if (second_ccache_flag) {
         /*gen_helper_sym_load_guest_i32(tcgv_i32_expr(val), cpu_env,
                                   addr, tcgv_i64_expr(addr),
                                   load_size);*/
-        gen_helper_symsan_load_guest_i32(shadow_i32(val), cpu_env, addr, tcgv_i64_expr_num(addr), load_size, mmu_idx);
-    } else {
-        // gen_helper_sym_check_load_guest(cpu_env, addr, load_size);
-        gen_helper_symsan_check_load_guest(cpu_env, addr, load_size, mmu_idx);
+        gen_helper_symsan_load_guest_i32(shadow_i32(val), cpu_env,
+                                         saved_addr, saved_addr_label,
+                                         load_size, mmu_idx);
     }
     tcg_temp_free_i64(load_size);
     tcg_temp_free_i64(mmu_idx);
+    tcg_temp_free_i64(saved_addr_label);
+    tcg_temp_free(saved_addr);
 
     if ((orig_memop ^ memop) & MO_BSWAP) {
         switch (orig_memop & MO_SIZE) {
@@ -3558,6 +3580,8 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 {
     TCGMemOp orig_memop;
     TCGv_i64 load_size;
+    TCGv saved_addr;
+    TCGv_i64 saved_addr_label;
 
     if (TCG_TARGET_REG_BITS == 32 && (memop & MO_SIZE) < MO_64) {
         tcg_gen_qemu_ld_i32(TCGV_LOW(val), addr, idx, memop);
@@ -3583,17 +3607,39 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         }
     }
 
-    gen_ldst_i64(INDEX_op_qemu_ld_i64, val, addr, memop, idx);
-    /* Perform the symbolic memory access. Doing so _after_ the concrete
-     * operation ensures that the target address is in the TLB. */
+    /*
+     * The destination register can overlap the address base register, e.g.
+     * AArch64 "ldrb w0, [x0, #2]". Preserve both the concrete address and its
+     * label before the concrete load overwrites the destination.
+     */
+    saved_addr = tcg_temp_new();
+    saved_addr_label = tcg_temp_new_i64();
+    tcg_gen_mov_tl(saved_addr, addr);
+    tcg_gen_mov_i64(saved_addr_label, tcgv_i64_expr_num(addr));
+
     load_size = tcg_const_i64(1 << (memop & MO_SIZE));
     TCGv_i64 mmu_idx = tcg_const_i64(idx);
-    if(!second_ccache_flag) {
-        gen_helper_symsan_check_load_guest(cpu_env, addr, load_size, mmu_idx);
-    } else {
-        gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val), cpu_env, addr, tcgv_i64_expr_num(addr), load_size, mmu_idx);    }
+    if (!second_ccache_flag) {
+        /*
+         * Check before the concrete load so a switch to symbolic mode
+         * replays the instruction with pre-load architectural state. This is
+         * required when the load destination overlaps the address register.
+         */
+        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
+                                           mmu_idx);
+    }
+
+    gen_ldst_i64(INDEX_op_qemu_ld_i64, val, addr, memop, idx);
+
+    if (second_ccache_flag) {
+        gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val), cpu_env,
+                                         saved_addr, saved_addr_label,
+                                         load_size, mmu_idx);
+    }
     tcg_temp_free_i64(load_size);
     tcg_temp_free_i64(mmu_idx);
+    tcg_temp_free_i64(saved_addr_label);
+    tcg_temp_free(saved_addr);
 
     if ((orig_memop ^ memop) & MO_BSWAP) {
         switch (orig_memop & MO_SIZE) {

@@ -1050,7 +1050,7 @@ static void ia_append_memory_labels(QList *bytes, const uint8_t *host_ptr, size_
     size_t i;
 
     for (i = 0; i < size; i++) {
-        dfsan_label label = dfsan_read_label(host_ptr + i, 1);
+        dfsan_label label = symsan_read_label_raw(host_ptr + i, 1);
         qlist_append(bytes, ia_make_symbolic_byte_entry(i, label));
     }
 }

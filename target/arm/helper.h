@@ -56,6 +56,10 @@ DEF_HELPER_1(pre_hvc, void, env)
 DEF_HELPER_2(pre_smc, void, env, i32)
 
 DEF_HELPER_1(check_breakpoints, void, env)
+#ifdef CONFIG_USER_ONLY
+DEF_HELPER_2(ia_tb_start, void, env, tl)
+DEF_HELPER_2(ia_insn_start, void, env, tl)
+#endif
 
 DEF_HELPER_3(cpsr_write, void, env, i32, i32)
 DEF_HELPER_2(cpsr_write_eret, void, env, i32)

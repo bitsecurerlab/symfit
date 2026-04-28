@@ -1107,7 +1107,7 @@ static uint64_t symsan_load_guest_internal(CPUArchState *env, target_ulong addr,
     if (host_addr == NULL) return 0; // No dfsan label associated with a null address
     uint64_t concrete_value = symsan_read_concrete_load_value(host_addr,
                                                               load_length);
-    uint64_t res_label = dfsan_read_label((uint8_t*)host_addr, load_length);
+    uint64_t res_label = symsan_read_label_raw((uint8_t*)host_addr, load_length);
     if (addr_label) {
         dfsan_label load_label = 0;
 
@@ -1164,7 +1164,7 @@ static uint64_t symsan_load_guest_internal(CPUArchState *env, target_ulong addr,
                     (unsigned long)get_pc(env),
                     (unsigned long)addr,
                     (unsigned long)addr_label,
-                    (unsigned long)dfsan_read_label((uint8_t *)host_addr, load_length),
+                    (unsigned long)symsan_read_label_raw((uint8_t *)host_addr, load_length),
                     load_label,
                     (unsigned long)concrete_value,
                     (unsigned long)load_length);
@@ -1193,7 +1193,7 @@ uint64_t HELPER(symsan_load_guest_i64)(CPUArchState *env, target_ulong addr, uin
 static uint64_t symsan_load_host_internal(void *addr, uint64_t offset,
                                     uint64_t load_length, uint64_t result_length)
 {
-    uint64_t res_label = dfsan_read_label((uint8_t*)addr + offset, load_length);
+    uint64_t res_label = symsan_read_label_raw((uint8_t*)addr + offset, load_length);
     if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_HOST) && !noSymbolicData) {
         fprintf(stderr, "[memtrace:symbolic]op: load_host_i%ld addr: %p size: %ld memory_expr: %ld\n",
                      result_length*8, (uint8_t *)addr + offset, load_length, res_label);
@@ -1307,7 +1307,7 @@ void HELPER(symsan_store_host_i64)(uint64_t value_label,
 void HELPER(symsan_check_load_guest)(CPUArchState *env, target_ulong addr, uint64_t length, uint64_t mmu_idx) {
     void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
     if (host_addr == NULL) return;
-    uint32_t res_label = dfsan_read_label((uint8_t*)host_addr, length);
+    uint32_t res_label = symsan_read_label_raw((uint8_t*)host_addr, length);
     if (res_label != 0) {
         if (qemu_loglevel_mask(CPU_LOG_SYM_LDST_GUEST) && !noSymbolicData) {
             // fprintf(stderr, "[memtrace:switch] op: load_guest addr: 0x%lx host_addr %p mode: concrete\n",
@@ -1402,7 +1402,7 @@ void HELPER(symsan_check_state_switch)(CPUArchState *env) {
         uintptr_t xmm_reg_addr = (uintptr_t)env->xmm_regs;
         uint64_t xmm_reg = 0;
         for (uintptr_t addr = xmm_reg_addr; addr < xmm_reg_addr + size; addr+=8) {
-            xmm_reg = dfsan_read_label((uint8_t *)addr, 8);
+            xmm_reg = symsan_read_label_raw((uint8_t *)addr, 8);
             if (xmm_reg != 0) {
                 symbolic_flag = 1;
                 break;
@@ -1478,7 +1478,7 @@ void HELPER(symsan_check_state)(CPUArchState *env) {
         uintptr_t xmm_reg_addr = (uintptr_t)env->xmm_regs;
         uint64_t xmm_reg = 0;
         for (uintptr_t addr = xmm_reg_addr; addr < xmm_reg_addr + size; addr+=8) {
-            xmm_reg = dfsan_read_label((uint8_t *)addr, 8);
+            xmm_reg = symsan_read_label_raw((uint8_t *)addr, 8);
             if (xmm_reg != 0) {
                 symbolic_flag = 1;
                 break;

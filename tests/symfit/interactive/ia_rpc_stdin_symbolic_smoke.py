@@ -172,14 +172,16 @@ def main():
                 raise RuntimeError(f"backend exited unexpectedly with status {rc}")
             if final_status.get("status") == "exited":
                 break
+            if final_status.get("pending_termination"):
+                summary["close"] = rpc_call(stream, req_id, "close")
+                req_id += 1
+                final_status = {"status": "exited"}
+                break
             time.sleep(0.05)
         summary["status_final"] = final_status
 
         print("IA/RPC symbolic stdin smoke test passed")
         print(json.dumps(summary, indent=2))
-
-        stream.close()
-        client.close()
 
         rc = proc.wait(timeout=max(1.0, args.exit_timeout))
         if rc != 0:
@@ -245,6 +247,9 @@ def main():
         if summary["status_final"].get("status") != "exited":
             print("Expected helper target to exit after resume", file=sys.stderr)
             return 1
+
+        stream.close()
+        client.close()
 
         return 0
 
