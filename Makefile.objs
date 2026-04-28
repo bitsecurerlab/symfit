@@ -102,6 +102,8 @@ version-obj-$(CONFIG_WIN32) += $(BUILD_DIR)/version.o
 ######################################################################
 # tracing
 util-obj-y +=  trace/
+# telemetry/agent integration
+common-obj-y += symfit-telemetry/
 
 ######################################################################
 # guest agent

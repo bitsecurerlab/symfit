@@ -735,8 +735,7 @@ struct TCGContext {
     /* These structures are private to tcg-target.inc.c.  */
 #ifdef TCG_TARGET_NEED_LDST_LABELS
     QSIMPLEQ_HEAD(, TCGLabelQemuLdst) ldst_labels;
-#endif
-#ifdef CONFIG_2nd_CCACHE
+#elif CONFIG_2nd_CCACHE
     QSIMPLEQ_HEAD(, TCGLabelQemuLdst) ldst_labels;
 #endif
 #ifdef TCG_TARGET_NEED_POOL_LABELS

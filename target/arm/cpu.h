@@ -216,6 +216,16 @@ typedef struct CPUARMState {
     /* Regs for A64 mode.  */
     uint64_t xregs[32];
     uint64_t pc;
+
+    /* Shadow registers for covering 32 and 64-bit modes */
+    uint32_t shadow_regs[16];
+    uint64_t shadow_xregs[32];
+    /* Conditional flags too */
+    uint32_t shadow_CF;
+    uint32_t shadow_NF;
+    uint32_t shadow_VF;
+    uint32_t shadow_ZF;
+
     /* PSTATE isn't an architectural register for ARMv8. However, it is
      * convenient for us to assemble the underlying state into a 32 bit format
      * identical to the architectural format used for the SPSR. (This is also
@@ -682,6 +692,7 @@ typedef struct CPUARMState {
     const struct arm_boot_info *boot_info;
     /* Store GICv3CPUState to access from this struct */
     void *gicv3state;
+    uint32_t symsan_instrument_syscalls; // Claude asked for this. We should probably remove it.
 } CPUARMState;
 
 /**

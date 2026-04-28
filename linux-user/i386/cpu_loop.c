@@ -22,9 +22,15 @@
 #include "qemu.h"
 #include "cpu_loop-common.h"
 #include "../ia-rpc.h"
+
+// Moved to linux-user/main.c to make architecturally agnostic
+/*
 #ifdef CONFIG_2nd_CCACHE
 int noSymbolicData = 1;
 #endif
+*/
+
+
 /***********************************************************/
 /* CPUX86 core interface */
 

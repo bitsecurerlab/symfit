@@ -358,7 +358,7 @@ struct CPUState {
 
     int nr_cores;
     int nr_threads;
-
+    bool in_symsan_helper;
     struct QemuThread *thread;
 #ifdef _WIN32
     HANDLE hThread;

@@ -64,6 +64,12 @@ unsigned long mmap_min_addr;
 unsigned long guest_base;
 int have_guest_base;
 
+#ifdef CONFIG_2nd_CCACHE
+// Moved from linux-user/i386/cpu_loop.c to make architecturally agnostic
+int noSymbolicData = 1;
+#endif
+
+
 /*
  * When running 32-on-64 we should make sure we can fit all of the possible
  * guest address space into a contiguous chunk of virtual host memory.

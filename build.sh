@@ -15,7 +15,7 @@ BUILD_DIR="${BUILD_DIR:-"$ROOT/build"}"
 SYMSAN_INSTALL="${SYMSAN_INSTALL:-${SYMSAN_BUILD:-"$BUILD_DIR/symsan"}}"
 SYMSAN_BUILD_DIR="${SYMSAN_BUILD_DIR:-"$BUILD_DIR/symsan-build"}"
 SYMFIT_SYMSAN_BUILD="${SYMFIT_SYMSAN_BUILD:-"$BUILD_DIR/symfit-symsan"}"
-SYMFIT_TARGET_LIST="${SYMFIT_TARGET_LIST:-x86_64-linux-user,i386-linux-user}"
+SYMFIT_TARGET_LIST="${SYMFIT_TARGET_LIST:-x86_64-linux-user,i386-linux-user,x86_64-softmmu,aarch64-softmmu,aarch64-linux-user}"
 
 # Toolchain / perf
 CLANG_VER="${CLANG_VER:-12}"          # override if different
@@ -189,6 +189,9 @@ build_symsan() {
         -DSYMSAN_DEBUG="${SYMSAN_DEBUG}"
   log "Building & installing Symsan"
   cmake --build "${SYMSAN_BUILD_DIR}" -j"${JOBS}"
+  mkdir -p "${SYMSAN_BUILD_DIR}/instrumentation/CMakeFiles/CMakeRelink.dir"
+  cp "${SYMSAN_BUILD_DIR}/instrumentation/libTaintPass.so" \
+     "${SYMSAN_BUILD_DIR}/instrumentation/CMakeFiles/CMakeRelink.dir/"
   cmake --install "${SYMSAN_BUILD_DIR}"
 }
 

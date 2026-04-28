@@ -233,6 +233,20 @@ nodes. This means that one still has to use the @option{-m},
 
 ETEXI
 
+DEF("symfit-telemetry", HAS_ARG, QEMU_OPTION_symfit_telemetry,
+    "-symfit-telemetry host:port\n"
+    "                Connect to SymFit telemetry listener for symbolic execution event streaming\n",
+    QEMU_ARCH_ALL)
+STEXI
+@item -symfit-telemetry @var{host:port}
+@findex -symfit-telemetry
+Connect to the SymFit telemetry listener for streaming symbolic execution events.
+Valid format is @var{host:port}, for example:
+@example
+qemu-system-x86_64 -symfit-telemetry 127.0.0.1:23100
+@end example
+ETEXI
+
 DEF("add-fd", HAS_ARG, QEMU_OPTION_add_fd,
     "-add-fd fd=fd,set=set[,opaque=opaque]\n"
     "                Add 'fd' to fd 'set'\n", QEMU_ARCH_ALL)

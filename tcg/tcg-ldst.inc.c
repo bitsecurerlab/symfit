@@ -33,13 +33,16 @@ typedef struct TCGLabelQemuLdst {
     QSIMPLEQ_ENTRY(TCGLabelQemuLdst) next;
 } TCGLabelQemuLdst;
 
-
 /*
  * Generate TB finalization at the end of block
  */
 #ifdef CONFIG_2nd_CCACHE
+/*
 static bool tcg_out_qemu_check_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
 static bool tcg_out_qemu_check_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
+*/
+static bool tcg_out_qemu_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
+static bool tcg_out_qemu_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
 static int tcg_out_symldst_finalize(TCGContext *s)
 {
     TCGLabelQemuLdst *lb;
@@ -47,8 +50,12 @@ static int tcg_out_symldst_finalize(TCGContext *s)
     /* qemu_ld/st slow paths */
     QSIMPLEQ_FOREACH(lb, &s->ldst_labels, next) {
         if (lb->is_ld
+            /*
             ? !tcg_out_qemu_check_ld_slow_path(s, lb)
             : !tcg_out_qemu_check_st_slow_path(s, lb)) {
+            */
+            ? !tcg_out_qemu_ld_slow_path(s, lb)
+            : !tcg_out_qemu_st_slow_path(s, lb)) {
             return -2;
         }
 
@@ -62,10 +69,13 @@ static int tcg_out_symldst_finalize(TCGContext *s)
     }
     return 0;
 }
+int tcg_out_ldst_finalize(TCGContext *s) {
+    return tcg_out_symldst_finalize(s);
+}
 #else
 static bool tcg_out_qemu_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
 static bool tcg_out_qemu_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l);
-static int tcg_out_ldst_finalize(TCGContext *s)
+int tcg_out_ldst_finalize(TCGContext *s)
 {
     TCGLabelQemuLdst *lb;
 

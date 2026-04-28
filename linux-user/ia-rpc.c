@@ -20,7 +20,8 @@
 #include "qapi/qmp/qstring.h"
 #include "disas/capstone.h"
 #include "exec/tcg-runtime-symsan-ext.h"
-#include "target/i386/cpu.h"
+//#include "target/i386/cpu.h"
+#include "cpu.h"
 #include "ia-rpc.h"
 #include "dfsan_interface.h"
 
@@ -126,6 +127,16 @@ static IAState ia_state = {
 static QDict *ia_make_error_response(int64_t id, const char *code,
                                      const char *message);
 static QDict *ia_make_ok_response(int64_t id, QDict *result);
+
+static target_ulong get_pc(CPUArchState *env)
+{
+    target_ulong pc, cs_base;
+    uint32_t flags;
+
+    cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+
+    return pc;
+}
 
 static bool ia_debug_path_constraints_enabled(void)
 {
@@ -769,7 +780,7 @@ static void ia_ensure_symbolic_mode_active(void)
 }
 
 static dfsan_label ia_create_symbolic_value_label(uint32_t width_bits,
-                                                  uint64_t base_offset)
+                                                  uint64_t base_offset, uint64_t pc)
 {
     dfsan_label acc = 0;
     uint32_t byte_count;
@@ -788,7 +799,7 @@ static dfsan_label ia_create_symbolic_value_label(uint32_t width_bits,
         if (acc == 0) {
             acc = byte_label;
         } else {
-            acc = dfsan_union(acc, byte_label, Concat, (i + 1) * 8, 0, 0);
+            acc = dfsan_union(acc, byte_label, Concat, (i + 1) * 8, 0, 0, pc);
             if (acc == 0) {
                 return 0;
             }
@@ -798,7 +809,7 @@ static dfsan_label ia_create_symbolic_value_label(uint32_t width_bits,
 }
 
 static void ia_symbolize_stdin_segment(uint8_t *host_ptr, size_t size,
-                                       uint64_t stream_offset)
+                                       uint64_t stream_offset, uint64_t pc)
 {
     size_t i;
 
@@ -807,7 +818,7 @@ static void ia_symbolize_stdin_segment(uint8_t *host_ptr, size_t size,
     }
     for (i = 0; i < size; i++) {
         dfsan_label label = dfsan_create_label((int)(stream_offset + i));
-        dfsan_store_label(label, host_ptr + i, 1);
+        dfsan_store_label(label, host_ptr + i, 1, pc);
     }
     ia_ensure_symbolic_mode_active();
 }
@@ -885,9 +896,13 @@ void ia_rpc_consume_stdin_read(int fd, void *host_buf, size_t size)
             ia_state.stdin_chunks_count--;
         }
 
+        CPUState *cpu;
+        CPUArchState *env;
         qemu_mutex_unlock(&ia_state.lock);
+        cpu = ia_state.current_cpu;
+        env = (CPUArchState *)cpu->env_ptr;
         if (symbolic) {
-            ia_symbolize_stdin_segment(cursor, consumed, stream_offset);
+            ia_symbolize_stdin_segment(cursor, consumed, stream_offset, get_pc(env));
         }
         cursor += consumed;
         remaining -= consumed;
@@ -1171,7 +1186,7 @@ static bool ia_lookup_register_binding(CPUX86State *env, const char *name,
     return true;
 }
 
-static bool ia_lookup_register_shadow(CPUX86State *env, const char *name,
+static bool ia_lookup_register_shadow(CPUArchState *env, const char *name,
                                       uint64_t *out_value, dfsan_label *out_label,
                                       uint32_t *out_width_bits)
 {
@@ -1827,7 +1842,7 @@ static QDict *ia_handle_get_registers(int64_t id, QDict *params)
     QList *names = NULL;
     const char *const *name_list = default_names;
     CPUState *cpu;
-    CPUX86State *env;
+    CPUArchState *env;
     QDict *regs = qdict_new();
     QDict *symbolic_regs = qdict_new();
     QDict *result = qdict_new();
@@ -1864,7 +1879,7 @@ static QDict *ia_handle_get_registers(int64_t id, QDict *params)
     cpu = ia_state.current_cpu;
     qemu_mutex_unlock(&ia_state.lock);
 
-    env = (CPUX86State *)cpu->env_ptr;
+    env = (CPUArchState *)cpu->env_ptr;
     for (i = 0; i < count; i++) {
         uint64_t value;
         dfsan_label label;
@@ -2074,6 +2089,12 @@ static QDict *ia_handle_symbolize_memory(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "invalid_state", "symbolization is only available while paused");
     }
+
+    CPUState *cpu;
+    CPUArchState *env;
+    cpu = ia_state.current_cpu;
+    env = (CPUArchState *)cpu->env_ptr;
+    uint64_t pc = get_pc(env);
     qemu_mutex_unlock(&ia_state.lock);
 
     host_ptr = lock_user(VERIFY_WRITE, (abi_ulong)addr, size, 0);
@@ -2085,7 +2106,7 @@ static QDict *ia_handle_symbolize_memory(int64_t id, QDict *params)
 
     for (i = 0; i < size; i++) {
         dfsan_label label = dfsan_create_label((int)i);
-        dfsan_store_label(label, (uint8_t *)host_ptr + i, 1);
+        dfsan_store_label(label, (uint8_t *)host_ptr + i, 1, pc);
     }
     ia_ensure_symbolic_mode_active();
     ia_append_memory_labels(bytes, host_ptr, (size_t)size);
@@ -2105,7 +2126,7 @@ static QDict *ia_handle_symbolize_register(int64_t id, QDict *params)
 #else
     const char *name;
     CPUState *cpu;
-    CPUX86State *env;
+    CPUArchState *env;
     target_ulong *shadow = NULL;
     uint64_t value = 0;
     uint32_t width_bits = 0;
@@ -2139,7 +2160,8 @@ static QDict *ia_handle_symbolize_register(int64_t id, QDict *params)
     cpu = ia_state.current_cpu;
     qemu_mutex_unlock(&ia_state.lock);
 
-    env = (CPUX86State *)cpu->env_ptr;
+    // This reaaaaally shouldn't be just x86...
+    env = (CPUArchState *)cpu->env_ptr;
     if (!ia_lookup_register_binding(env, name, &shadow, &value, &width_bits, NULL)) {
         qobject_unref(result);
         return ia_make_error_response(id, "invalid_params", "register is not supported for symbolization");
@@ -2150,7 +2172,7 @@ static QDict *ia_handle_symbolize_register(int64_t id, QDict *params)
     ia_state.symbolic_value_next_offset += MAX(1u, width_bits / 8);
     qemu_mutex_unlock(&ia_state.lock);
 
-    reg_label = ia_create_symbolic_value_label(width_bits, base_offset);
+    reg_label = ia_create_symbolic_value_label(width_bits, base_offset, get_pc(env));
     if (reg_label == 0) {
         qobject_unref(result);
         return ia_make_error_response(id, "internal_error", "failed to create symbolic register label");

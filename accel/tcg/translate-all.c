@@ -2309,7 +2309,7 @@ static void tb_jmp_cache_clear_page(CPUState *cpu, target_ulong page_addr)
 #ifdef CONFIG_2nd_CCACHE
     //This function is for whole system emulation.
     for (i = 0; i < TB_JMP_PAGE_SIZE; i++) {
-        atomic_set(&cpu->tb_jmp_cache2[i0 + i], NULL);
+        atomic_set(&cpu->tb_jmp_2cache[i0 + i], NULL);
     }
 #endif
     for (i = 0; i < TB_JMP_PAGE_SIZE; i++) {

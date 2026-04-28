@@ -508,10 +508,14 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
         if (*ret == EXCP_DEBUG) {
             cpu_handle_debug_exception(cpu);
         }
-        //if (*ret == EXCP_SWITCH) {
+        #ifndef CONFIG_USER_ONLY
+        if (*ret == EXCP_SWITCH) {
             //second_ccache_flag = 1;
             //fprintf(stderr, "handle switch exception %d\n", second_ccache_flag);
-        //}
+            second_ccache_flag = 1;
+            *ret = 0; // This line infuriates the linux_user exception handler! System mode tolerates, but consider removing outright
+        }
+        #endif
         cpu->exception_index = -1;
         return true;
     } else {

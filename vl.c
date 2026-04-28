@@ -100,6 +100,7 @@ int main(int argc, char **argv)
 #include "qemu/config-file.h"
 #include "qemu-options.h"
 #include "qemu/main-loop.h"
+#include "symfit-telemetry/symfit_telemetry.h"
 #ifdef CONFIG_VIRTFS
 #include "fsdev/qemu-fsdev.h"
 #endif
@@ -3077,6 +3078,21 @@ int main(int argc, char **argv, char **envp)
                 exit(1);
 #endif
                 break;
+            case QEMU_OPTION_symfit_telemetry: {
+                char *colon = strrchr(optarg, ':'); 
+                if (!colon) {
+                    fprintf(stderr, "symfit-telemetry: expected host:port format\n");
+                    break;
+                }
+                *colon = '\0';  // null terminate at the colon, turning "host:port" into "host"
+                unsigned short port = (unsigned short)atoi(colon + 1);
+                if (port == 0) {
+                    fprintf(stderr, "symfit-telemetry: invalid port number\n");
+                    break;
+                } 
+                telemetry_init(optarg, port);  // optarg is now just the host string
+                break;
+            }
             case QEMU_OPTION_portrait:
                 graphic_rotate = 90;
                 break;
@@ -4473,6 +4489,9 @@ int main(int argc, char **argv, char **envp)
     main_loop();
 
     gdbserver_cleanup();
+    if (telemetry_enabled) {
+        telemetry_shutdown();
+    }
 
     /*
      * cleaning up the migration object cancels any existing migration
