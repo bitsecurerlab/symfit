@@ -151,7 +151,7 @@ async function runSymbolicExecution(args) {
     });
   } else {
     // Run natively (original implementation)
-    const symfit = path.join(build_dir, "symfit-symsan/x86_64-linux-user/symfit-x86_64");
+    const symfit = path.join(build_dir, "symfit/x86_64-linux-user/symfit-x86_64");
     const fgtest = path.join(build_dir, "symsan/bin/fgtest");
 
     try {
@@ -262,12 +262,12 @@ async function runSymbolicExecutionDocker(args) {
     dockerArgs.push(
       "/bin/sh",
       "-c",
-      `cat ${dockerInputFile} | /workspace/build/symsan/bin/fgtest /workspace/build/symfit-symsan/x86_64-linux-user/symfit-x86_64 ${dockerBinaryPath}`
+      `cat ${dockerInputFile} | /workspace/build/symsan/bin/fgtest /workspace/build/symfit/x86_64-linux-user/symfit-x86_64 ${dockerBinaryPath}`
     );
   } else {
     dockerArgs.push(
       "/workspace/build/symsan/bin/fgtest",
-      "/workspace/build/symfit-symsan/x86_64-linux-user/symfit-x86_64",
+      "/workspace/build/symfit/x86_64-linux-user/symfit-x86_64",
       dockerBinaryPath
     );
   }

@@ -1,6 +1,13 @@
-# run rebuild.sh
+set(SYMSAN_LIBCXX_ARCHIVES
+  "${CMAKE_CURRENT_SOURCE_DIR}/build_taint/lib/libc++.a"
+  "${CMAKE_CURRENT_SOURCE_DIR}/build_taint/lib/libc++abi.a"
+  "${CMAKE_CURRENT_SOURCE_DIR}/build_taint/lib/libunwind.a"
+)
 
-install (FILES "build_taint/lib/libc++.a" DESTINATION "${SYMSAN_LIB_DIR}")
-install (FILES "build_taint/lib/libc++abi.a" DESTINATION "${SYMSAN_LIB_DIR}")
-install (FILES "build_taint/lib/libunwind.a" DESTINATION "${SYMSAN_LIB_DIR}")
-
+foreach(archive ${SYMSAN_LIBCXX_ARCHIVES})
+  if(EXISTS "${archive}")
+    install(FILES "${archive}" DESTINATION "${SYMSAN_LIB_DIR}")
+  else()
+    message(STATUS "Skipping optional generated libc++ archive: ${archive}")
+  endif()
+endforeach()

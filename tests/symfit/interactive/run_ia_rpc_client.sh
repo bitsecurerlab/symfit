@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
-SYMFIT="${SYMFIT:-$BUILD_DIR/symfit-symsan/x86_64-linux-user/symfit-x86_64}"
+SYMFIT="${SYMFIT:-$BUILD_DIR/symfit/x86_64-linux-user/symfit-x86_64}"
 FGTEST="${FGTEST:-$BUILD_DIR/symsan/bin/fgtest}"
 RUNNER="${RUNNER:-direct}"
 SOCKET_PATH="${SOCKET_PATH:-/tmp/symfit-ia-client.sock}"

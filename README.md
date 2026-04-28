@@ -1,23 +1,42 @@
 ## What is SymFit?
 
-SymFit is a symbolic execution framework for analyzing binaries built around the SymSan backend. This document provides instructions for building and running SymFit using Docker.
+SymFit is a symbolic execution framework for analyzing binaries. It combines a
+QEMU-based execution engine, the Symsan symbolic runtime/solver stack, and
+Dynamiq's Python control layer for interactive analysis.
 
-## Status
+SymFit supports user-mode and system-mode analysis for i386, x86_64, and
+AArch64 targets.
 
-Currently porting to QEMU 9.0.
+## Repository Layout
 
-A version of SymFit that supports kernel concolic execution: [https://github.com/enlighten5/symfit-kernel](https://github.com/enlighten5/symfit-kernel)
+SymFit now carries its companion projects in this repository:
 
-## MCP Server for LLM Agents
+- `symsan/` - Symsan compiler, runtime, and solver sources
+- `dynamiq/` - Python control and analysis tooling for live SymFit sessions
+- `mcp-server/` - Node.js MCP server for campaign-style automation
+- `tests/symfit/` - concolic and IA/RPC smoke tests
+- `docs/interactive_scripting_contract.md` - IA/RPC contract for interactive analysis
 
-SymFit now includes an MCP (Model Context Protocol) server that enables LLM agents to perform automated concolic execution on binaries. The MCP server provides a standardized interface for:
+Generated Symsan installs and libc++ build outputs are intentionally not tracked.
+They are produced under `build/` by `build.sh`.
 
-- Running symbolic execution campaigns
-- Managing test case corpora
-- Analyzing coverage and results
-- Automating binary analysis workflows
+## MCP Servers for LLM Agents
+
+SymFit includes two MCP-facing integration points:
+
+- `mcp-server/` exposes the original campaign-oriented Node.js server.
+- `dynamiq/` exposes the newer interactive server and scripting API for live
+  SymFit sessions.
+
+The MCP interfaces provide a standardized way to:
+
+- Run symbolic execution campaigns
+- Manage test case corpora
+- Analyze coverage and results
+- Automate binary analysis workflows
 
 See [mcp-server/README.md](mcp-server/README.md) for setup instructions and [mcp-server/EXAMPLES.md](mcp-server/EXAMPLES.md) for usage examples.
+For live interactive control, see [dynamiq/README.md](dynamiq/README.md).
 
 ## Interactive + Scripting Roadmap
 
@@ -37,55 +56,54 @@ docker pull ghcr.io/bitsecurerlab/symfit:latest
 
 ## Building SymFit
 
-SymFit now carries its companion projects in-tree:
-
-- `symsan/` - Symsan compiler/runtime/solver sources used by the SymFit backend
-- `dynamiq/` - Python control and analysis tooling for live SymFit sessions
-
-You can build SymFit against the in-tree Symsan source, prebuilt Symsan artifacts, or an external Symsan checkout via `SYMSAN_SRC=/path/to/symsan`.
-
-If you already have a prebuilt Symsan install or release tarball, `build.sh` can use that directly. For source builds, `build.sh` defaults to `./symsan`; set `SYMSAN_SRC` only when you want to build against a different checkout.
+`build.sh` builds Symsan and SymFit from the monorepo. Symsan source builds
+always use the in-tree `symsan/` directory.
 
 Build everything from the monorepo defaults:
 
 ```bash
-./build.sh all
+./build.sh
 ```
 
-Or rebuild SymFit against an existing Symsan install:
+Print the effective paths and target list without building:
 
 ```bash
-./build.sh symfit-symsan
+./build.sh --print-paths
 ```
 
-For a source build against an external Symsan checkout, pass `SYMSAN_SRC`:
+The main build artifacts are:
 
-```bash
-SYMSAN_SRC=/path/to/symsan ./build.sh all
-```
+- `build/symsan/` - Symsan tools, headers, and libraries used by SymFit
+- `build/symsan-build/` - Symsan build tree
+- `build/symfit/` - SymFit QEMU binaries
 
-This will compile SymFit with the SymSan backend. The build artifacts will be located in:
-- `build/symfit-symsan/` - SymFit QEMU binaries
-- `build/symsan/` - Symsan tools and libraries used by SymFit
+By default, `build.sh` builds user-mode and system-mode targets for i386,
+x86_64, and AArch64:
 
-By default, `build.sh` builds user-mode and system-mode targets:
 - `x86_64-linux-user/symfit-x86_64` (for x86_64 binaries)
 - `i386-linux-user/symfit-i386` (for i386 binaries)
 - `aarch64-linux-user/symfit-aarch64` (for AArch64 binaries)
-- `x86_64-softmmu/qemu-system-x86_64`
-- `aarch64-softmmu/qemu-system-aarch64`
+- `x86_64-softmmu/symfit-system-x86_64`
+- `aarch64-softmmu/symfit-system-aarch64`
 
 You can override this with:
 
 ```bash
-SYMFIT_TARGET_LIST=x86_64-linux-user ./build.sh symfit-symsan
+SYMFIT_TARGET_LIST=x86_64-linux-user ./build.sh
+```
+
+For AArch64 user-mode only:
+
+```bash
+SYMFIT_TARGET_LIST=aarch64-linux-user ./build.sh
 ```
 
 ## Using SymFit
 
 ### Basic Usage
 
-SymFit uses a modified QEMU to perform symbolic execution on binary programs. The basic workflow is:
+SymFit uses a modified QEMU to perform symbolic execution on binary programs.
+The basic workflow is:
 
 1. **Prepare your target program** - Compile the program you want to analyze
 2. **Set up environment variables** - Configure paths and options
@@ -158,6 +176,15 @@ TARGET=/path/to/your/program ./run_ia_rpc_smoke.sh -- --arg1 --arg2
 Note: some `fgtest` builds print `Usage: fgtest target input` and do not support
 wrapping SymFit (`fgtest <symfit> <target>`). In that case, use `RUNNER=direct`.
 
+For AArch64 user-mode, point `SYMFIT` at the AArch64 runtime and run an AArch64
+target binary:
+
+```bash
+SYMFIT="$PWD/../../../build/symfit/aarch64-linux-user/symfit-aarch64" \
+TARGET=/path/to/aarch64-binary \
+./run_ia_rpc_smoke.sh
+```
+
 ### IA/RPC Trace Smoke Test
 
 To validate the RPC-managed trace flow end to end:
@@ -218,8 +245,29 @@ SOCKET_PATH="$PWD/../../../mcp-workdir/ia-client.sock" \
   -- 2
 ```
 
-This client is intended as a minimal example for `dynamiq` integration and for
+This client is intended as a minimal example for Dynamiq integration and for
 manual backend debugging. It is not a replacement for the smoke test.
+
+## Dynamiq Interactive Control
+
+Dynamiq can launch the right user-mode SymFit binary for a target when the
+runtime paths are available. From the monorepo, install it in editable mode:
+
+```bash
+cd dynamiq
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+```
+
+For quick repo-local use without installation:
+
+```bash
+PYTHONPATH=dynamiq/src python3 -m dynamiq.mcp_server
+```
+
+See [dynamiq/README.md](dynamiq/README.md) for the scripting API, live QEMU
+integration tests, and MCP tool list.
 
 ### Environment Variables
 
@@ -250,9 +298,17 @@ export SYMCC_AFL_COVERAGE_MAP=/path/to/covmap
 export TAINT_OPTIONS="taint_file=/path/to/input"
 
 # Run SymFit
-/path/to/symsan/install/bin/fgtest \
-  /path/to/build/symfit-symsan/x86_64-linux-user/symfit-x86_64 \
+build/symsan/bin/fgtest \
+  build/symfit/x86_64-linux-user/symfit-x86_64 \
   /path/to/your/program
+```
+
+For AArch64 targets, use:
+
+```bash
+build/symsan/bin/fgtest \
+  build/symfit/aarch64-linux-user/symfit-aarch64 \
+  /path/to/aarch64-program
 ```
 
 ## Understanding the Output
@@ -271,8 +327,8 @@ docker run --rm \
   -v /path/to/your/binary:/binary:ro \
   -v /path/to/workdir:/workdir \
   ghcr.io/bitsecurerlab/symfit:latest \
-  /mnt/d/git/symsan/install/bin/fgtest \
-  /workspace/build/symfit-symsan/x86_64-linux-user/symfit-x86_64 \
+  /workspace/build/symsan/bin/fgtest \
+  /workspace/build/symfit/x86_64-linux-user/symfit-x86_64 \
   /binary
 ```
 

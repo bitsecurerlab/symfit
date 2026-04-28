@@ -136,9 +136,9 @@ copy_outputs() {
 resolve_existing_symfit_binary_dir() {
   local candidate
   for candidate in \
-    "${BUILD_DIR}/symfit-symsan" \
-    "${SYMFIT_SRC}/build/symfit-symsan" \
-    "${SYMFIT_SRC}/build/release/symfit-symsan"
+    "${BUILD_DIR}/symfit" \
+    "${SYMFIT_SRC}/build/symfit" \
+    "${SYMFIT_SRC}/build/release/symfit"
   do
     if [[ -x "${candidate}/i386-linux-user/symfit-i386" && -x "${candidate}/x86_64-linux-user/symfit-x86_64" ]]; then
       printf '%s\n' "${candidate}"
@@ -210,8 +210,8 @@ else
     echo "  ${existing_symfit_binary_dir}"
   else
     run mkdir -p "${local_symfit_build_dir}"
-    run bash -lc "cd \"${SYMFIT_SRC}\" && BUILD_DIR=\"${local_symfit_build_dir}\" SYMSAN_BUILD=\"${symsan_build_dir}\" SYMFIT_TARGET_LIST=\"${TARGET_LIST}\" JOBS=\"${JOBS}\" ./build.sh symfit-symsan"
-    existing_symfit_binary_dir="${local_symfit_build_dir}/symfit-symsan"
+    run bash -lc "cd \"${SYMFIT_SRC}\" && BUILD_DIR=\"${local_symfit_build_dir}\" SYMSAN_BUILD=\"${symsan_build_dir}\" SYMFIT_TARGET_LIST=\"${TARGET_LIST}\" JOBS=\"${JOBS}\" ./build.sh"
+    existing_symfit_binary_dir="${local_symfit_build_dir}/symfit"
   fi
   copy_outputs \
     "${existing_symfit_binary_dir}/i386-linux-user/symfit-i386" \
