@@ -13,5 +13,7 @@ output*/
 *.tar.xz
 auto/
 /bin/
+/install/
+/libcxx/build_taint/
 .DS_Store
 /build/
