@@ -868,7 +868,7 @@ void ia_rpc_consume_stdin_read(int fd, void *host_buf, size_t size)
     uint8_t *cursor = host_buf;
     size_t remaining = size;
 
-    if (fd != 0 || !host_buf || size == 0) {
+    if (!ia_state.enabled || fd != 0 || !host_buf || size == 0) {
         return;
     }
 
@@ -900,6 +900,9 @@ void ia_rpc_consume_stdin_read(int fd, void *host_buf, size_t size)
         CPUArchState *env;
         qemu_mutex_unlock(&ia_state.lock);
         cpu = ia_state.current_cpu;
+        if (!cpu) {
+            return;
+        }
         env = (CPUArchState *)cpu->env_ptr;
         if (symbolic) {
             ia_symbolize_stdin_segment(cursor, consumed, stream_offset, get_pc(env));

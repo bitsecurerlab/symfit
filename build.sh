@@ -263,8 +263,10 @@ build_symfit_symsan()  { configure_symfit_common "symsan" "$SYMFIT_SYMSAN_BUILD"
 relink_symfit_symsan() {
   need_dir "$SYMFIT_SYMSAN_BUILD"
 
-  log "Refreshing libqemuutil.a in ${SYMFIT_SYMSAN_BUILD}"
-  make -C "$SYMFIT_SYMSAN_BUILD" libqemuutil.a
+  log "Refreshing shared support objects in ${SYMFIT_SYMSAN_BUILD}"
+  make -C "$SYMFIT_SYMSAN_BUILD" \
+    libqemuutil.a \
+    symfit-telemetry/symfit_telemetry.o
 
   local target_dir=""
   local prog_name=""
@@ -278,6 +280,9 @@ relink_symfit_symsan() {
     case "$target_dir" in
       *-linux-user)
         prog_name="symfit-${target_dir%-linux-user}"
+        ;;
+      *-softmmu)
+        prog_name="qemu-system-${target_dir%-softmmu}"
         ;;
       *)
         die "Unsupported relink target directory: $target_dir"
@@ -300,7 +305,7 @@ Targets (default: all)
   symsan           Build Symsan
   symfit-symsan    Build symfit (Symsan backend)
   relink-symfit-symsan
-                   Refresh libqemuutil.a and relink configured user targets
+                   Refresh shared support objects and relink configured user/system targets
   all              Build everything above in order
 
 Options
@@ -322,7 +327,7 @@ Environment overrides
   SYMSAN_SRC             Path to a standalone Symsan checkout for source builds
   SYMSAN_BUILD           Backward-compatible alias for SYMSAN_INSTALL
   CLANG_VER, JOBS
-  SYMFIT_TARGET_LIST     QEMU target list (default: x86_64-linux-user,i386-linux-user)
+  SYMFIT_TARGET_LIST     QEMU target list (default: x86_64-linux-user,i386-linux-user,x86_64-softmmu,aarch64-softmmu,aarch64-linux-user)
 
 Examples:
   ./build.sh all

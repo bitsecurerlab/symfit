@@ -3484,6 +3484,7 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         gen_helper_symsan_check_load_guest(cpu_env, addr, load_size, mmu_idx);
     }
     tcg_temp_free_i64(load_size);
+    tcg_temp_free_i64(mmu_idx);
 
     if ((orig_memop ^ memop) & MO_BSWAP) {
         switch (orig_memop & MO_SIZE) {
@@ -3546,6 +3547,7 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         gen_helper_symsan_check_store_guest(cpu_env, addr, store_size, mmu_idx);
         tcg_temp_free_i64(store_size);
     }
+    tcg_temp_free_i64(mmu_idx);
 
     if (swap) {
         tcg_temp_free_i32(swap);
@@ -3591,6 +3593,7 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     } else {
         gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val), cpu_env, addr, tcgv_i64_expr_num(addr), load_size, mmu_idx);    }
     tcg_temp_free_i64(load_size);
+    tcg_temp_free_i64(mmu_idx);
 
     if ((orig_memop ^ memop) & MO_BSWAP) {
         switch (orig_memop & MO_SIZE) {
@@ -3668,6 +3671,7 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         gen_helper_symsan_check_store_guest(cpu_env, addr, store_size, mmu_idx);
         tcg_temp_free_i64(store_size);
     }
+    tcg_temp_free_i64(mmu_idx);
 
     if (swap) {
         tcg_temp_free_i64(swap);
