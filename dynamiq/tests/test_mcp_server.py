@@ -12,6 +12,9 @@ from dynamiq.mcp_server import InteractiveAnalysisMcpServer, _arm_parent_death_s
 class FakeSession:
     def __init__(self) -> None:
         self.started = False
+        self.last_target = None
+        self.last_args = None
+        self.last_cwd = None
         self.last_qemu_config = None
         self.close_calls = 0
         self.stdin_written = b""
@@ -22,6 +25,9 @@ class FakeSession:
         if self.started:
             raise InvalidStateError("session already started")
         self.started = True
+        self.last_target = target
+        self.last_args = args
+        self.last_cwd = cwd
         self.last_qemu_config = qemu_config
         return {"ok": True, "command": "start", "result": {"target": target}}
 
@@ -462,6 +468,46 @@ def test_mcp_tool_call_start_defaults_launch_true() -> None:
     assert response is not None
     assert response["result"]["isError"] is False
     assert fake.last_qemu_config == {"launch": True}
+
+
+def test_mcp_tool_call_start_accepts_qemu_launch_config() -> None:
+    fake = FakeSession()
+    server = InteractiveAnalysisMcpServer(session_factory=lambda: fake)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 32,
+            "method": "tools/call",
+            "params": {
+                "name": "start",
+                "arguments": {
+                    "target": "/tmp/android_root/lib64/toybox",
+                    "args": ["echo", "test"],
+                    "cwd": "/tmp/android_root",
+                    "qemu_user_path": "/opt/symfit/symfit-aarch64",
+                    "qemu_args": ["-L", "."],
+                    "env": {
+                        "QEMU_LD_PREFIX": ".",
+                        "LD_LIBRARY_PATH": "./lib64",
+                    },
+                },
+            },
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is False
+    assert fake.last_target == "/tmp/android_root/lib64/toybox"
+    assert fake.last_args == ["echo", "test"]
+    assert fake.last_cwd == "/tmp/android_root"
+    assert fake.last_qemu_config == {
+        "launch": True,
+        "qemu_user_path": "/opt/symfit/symfit-aarch64",
+        "qemu_args": ["-L", "."],
+        "env": {
+            "QEMU_LD_PREFIX": ".",
+            "LD_LIBRARY_PATH": "./lib64",
+        },
+    }
 
 
 def test_mcp_tool_call_start_uses_server_locked_qemu_path(monkeypatch) -> None:  # noqa: ANN001

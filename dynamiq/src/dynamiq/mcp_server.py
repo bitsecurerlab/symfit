@@ -157,6 +157,15 @@ class InteractiveAnalysisMcpServer:
                     )
                 args = self._parse_string_list(arguments, "args", default=[])
                 cwd = self._parse_optional_string(arguments, "cwd", default=None)
+                qemu_user_path = self._parse_optional_string(arguments, "qemu_user_path", default=None)
+                if isinstance(qemu_user_path, str) and qemu_user_path.strip():
+                    qemu_config["qemu_user_path"] = qemu_user_path.strip()
+                qemu_args = self._parse_string_list(arguments, "qemu_args", default=[])
+                if qemu_args:
+                    qemu_config["qemu_args"] = qemu_args
+                env = self._parse_string_map(arguments, "env", default={})
+                if env:
+                    qemu_config["env"] = env
                 try:
                     result = session.start(
                         target=target,
@@ -427,6 +436,20 @@ class InteractiveAnalysisMcpServer:
         return dict(value)
 
     @staticmethod
+    def _parse_string_map(arguments: JSON, key: str, default: dict[str, str] | None = None) -> dict[str, str]:
+        if key not in arguments:
+            return dict(default or {})
+        value = arguments.get(key)
+        if not isinstance(value, dict):
+            raise ValueError(f"{key} must be an object with string values")
+        result: dict[str, str] = {}
+        for item_key, item_value in value.items():
+            if not isinstance(item_key, str) or not isinstance(item_value, str):
+                raise ValueError(f"{key} must be an object with string keys and string values")
+            result[item_key] = item_value
+        return result
+
+    @staticmethod
     def _parse_optional_string(arguments: JSON, key: str, default: str | None = None) -> str | None:
         if key not in arguments:
             return default
@@ -658,6 +681,23 @@ class InteractiveAnalysisMcpServer:
                             "type": ["string", "null"],
                             "description": "Working directory for process launch.",
                             "default": None,
+                        },
+                        "qemu_user_path": {
+                            "type": ["string", "null"],
+                            "description": "Optional explicit SymFit qemu-user binary path.",
+                            "default": None,
+                        },
+                        "qemu_args": {
+                            "type": "array",
+                            "description": "Extra arguments passed to qemu-user before the target, for example ['-L', '.'].",
+                            "items": {"type": "string"},
+                            "default": [],
+                        },
+                        "env": {
+                            "type": "object",
+                            "description": "Extra environment variables for the qemu-user process.",
+                            "additionalProperties": {"type": "string"},
+                            "default": {},
                         },
                     },
                     "required": ["target"],

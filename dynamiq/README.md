@@ -318,6 +318,25 @@ With the SymFit backend, tracing is started over RPC. The backend creates and
 returns the trace artifact path, and `trace_get` consumes that artifact through
 the backend adapter.
 
+### MCP launch options for custom roots
+
+`start` accepts `qemu_user_path`, `qemu_args`, and `env` for targets that need a
+custom loader root:
+
+```json
+{
+  "target": "/mnt/f/ffmpeg-cve-2025-9951/android_root/lib64/toybox",
+  "args": ["echo", "test"],
+  "cwd": "/mnt/f/ffmpeg-cve-2025-9951/android_root",
+  "qemu_user_path": "/mnt/d/git/symfit/build/symfit-symsan/aarch64-linux-user/symfit-aarch64",
+  "qemu_args": ["-L", "."],
+  "env": {
+    "QEMU_LD_PREFIX": ".",
+    "LD_LIBRARY_PATH": "./lib64"
+  }
+}
+```
+
 ### MCP troubleshooting
 
 - `send_bytes` appears stuck:
