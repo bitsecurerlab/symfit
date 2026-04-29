@@ -32,9 +32,9 @@ def test_qemu_user_launch_config_builds_command_and_env() -> None:
     assert env["IA_TRACE_FILE"] == "/tmp/trace.ndjson"
 
 
-def test_qemu_user_launch_config_prefers_local_build_when_available(monkeypatch, tmp_path: Path) -> None:
+def test_qemu_user_launch_config_prefers_symfit_build_when_available(monkeypatch, tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
-    preferred = repo_root / "tools" / "qemu" / "qemu-x86_64-instrumented"
+    preferred = repo_root / "build" / "symfit" / "x86_64-linux-user" / "symfit-x86_64"
     preferred.parent.mkdir(parents=True)
     preferred.write_text("", encoding="utf-8")
 
@@ -48,7 +48,7 @@ def test_qemu_user_launch_config_prefers_local_build_when_available(monkeypatch,
 
 def test_qemu_user_launch_config_selects_i386_for_32bit_elf(monkeypatch, tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
-    preferred = repo_root / "tools" / "qemu" / "qemu-i386-instrumented"
+    preferred = repo_root / "build" / "symfit" / "i386-linux-user" / "symfit-i386"
     preferred.parent.mkdir(parents=True)
     preferred.write_text("", encoding="utf-8")
 
@@ -66,7 +66,7 @@ def test_qemu_user_launch_config_selects_i386_for_32bit_elf(monkeypatch, tmp_pat
 
 def test_qemu_user_launch_config_selects_aarch64_for_64bit_arm_elf(monkeypatch, tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
-    preferred = repo_root / "tools" / "qemu" / "qemu-aarch64-instrumented"
+    preferred = repo_root / "build" / "symfit" / "aarch64-linux-user" / "symfit-aarch64"
     preferred.parent.mkdir(parents=True)
     preferred.write_text("", encoding="utf-8")
 
@@ -109,15 +109,31 @@ def test_qemu_user_launch_config_honors_explicit_qemu_path(monkeypatch, tmp_path
     assert config.qemu_user_path == "/custom/qemu-user"
 
 
-def test_resolve_qemu_prefers_repo_tools_qemu_folder(monkeypatch, tmp_path: Path) -> None:
+def test_resolve_qemu_prefers_symfit_build_folder(monkeypatch, tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
-    preferred = repo_root / "tools" / "qemu" / "qemu-i386-instrumented"
+    preferred = repo_root / "build" / "symfit" / "i386-linux-user" / "symfit-i386"
     preferred.parent.mkdir(parents=True)
     preferred.write_text("", encoding="utf-8")
 
     monkeypatch.setattr("dynamiq.qemu_user.shutil.which", lambda _name: None)
 
     resolved = _resolve_qemu_from_candidates(["qemu-i386"], repo_root=repo_root)
+
+    assert resolved == str(preferred)
+
+
+def test_resolve_qemu_uses_merged_symfit_build_artifacts(monkeypatch, tmp_path: Path) -> None:
+    monorepo_root = tmp_path / "symfit"
+    dynamiq_root = monorepo_root / "dynamiq"
+    preferred = monorepo_root / "build" / "symfit" / "x86_64-linux-user" / "symfit-x86_64"
+    preferred.parent.mkdir(parents=True)
+    preferred.write_text("", encoding="utf-8")
+    (monorepo_root / "build.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    dynamiq_root.mkdir()
+
+    monkeypatch.setattr("dynamiq.qemu_user.shutil.which", lambda _name: None)
+
+    resolved = _resolve_qemu_from_candidates(["qemu-x86_64"], repo_root=dynamiq_root)
 
     assert resolved == str(preferred)
 
@@ -178,7 +194,7 @@ class _StubbornProcess:
         if self.kill_calls:
             self._returncode = -signal.SIGKILL
             return self._returncode
-        raise subprocess.TimeoutExpired(cmd="qemu-x86_64-instrumented", timeout=timeout)
+        raise subprocess.TimeoutExpired(cmd="symfit-x86_64", timeout=timeout)
 
     def kill(self) -> None:
         self.kill_calls += 1

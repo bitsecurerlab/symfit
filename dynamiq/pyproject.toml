@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
+[project.scripts]
+dynamiq-mcp-server = "dynamiq.mcp_server:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 

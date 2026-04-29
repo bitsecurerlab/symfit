@@ -249,7 +249,7 @@ class QemuUserInstrumentedBackend:
             self._started = True
             child_pid = None
             if self._process_runner is not None and getattr(self._process_runner, '_process', None) is not None:
-                child_pid = self._process_runner._process.pid
+                child_pid = getattr(self._process_runner._process, "pid", None)
             _debug_log(f"start complete status={self._state.get('session_status')} child_pid={child_pid} rpc_socket={self._state.get('instrumentation_rpc_socket_path')}")
         except Exception:
             try:
@@ -271,7 +271,7 @@ class QemuUserInstrumentedBackend:
             raise UnsupportedOperationError("backend does not have a control channel configured")
         self._state["session_status"] = "running"
         self._record_stop_transition("resume", before_status, before_pc)
-        return self._response({})
+        return self._response({}, refresh_live_status=False)
 
     def pause(self, timeout: float) -> dict[str, Any]:
         self._require_started()
@@ -287,7 +287,7 @@ class QemuUserInstrumentedBackend:
             raise UnsupportedOperationError("backend does not have a control channel configured")
         self._state["session_status"] = "paused"
         self._record_stop_transition("pause", before_status, before_pc)
-        return self._response({})
+        return self._response({}, refresh_live_status=False)
 
     def run_until_address(self, address: str, timeout: float) -> dict[str, Any]:
         self._require_started()
@@ -300,7 +300,10 @@ class QemuUserInstrumentedBackend:
             self._state["session_status"] = "paused"
             self._state["pc"] = current_pc.lower()
             self._record_stop_transition("run_until_address(already_at_pc)", before_status, before_pc)
-            return self._response({"matched_address": current_pc.lower(), "status": "paused", "pc": current_pc.lower()})
+            return self._response(
+                {"matched_address": current_pc.lower(), "status": "paused", "pc": current_pc.lower()},
+                refresh_live_status=False,
+            )
         result = self._rpc_request("resume_until_address", {"address": address}, timeout=timeout)
         status = result.get("status")
         if isinstance(status, str):
@@ -309,7 +312,7 @@ class QemuUserInstrumentedBackend:
         if isinstance(pc, str):
             self._state["pc"] = pc
         self._record_stop_transition("run_until_address", before_status, before_pc)
-        return self._response({"matched_address": address, **result})
+        return self._response({"matched_address": address, **result}, refresh_live_status=False)
 
     def break_at_addresses(self, addresses: list[str], timeout: float, max_steps: int = 10000) -> dict[str, Any]:
         del max_steps
@@ -341,7 +344,7 @@ class QemuUserInstrumentedBackend:
         if isinstance(matched_pc, str):
             result["matched_address"] = matched_pc
         self._record_stop_transition("break_at_addresses", before_status, before_pc)
-        return self._response(result)
+        return self._response(result, refresh_live_status=False)
 
     def step(self, count: int, timeout: float) -> dict[str, Any]:
         self._require_started()
@@ -357,7 +360,7 @@ class QemuUserInstrumentedBackend:
         if isinstance(pc, str):
             self._state["pc"] = pc
         self._record_stop_transition("single_step", before_status, before_pc)
-        return self._response(result)
+        return self._response(result, refresh_live_status=False)
 
     def advance_basic_blocks(self, count: int, timeout: float) -> dict[str, Any]:
         self._require_started()
@@ -371,7 +374,7 @@ class QemuUserInstrumentedBackend:
         if isinstance(pc, str):
             self._state["pc"] = pc
         self._record_stop_transition("resume_until_basic_block", before_status, before_pc)
-        return self._response(result)
+        return self._response(result, refresh_live_status=False)
 
     def write_stdin(self, data: str | bytes, symbolic: bool = False) -> dict[str, Any]:
         self._require_started()
@@ -715,8 +718,9 @@ class QemuUserInstrumentedBackend:
         self._state["trace_kind"] = None
         self._state["trace_file"] = None
 
-    def _response(self, result: dict[str, Any]) -> dict[str, Any]:
-        self._refresh_live_status()
+    def _response(self, result: dict[str, Any], refresh_live_status: bool = True) -> dict[str, Any]:
+        if refresh_live_status:
+            self._refresh_live_status()
         if self._instrumentation is not None:
             self._refresh_recent_events()
         else:
@@ -724,6 +728,9 @@ class QemuUserInstrumentedBackend:
         return {"state": dict(self._state), "result": result}
 
     def _refresh_live_status(self) -> None:
+        self._sync_process_state()
+        if self._state.get("session_status") == "exited":
+            return
         if self._instrumentation_rpc is not None and self._started:
             try:
                 status = self._instrumentation_rpc.request("query_status")

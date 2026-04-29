@@ -8,4 +8,8 @@ cd "$REPO_ROOT"
 
 export PYTHONPATH="$REPO_ROOT/src"
 
-exec "$REPO_ROOT/.venv/bin/python" -m dynamiq.mcp_server
+if [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+  exec "$REPO_ROOT/.venv/bin/python" -m dynamiq.mcp_server
+fi
+
+exec python3 -m dynamiq.mcp_server

@@ -136,7 +136,7 @@ class ScriptSession:
         Automatically:
         - Detects target architecture (32-bit vs 64-bit) from ELF header
         - Selects appropriate QEMU binary (qemu-i386 or qemu-x86_64)
-        - Searches for QEMU in: repo ./tools/qemu/, system PATH, common locations
+        - Searches for QEMU in: merged SymFit build artifacts, then system PATH
         - Creates RPC socket in system temp directory
         - Creates trace file for event capture
         - Launches QEMU with instrumentation enabled

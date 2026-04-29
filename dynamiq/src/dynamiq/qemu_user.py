@@ -28,6 +28,12 @@ _ELF_MACHINE_TO_QEMU_USER = {
     183: "qemu-aarch64",
 }
 
+_QEMU_USER_TO_SYMFIT = {
+    "qemu-i386": ("i386-linux-user", "symfit-i386"),
+    "qemu-x86_64": ("x86_64-linux-user", "symfit-x86_64"),
+    "qemu-aarch64": ("aarch64-linux-user", "symfit-aarch64"),
+}
+
 
 def _detect_elf_machine(target: str) -> int | None:
     try:
@@ -49,12 +55,31 @@ def _detect_elf_machine(target: str) -> int | None:
     return int.from_bytes(header[18:20], byteorder=byteorder, signed=False)
 
 
+def _candidate_roots(repo_root: Path) -> list[Path]:
+    roots = [repo_root]
+    parent = repo_root.parent
+    if parent != repo_root and (parent / "build.sh").exists():
+        roots.append(parent)
+    return roots
+
+
+def _symfit_build_candidates(binary_name: str, root: Path) -> list[Path]:
+    symfit_binary = _QEMU_USER_TO_SYMFIT.get(binary_name)
+    if symfit_binary is None:
+        return []
+    target_dir, executable = symfit_binary
+    return [
+        root / "build" / "symfit" / target_dir / executable,
+        root / "build" / "release" / "symfit" / target_dir / executable,
+    ]
+
+
 def _resolve_qemu_from_candidates(binary_names: list[str], repo_root: Path) -> str:
+    roots = _candidate_roots(repo_root)
     for binary_name in binary_names:
-        candidates = [
-            repo_root / "tools" / "qemu" / f"{binary_name}-instrumented",
-            repo_root / "tools" / "qemu" / binary_name,
-        ]
+        candidates = []
+        for root in roots:
+            candidates.extend(_symfit_build_candidates(binary_name, root))
         for candidate in candidates:
             if candidate.exists():
                 return str(candidate)

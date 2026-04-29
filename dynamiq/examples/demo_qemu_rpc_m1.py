@@ -27,15 +27,15 @@ def compile_target() -> None:
 
 
 def resolve_qemu() -> str:
-    local_cache = ROOT / "tools" / "qemu" / "qemu-x86_64-instrumented"
-    if local_cache.exists():
-        return str(local_cache)
+    symfit_binary = ROOT.parent / "build" / "symfit" / "x86_64-linux-user" / "symfit-x86_64"
+    if symfit_binary.exists():
+        return str(symfit_binary)
     qemu = shutil.which("qemu-x86_64")
     if qemu is not None:
         return qemu
     raise SystemExit(
-        "qemu-x86_64 not found; populate tools/qemu with "
-        "./scripts/build_qemu_toolchain.sh or install qemu-user"
+        "qemu-x86_64 not found; run ./scripts/build_qemu_toolchain.sh "
+        "from dynamiq/ or install qemu-user"
     )
 
 

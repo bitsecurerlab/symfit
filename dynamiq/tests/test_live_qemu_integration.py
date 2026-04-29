@@ -224,7 +224,7 @@ def test_live_qemu_backend_path_constraint_queries() -> None:
     qemu_user_path = Path(
         os.environ.get(
             "IA_LIVE_QEMU_USER_PATH",
-            "/home/heng/git/dynamiq/tools/qemu/qemu-x86_64-instrumented",
+            "/home/heng/git/symfit/build/symfit/x86_64-linux-user/symfit-x86_64",
         )
     )
     if not target.exists():

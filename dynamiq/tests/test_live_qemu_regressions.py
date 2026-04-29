@@ -50,7 +50,7 @@ def _compile_breakpoint_stress_binary(workdir: Path) -> Path:
 
 def _resolve_x86_64_qemu() -> str:
     candidates = [
-        Path(__file__).resolve().parents[1] / "tools" / "qemu" / "qemu-x86_64-instrumented",
+        Path(__file__).resolve().parents[2] / "build" / "symfit" / "x86_64-linux-user" / "symfit-x86_64",
     ]
     for candidate in candidates:
         if candidate.exists():

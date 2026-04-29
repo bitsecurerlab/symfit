@@ -30,43 +30,35 @@ python -m venv .venv
 ```
 
 If you are running repo-local scripts without installing dynamiq into the
-active environment, use `PYTHONPATH=src` from the repo root:
+active environment, use `PYTHONPATH=src` from `dynamiq/`:
 
 ```bash
-cd /home/heng/git/dynamiq
+cd dynamiq
 PYTHONPATH=src .venv/bin/python your_script.py
 ```
 
 ### Build Instrumented Runtime Binaries
 
-Build both supported dynamiq runtimes into `tools/qemu/`:
+Build both supported dynamiq runtimes into the monorepo build tree:
 
 ```bash
 ./scripts/build_qemu_toolchain.sh
 ```
 
-By default this now builds from the local SymFit tree and copies the resulting
-runtime binaries into dynamiq's `tools/qemu/` cache using the conventional
-`qemu-*-instrumented` names expected by the launcher.
+In the merged SymFit tree this defaults to the monorepo root as the SymFit
+source, reuses `../build/symfit` artifacts when they already exist, and leaves
+the runtime binaries at the paths dynamiq auto-detects:
+
+- `../build/symfit/x86_64-linux-user/symfit-x86_64`
+- `../build/symfit/i386-linux-user/symfit-i386`
 
 Common overrides:
 
 ```bash
 ./scripts/build_qemu_toolchain.sh \
-  --symfit-src /path/to/symfit \
-  --symsan-build /path/to/symfit/build/symsan \
-  --build-dir /tmp/symfit-build-ia \
-  --out-dir /path/to/dynamiq/tools/qemu \
-  --clean
-```
-
-If you still want the legacy upstream-QEMU flow, use:
-
-```bash
-./scripts/build_qemu_toolchain.sh \
-  --source-kind qemu \
-  --qemu-src /path/to/qemu \
-  --build-dir /tmp/qemu-build-ia \
+  --symfit-src /path/to/symfit-monorepo \
+  --symsan-build /path/to/symfit-monorepo/build/symsan \
+  --build-dir /path/to/symfit-monorepo/build \
   --clean
 ```
 
@@ -127,8 +119,8 @@ This demo will:
 PYTHONPATH=src .venv/bin/python examples/demo_qemu_rpc_m1.py
 ```
 
-This path expects an IA/RPC-capable runtime binary, typically from dynamiq's
-local `tools/qemu/` cache, and exercises:
+This path expects an IA/RPC-capable runtime binary, typically from
+`../build/symfit/x86_64-linux-user/symfit-x86_64`, and exercises:
 
 1. `query_status`
 2. `get_registers`
@@ -142,6 +134,12 @@ local `tools/qemu/` cache, and exercises:
 The repo includes a minimal MCP server for external coding platforms.
 
 Start it with:
+
+```bash
+dynamiq-mcp-server
+```
+
+For repo-local use without installing the console script:
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m dynamiq.mcp_server

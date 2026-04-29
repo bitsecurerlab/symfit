@@ -266,6 +266,15 @@ For quick repo-local use without installation:
 PYTHONPATH=dynamiq/src python3 -m dynamiq.mcp_server
 ```
 
+Dynamiq now discovers merged-build SymFit runtimes directly from
+`build/symfit/<target>/symfit-*`. To build the x86 user-mode runtimes dynamiq
+launches by default:
+
+```bash
+cd dynamiq
+./scripts/build_qemu_toolchain.sh
+```
+
 See [dynamiq/README.md](dynamiq/README.md) for the scripting API, live QEMU
 integration tests, and MCP tool list.
 

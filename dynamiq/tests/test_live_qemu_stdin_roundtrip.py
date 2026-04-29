@@ -41,7 +41,7 @@ def _compile_stdin_echo_binary(workdir: Path) -> Path:
 
 
 def _resolve_x86_64_qemu() -> str:
-    local_qemu = Path(__file__).resolve().parents[1] / "tools" / "qemu" / "qemu-x86_64-instrumented"
+    local_qemu = Path(__file__).resolve().parents[2] / "build" / "symfit" / "x86_64-linux-user" / "symfit-x86_64"
     if local_qemu.exists():
         return str(local_qemu)
     discovered = shutil.which("qemu-x86_64")
