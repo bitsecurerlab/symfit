@@ -801,6 +801,7 @@ class AnalysisSession:
         _teardown_log("close start")
         self.backend.close()
         _teardown_log("close backend.close returned")
+        self.breakpoints.clear()
         self.state.session_status = "closed"
         self.state.trace_active = False
         self.state.trace_kind = None

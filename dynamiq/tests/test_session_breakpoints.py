@@ -344,6 +344,21 @@ def test_session_bp_run_single_breakpoint_uses_run_until_address() -> None:
     assert backend.step_calls == 2
 
 
+def test_session_close_clears_breakpoints_before_reuse() -> None:
+    backend = FakeBackend()
+    session = AnalysisSession(backend=backend)
+
+    session.start(target="/tmp/first", args=[], cwd=None)
+    session.bp_add("0x1008")
+    assert session.bp_list()["result"]["breakpoints"] == ["0x1008"]
+
+    session.close()
+    assert session.breakpoints == []
+
+    session.start(target="/tmp/second", args=[], cwd=None)
+    assert session.bp_list()["result"]["breakpoints"] == []
+
+
 def test_session_bp_run_uses_live_pc_not_stale_state_pc() -> None:
     backend = FakeBackend()
     session = AnalysisSession(backend=backend)
