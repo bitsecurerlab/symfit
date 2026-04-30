@@ -1031,13 +1031,11 @@ class InteractiveAnalysisMcpServer:
                     "properties": {
                         "data": {
                             "type": "string",
-                            "description": "Text data to write (UTF-8 encoding).",
-                            "minLength": 1,
+                            "description": "Text data to write (UTF-8 encoding). Provide either data or data_hex.",
                         },
                         "data_hex": {
                             "type": "string",
-                            "description": "Exact raw bytes encoded as hex (supports optional leading 0x).",
-                            "minLength": 1,
+                            "description": "Exact raw bytes encoded as hex. Provide either data or data_hex.",
                         },
                         "symbolic": {
                             "type": "boolean",
@@ -1045,7 +1043,6 @@ class InteractiveAnalysisMcpServer:
                             "default": False,
                         },
                     },
-                    "anyOf": [{"required": ["data"]}, {"required": ["data_hex"]}],
                     "additionalProperties": False,
                 },
             ),

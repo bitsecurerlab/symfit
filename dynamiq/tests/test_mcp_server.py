@@ -278,6 +278,20 @@ def test_mcp_tools_list_contains_short_names() -> None:
     assert "bp_run" not in names
 
 
+def test_mcp_tool_schemas_do_not_use_top_level_combinators() -> None:
+    server = _server()
+    response = server.handle_request({"jsonrpc": "2.0", "id": 21, "method": "tools/list", "params": {}})
+    assert response is not None
+
+    forbidden = {"oneOf", "allOf", "anyOf"}
+    offenders = [
+        tool["name"]
+        for tool in response["result"]["tools"]
+        if forbidden.intersection(tool["inputSchema"].keys())
+    ]
+    assert offenders == []
+
+
 def test_mcp_tool_call_start() -> None:
     server = _server()
     response = server.handle_request(
