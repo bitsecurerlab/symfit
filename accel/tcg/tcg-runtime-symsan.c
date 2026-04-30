@@ -1297,7 +1297,14 @@ void HELPER(symsan_check_load_guest)(CPUArchState *env, target_ulong addr, uint6
             // fprintf(stderr, "[memtrace:switch] op: load_guest addr: 0x%lx host_addr %p mode: concrete\n",
             //                         addr, host_addr);
         }
-        second_ccache_flag = 1;
+        // Guard introduced - issues were occurring in system mode
+        if (second_ccache_flag == 0) { 
+            second_ccache_flag = 1;
+            CPUState *cs = env_cpu(env);
+            tb_flush(cs);
+        }
+        else return; 
+        // Don't raise an exception if we're already in symbolic mode
         //raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
         #ifdef TARGET_I386
         raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());

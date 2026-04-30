@@ -3477,24 +3477,27 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
      * label before the concrete load overwrites the destination.
      */
     saved_addr = tcg_temp_new();
-    saved_addr_label = tcg_temp_new_i64();
     tcg_gen_mov_tl(saved_addr, addr);
-    tcg_gen_mov_i64(saved_addr_label, tcgv_i64_expr_num(addr));
-
+    if (second_ccache_flag) {
+        // If executed in concrete  mode, things catch on fire.
+        saved_addr_label = tcg_temp_new_i64();
+        tcg_gen_mov_i64(saved_addr_label, tcgv_i64_expr_num(addr));
+    }
     TCGv_i64 mmu_idx = tcg_const_i64(idx);
     load_size = tcg_const_i64(1 << (memop & MO_SIZE));
-    if (!second_ccache_flag) {
+    // Performing this check before the concrete load causes issues too!
+    //if (!second_ccache_flag) {
         /*
          * Check before the concrete load so a switch to symbolic mode
          * replays the instruction with pre-load architectural state. This is
          * required when the load destination overlaps the address register.
          */
-        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
-                                           mmu_idx);
-    }
+        //gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
+                                           //mmu_idx);
+    //}
 
     gen_ldst_i32(INDEX_op_qemu_ld_i32, val, addr, memop, idx);
-
+    // Check is now AFTER concrete load
     if (second_ccache_flag) {
         /*gen_helper_sym_load_guest_i32(tcgv_i32_expr(val), cpu_env,
                                   addr, tcgv_i64_expr(addr),
@@ -3503,9 +3506,14 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
                                          saved_addr, saved_addr_label,
                                          load_size, mmu_idx);
     }
+    else {
+        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size, mmu_idx);
+    }
     tcg_temp_free_i64(load_size);
     tcg_temp_free_i64(mmu_idx);
-    tcg_temp_free_i64(saved_addr_label);
+    if (second_ccache_flag) {
+        tcg_temp_free_i64(saved_addr_label);
+    }
     tcg_temp_free(saved_addr);
 
     if ((orig_memop ^ memop) & MO_BSWAP) {
@@ -3613,21 +3621,25 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
      * label before the concrete load overwrites the destination.
      */
     saved_addr = tcg_temp_new();
-    saved_addr_label = tcg_temp_new_i64();
     tcg_gen_mov_tl(saved_addr, addr);
-    tcg_gen_mov_i64(saved_addr_label, tcgv_i64_expr_num(addr));
+    if (second_ccache_flag) {
+        // This causes issues in concrete mode
+        saved_addr_label = tcg_temp_new_i64();
+        tcg_gen_mov_i64(saved_addr_label, tcgv_i64_expr_num(addr));
+    }
 
     load_size = tcg_const_i64(1 << (memop & MO_SIZE));
     TCGv_i64 mmu_idx = tcg_const_i64(idx);
-    if (!second_ccache_flag) {
+    // Doing this check before concrete loads CAUSES FIRES!! ICKY ICKY ICKY!!
+    //if (!second_ccache_flag) {
         /*
          * Check before the concrete load so a switch to symbolic mode
          * replays the instruction with pre-load architectural state. This is
          * required when the load destination overlaps the address register.
          */
-        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
-                                           mmu_idx);
-    }
+        //gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
+                                           //mmu_idx);
+    //}
 
     gen_ldst_i64(INDEX_op_qemu_ld_i64, val, addr, memop, idx);
 
@@ -3636,9 +3648,14 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
                                          saved_addr, saved_addr_label,
                                          load_size, mmu_idx);
     }
+    else {
+        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size, mmu_idx);
+    }
     tcg_temp_free_i64(load_size);
     tcg_temp_free_i64(mmu_idx);
-    tcg_temp_free_i64(saved_addr_label);
+    if (second_ccache_flag) {
+        tcg_temp_free_i64(saved_addr_label);
+    }
     tcg_temp_free(saved_addr);
 
     if ((orig_memop ^ memop) & MO_BSWAP) {
