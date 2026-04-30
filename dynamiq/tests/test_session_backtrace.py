@@ -97,3 +97,19 @@ def test_backtrace_unwinds_i386_frame_chain(monkeypatch) -> None:  # noqa: ANN00
     assert frames[0]["pc"] == "0x401020"
     assert frames[1]["pc"] == "0x401090"
     assert result["result"]["reason"] == "return_address_unavailable"
+
+
+def test_aarch64_current_return_address_prefers_link_register(monkeypatch) -> None:  # noqa: ANN001
+    backend = FakeBacktraceBackend(
+        registers={"pc": "0x400724", "x29": "0x40007ff520", "x30": "0x4008a4", "sp": "0x40007ff520"},
+        memory={
+            0x40007FF520: _pack_u64(0x40007FF630),
+            0x40007FF528: _pack_u64(0x400C24),
+        },
+    )
+    session = AnalysisSession(backend=backend)
+    session.state.session_status = "paused"
+    session.state.launched_qemu_user_path = "/tmp/symfit-aarch64"
+    monkeypatch.setattr(AnalysisSession, "_build_symbol_lookup", lambda self: [])  # noqa: ARG005
+
+    assert session._current_return_address() == 0x4008A4

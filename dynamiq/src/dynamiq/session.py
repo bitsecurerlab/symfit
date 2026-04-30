@@ -415,6 +415,8 @@ class AnalysisSession:
         pc64 = self._parse_optional_address(regs64.get("pc") or regs64.get("rip"))
         pc32 = self._parse_optional_address(regs32.get("pc") or regs32.get("eip"))
         qemu_path = (self.state.launched_qemu_user_path or "").lower()
+        if "aarch64" in qemu_path:
+            return 8
         if "qemu-i386" in qemu_path:
             return 4
         if "qemu-x86_64" in qemu_path:
@@ -422,6 +424,12 @@ class AnalysisSession:
         return 8 if pc64 is not None and (pc32 is None or pc64 > 0xFFFFFFFF) else 4
 
     def _current_return_address(self) -> int | None:
+        qemu_path = (self.state.launched_qemu_user_path or "").lower()
+        if "aarch64" in qemu_path:
+            regs = self.get_registers(["x30"]).get("result", {}).get("registers", {})
+            lr = self._parse_optional_address(regs.get("x30"))
+            if lr is not None and lr != 0:
+                return lr
         try:
             bt = self.backtrace(max_frames=2)
             frames = bt.get("result", {}).get("frames", [])
@@ -431,8 +439,11 @@ class AnalysisSession:
                     return ret
         except Exception:
             pass
-        regs64 = self.get_registers(["rsp", "esp"]).get("result", {}).get("registers", {})
-        sp = self._parse_optional_address(regs64.get("rsp") or regs64.get("esp"))
+        regs = self.get_registers(["x30", "rsp", "esp"]).get("result", {}).get("registers", {})
+        lr = self._parse_optional_address(regs.get("x30"))
+        if lr is not None and lr != 0:
+            return lr
+        sp = self._parse_optional_address(regs.get("rsp") or regs.get("esp"))
         if sp is None:
             return None
         pointer_size = self._current_pointer_size()
@@ -490,20 +501,22 @@ class AnalysisSession:
     def backtrace(self, max_frames: int = 16) -> dict[str, Any]:
         if max_frames < 1:
             raise InvalidStateError("max_frames must be >= 1")
-        regs64 = self.get_registers(["pc", "rip", "rbp", "rsp"]).get("result", {}).get("registers", {})
+        regs64 = self.get_registers(["pc", "rip", "rbp", "rsp", "x29", "sp"]).get("result", {}).get("registers", {})
         regs32 = self.get_registers(["pc", "eip", "ebp", "esp"]).get("result", {}).get("registers", {})
         if not isinstance(regs64, dict) or not isinstance(regs32, dict):
             raise InvalidStateError("register read did not return a register map")
 
         pc64 = self._parse_optional_address(regs64.get("pc") or regs64.get("rip"))
-        fp64 = self._parse_optional_address(regs64.get("rbp"))
-        sp64 = self._parse_optional_address(regs64.get("rsp"))
+        fp64 = self._parse_optional_address(regs64.get("rbp") or regs64.get("x29"))
+        sp64 = self._parse_optional_address(regs64.get("rsp") or regs64.get("sp"))
         pc32 = self._parse_optional_address(regs32.get("pc") or regs32.get("eip"))
         fp32 = self._parse_optional_address(regs32.get("ebp"))
         sp32 = self._parse_optional_address(regs32.get("esp"))
 
         qemu_path = (self.state.launched_qemu_user_path or "").lower()
-        if "qemu-i386" in qemu_path:
+        if "aarch64" in qemu_path:
+            prefer_64 = True
+        elif "qemu-i386" in qemu_path:
             prefer_64 = False
         elif "qemu-x86_64" in qemu_path:
             prefer_64 = True

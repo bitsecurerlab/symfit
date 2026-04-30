@@ -292,6 +292,18 @@ def test_mcp_tool_schemas_do_not_use_top_level_combinators() -> None:
     assert offenders == []
 
 
+def test_mcp_inspection_tools_document_terminal_pause_reads() -> None:
+    server = _server()
+    response = server.handle_request({"jsonrpc": "2.0", "id": 22, "method": "tools/list", "params": {}})
+    assert response is not None
+
+    tools = {tool["name"]: tool for tool in response["result"]["tools"]}
+    for name in ["state", "advance", "regs", "bt", "disasm", "mem"]:
+        description = tools[name]["description"]
+        assert "pending_termination=true" in description or "termination_pending" in description
+    assert "do not skip memory reads" in tools["mem"]["description"]
+
+
 def test_mcp_tool_call_start() -> None:
     server = _server()
     response = server.handle_request(

@@ -718,7 +718,9 @@ class InteractiveAnalysisMcpServer:
                 name="state",
                 description=(
                     "Return full session state. "
-                    "Use this to confirm session_status transitions (idle/paused/running/exited)."
+                    "Use this to confirm session_status transitions (idle/paused/running/exited). "
+                    "If session_status is paused with pending_termination=true, the target is in terminal-exit "
+                    "pause and is still inspectable with regs, mem, maps, disasm, and bt."
                 ),
                 input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             ),
@@ -741,7 +743,9 @@ class InteractiveAnalysisMcpServer:
                 name="advance",
                 description=(
                     "Advance execution using one of four modes: continue, insn, bb, or return. "
-                    "All modes may stop early on input, breakpoints, process exit, or other interactive stop conditions."
+                    "All modes may stop early on input, breakpoints, process exit, or other interactive stop conditions. "
+                    "When stop_reason is termination_pending, do post-mortem inspection with regs, mem, maps, "
+                    "disasm, or bt before closing or resuming."
                 ),
                 input_schema={
                     "type": "object",
@@ -790,7 +794,10 @@ class InteractiveAnalysisMcpServer:
             ),
             ToolSpec(
                 name="regs",
-                description="Read selected registers (or default set).",
+                description=(
+                    "Read selected registers (or default set). "
+                    "Works while paused, including terminal-exit pause with pending_termination=true."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -807,7 +814,8 @@ class InteractiveAnalysisMcpServer:
                 name="bt",
                 description=(
                     "Best-effort stack backtrace (gdb-like). "
-                    "Uses current PC + frame-pointer unwinding and resolves nearest symbols."
+                    "Uses current PC + frame-pointer unwinding and resolves nearest symbols. "
+                    "Works while paused, including terminal-exit pause with pending_termination=true."
                 ),
                 input_schema={
                     "type": "object",
@@ -824,7 +832,10 @@ class InteractiveAnalysisMcpServer:
             ),
             ToolSpec(
                 name="disasm",
-                description="Disassemble code at a guest address.",
+                description=(
+                    "Disassemble code at a guest address. "
+                    "Works while paused, including terminal-exit pause with pending_termination=true."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -842,7 +853,11 @@ class InteractiveAnalysisMcpServer:
             ),
             ToolSpec(
                 name="mem",
-                description="Read guest memory bytes plus symbolic byte metadata when available.",
+                description=(
+                    "Read guest memory bytes plus symbolic byte metadata when available. "
+                    "Works while paused, including terminal-exit pause with pending_termination=true; "
+                    "do not skip memory reads just because a process exit is pending."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -877,7 +892,7 @@ class InteractiveAnalysisMcpServer:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "register": {"type": "string", "description": "Register name, for example rax or eax."},
+                        "register": {"type": "string", "description": "Register name, for example x0, x30, rax, or eax."},
                         "name": {"type": ["string", "null"], "description": "Optional symbolic variable hint."},
                     },
                     "required": ["register"],

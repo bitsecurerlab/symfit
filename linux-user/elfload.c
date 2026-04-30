@@ -1785,7 +1785,8 @@ static abi_ulong setup_arg_pages(struct linux_binprm *bprm,
    after the data section (i.e. bss).  */
 static void zero_bss(abi_ulong elf_bss, abi_ulong last_bss, int prot)
 {
-    uintptr_t host_start, host_map_start, host_end;
+    uintptr_t host_start, host_page_start, host_map_start, host_end;
+    int flags;
 
     last_bss = TARGET_PAGE_ALIGN(last_bss);
 
@@ -1802,7 +1803,44 @@ static void zero_bss(abi_ulong elf_bss, abi_ulong last_bss, int prot)
 
     host_start = (uintptr_t) g2h(elf_bss);
     host_end = (uintptr_t) g2h(last_bss);
+    host_page_start = host_start & qemu_real_host_page_mask;
     host_map_start = REAL_HOST_PAGE_ALIGN(host_start);
+
+    if (host_start < host_map_start) {
+        flags = page_get_flags(elf_bss);
+
+        if (!(flags & PAGE_VALID)) {
+            void *p = mmap((void *)host_page_start, qemu_real_host_page_size,
+                           prot | PROT_WRITE,
+                           MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (p == MAP_FAILED) {
+                perror("cannot mmap brk");
+                exit(-1);
+            }
+        } else if (!(flags & PAGE_WRITE)) {
+            if (mprotect((void *)host_page_start, qemu_real_host_page_size,
+                         (flags & PAGE_BITS) | PROT_WRITE)) {
+                perror("cannot mprotect brk");
+                exit(-1);
+            }
+        }
+
+        memset((void *)host_start, 0, host_map_start - host_start);
+
+        if ((flags & PAGE_VALID) && !(flags & PAGE_WRITE)) {
+            if (mprotect((void *)host_page_start, qemu_real_host_page_size,
+                         flags & PAGE_BITS)) {
+                perror("cannot mprotect brk");
+                exit(-1);
+            }
+        } else if (!(prot & PROT_WRITE)) {
+            if (mprotect((void *)host_page_start, qemu_real_host_page_size,
+                         prot)) {
+                perror("cannot mprotect brk");
+                exit(-1);
+            }
+        }
+    }
 
     if (host_map_start < host_end) {
         void *p = mmap((void *)host_map_start, host_end - host_map_start,
@@ -1818,9 +1856,6 @@ static void zero_bss(abi_ulong elf_bss, abi_ulong last_bss, int prot)
         page_set_flags(elf_bss & TARGET_PAGE_MASK, last_bss, prot | PAGE_VALID);
     }
 
-    if (host_start < host_map_start) {
-        memset((void *)host_start, 0, host_map_start - host_start);
-    }
 }
 
 #ifdef TARGET_ARM

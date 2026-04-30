@@ -1336,6 +1336,35 @@ static bool ia_lookup_register(CPUARMState *env, const char *name, uint64_t *out
 
     return ia_lookup_register_shadow(env, name, out, &label, NULL);
 }
+
+static bool ia_lookup_register_binding(CPUARMState *env, const char *name,
+                                       target_ulong **out_shadow, uint64_t *out_value,
+                                       uint32_t *out_width_bits, int *out_reg_index)
+{
+    unsigned int index;
+
+    if (strcmp(name, "pc") == 0) {
+        return false;
+    } else if (strcmp(name, "sp") == 0) {
+        index = 31;
+    } else if (!ia_parse_aarch64_xreg(name, &index)) {
+        return false;
+    }
+
+    if (out_shadow) {
+        *out_shadow = &env->shadow_xregs[index];
+    }
+    if (out_value) {
+        *out_value = env->xregs[index];
+    }
+    if (out_width_bits) {
+        *out_width_bits = 64;
+    }
+    if (out_reg_index) {
+        *out_reg_index = (int)index;
+    }
+    return true;
+}
 #endif
 
 static QDict *ia_handle_query_status(int64_t id)
@@ -2200,9 +2229,6 @@ static QDict *ia_handle_symbolize_memory(int64_t id, QDict *params)
 
 static QDict *ia_handle_symbolize_register(int64_t id, QDict *params)
 {
-#if !defined(TARGET_X86_64) && !defined(TARGET_I386)
-    return ia_make_error_response(id, "unsupported_arch", "symbolize_register is only implemented for x86 targets");
-#else
     const char *name;
     CPUState *cpu;
     CPUArchState *env;
@@ -2265,11 +2291,12 @@ static QDict *ia_handle_symbolize_register(int64_t id, QDict *params)
     qdict_put_bool(result, "symbolic", true);
     qdict_put_str(result, "label", label_hex);
     return ia_make_ok_response(id, result);
-#endif
 }
 
 static QDict *ia_handle_list_memory_maps(int64_t id)
 {
+    CPUState *cpu = NULL;
+    TaskState *ts = NULL;
     FILE *maps = NULL;
     char *line = NULL;
     size_t line_cap = 0;
@@ -2289,6 +2316,8 @@ static QDict *ia_handle_list_memory_maps(int64_t id)
         qobject_unref(result);
         return ia_make_error_response(id, "invalid_state", "memory maps are only available while paused");
     }
+    cpu = ia_state.current_cpu;
+    ts = cpu->opaque;
     qemu_mutex_unlock(&ia_state.lock);
 
     maps = fopen("/proc/self/maps", "r");
@@ -2303,6 +2332,9 @@ static QDict *ia_handle_list_memory_maps(int64_t id)
         unsigned long long end_addr = 0;
         unsigned long long offset = 0;
         unsigned long long inode = 0;
+        abi_ulong guest_start;
+        abi_ulong guest_end;
+        int flags;
         char perms[5] = {0};
         char dev[16] = {0};
         char name_raw[4096] = {0};
@@ -2319,14 +2351,29 @@ static QDict *ia_handle_list_memory_maps(int64_t id)
         if (fields < 6) {
             continue;
         }
+        if (!h2g_valid(start_addr)) {
+            continue;
+        }
+
+        guest_start = h2g(start_addr);
+        guest_end = h2g_valid(end_addr - 1)
+            ? h2g(end_addr - 1) + 1
+            : GUEST_ADDR_MAX + 1;
+        flags = page_get_flags(guest_start);
+        if (!(flags & PAGE_VALID)) {
+            continue;
+        }
+        if (page_check_range(guest_start, guest_end - guest_start, flags) == -1) {
+            continue;
+        }
 
         perm_norm[0] = (perms[0] != '\0') ? perms[0] : '-';
         perm_norm[1] = (perms[1] != '\0') ? perms[1] : '-';
         perm_norm[2] = (perms[2] != '\0') ? perms[2] : '-';
 
         entry = qdict_new();
-        start_hex = g_strdup_printf("0x%llx", start_addr);
-        end_hex = g_strdup_printf("0x%llx", end_addr);
+        start_hex = g_strdup_printf("0x" TARGET_ABI_FMT_lx, guest_start);
+        end_hex = g_strdup_printf("0x" TARGET_ABI_FMT_lx, guest_end);
         qdict_put_str(entry, "start", start_hex);
         qdict_put_str(entry, "end", end_hex);
         qdict_put_str(entry, "perm", perm_norm);
@@ -2335,14 +2382,22 @@ static QDict *ia_handle_list_memory_maps(int64_t id)
         qdict_put_int(entry, "inode", (int64_t)inode);
 
         if (fields >= 7) {
-            char *name = name_raw;
-            while (*name == ' ' || *name == '\t') {
-                name++;
+            char *name_cursor = name_raw;
+            const char *name;
+            while (*name_cursor == ' ' || *name_cursor == '\t') {
+                name_cursor++;
+            }
+            name = name_cursor;
+            if (guest_start == ts->info->stack_limit) {
+                name = "[stack]";
             }
             if (*name != '\0') {
                 qdict_put_str(entry, "path", name);
                 qdict_put_str(entry, "name", name);
             }
+        } else if (guest_start == ts->info->stack_limit) {
+            qdict_put_str(entry, "path", "[stack]");
+            qdict_put_str(entry, "name", "[stack]");
         }
 
         qlist_append(regions, entry);
@@ -2359,34 +2414,42 @@ static QDict *ia_handle_disassemble(int64_t id, QDict *params)
 #ifndef CONFIG_CAPSTONE
     return ia_make_error_response(id, "unsupported_feature", "qemu was built without capstone support");
 #else
-#if !defined(TARGET_X86_64) && !defined(TARGET_I386)
-    return ia_make_error_response(id, "unsupported_arch", "disassemble is only implemented for x86 targets");
-#else
     const char *addr_str;
     uint64_t pc;
     int64_t count;
     CPUState *cpu;
     csh handle;
     cs_insn *insn = NULL;
-    #if defined(TARGET_X86_64)
+#if defined(TARGET_X86_64)
+    cs_arch arch = CS_ARCH_X86;
     cs_mode mode = CS_MODE_64;
-#else
+#elif defined(TARGET_I386)
+    cs_arch arch = CS_ARCH_X86;
     cs_mode mode = CS_MODE_32;
+#elif defined(TARGET_AARCH64)
+    cs_arch arch = CS_ARCH_ARM64;
+    cs_mode mode = CS_MODE_ARM;
+#else
+    cs_arch arch = -1;
+    cs_mode mode = 0;
 #endif
     QDict *result = qdict_new();
     QList *instructions = qlist_new();
 
     if (!params) {
+        qobject_unref(instructions);
         qobject_unref(result);
         return ia_make_error_response(id, "invalid_params", "params are required");
     }
     addr_str = qdict_get_try_str(params, "address");
     if (!addr_str || qemu_strtou64(addr_str, NULL, 0, &pc) != 0) {
+        qobject_unref(instructions);
         qobject_unref(result);
         return ia_make_error_response(id, "invalid_params", "address must be a hex string");
     }
     count = qdict_get_try_int(params, "count", -1);
     if (count <= 0 || count > 64) {
+        qobject_unref(instructions);
         qobject_unref(result);
         return ia_make_error_response(id, "invalid_params", "count must be between 1 and 64");
     }
@@ -2394,11 +2457,13 @@ static QDict *ia_handle_disassemble(int64_t id, QDict *params)
     qemu_mutex_lock(&ia_state.lock);
     if (!ia_state.attached || !ia_state.current_cpu) {
         qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(instructions);
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
     if (ia_state.exec_state == IA_EXEC_RUNNING) {
         qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(instructions);
         qobject_unref(result);
         return ia_make_error_response(id, "invalid_state", "disassembly is only available while paused");
     }
@@ -2415,14 +2480,30 @@ static QDict *ia_handle_disassemble(int64_t id, QDict *params)
 #endif
     qemu_mutex_unlock(&ia_state.lock);
 
-    if (cs_open(CS_ARCH_X86, mode, &handle) != CS_ERR_OK) {
+#if defined(TARGET_WORDS_BIGENDIAN)
+    mode += CS_MODE_BIG_ENDIAN;
+#else
+    mode += CS_MODE_LITTLE_ENDIAN;
+#endif
+
+    if (arch < 0) {
+        qobject_unref(instructions);
+        qobject_unref(result);
+        return ia_make_error_response(id, "unsupported_arch", "disassemble is not implemented for this target");
+    }
+    if (cs_open(arch, mode, &handle) != CS_ERR_OK) {
+        qobject_unref(instructions);
         qobject_unref(result);
         return ia_make_error_response(id, "internal_error", "failed to initialize capstone");
     }
     cs_option(handle, CS_OPT_DETAIL, CS_OPT_OFF);
+    if (arch == CS_ARCH_X86) {
+        cs_option(handle, CS_OPT_SYNTAX, CS_OPT_SYNTAX_ATT);
+    }
     insn = cs_malloc(handle);
     if (!insn) {
         cs_close(&handle);
+        qobject_unref(instructions);
         qobject_unref(result);
         return ia_make_error_response(id, "internal_error", "failed to allocate capstone instruction");
     }
@@ -2481,7 +2562,6 @@ static QDict *ia_handle_disassemble(int64_t id, QDict *params)
     cs_close(&handle);
     qdict_put(result, "instructions", instructions);
     return ia_make_ok_response(id, result);
-#endif
 #endif
 }
 
