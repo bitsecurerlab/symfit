@@ -168,10 +168,12 @@ class FakeInstrumentationRpcClient:
         if method == "resume_until_basic_block":
             return {"status": "paused", "blocks_executed": params["count"], "pc": "0x401010"}
         if method == "resume_until_address":
-            return {"status": "paused", "pc": params["address"]}
+            return {"status": "paused", "pc": params["address"], "matched": True, "matched_pc": params["address"]}
         if method == "resume_until_any_address":
             matched = params["addresses"][0]
             return {"status": "paused", "pc": matched, "matched_pc": matched, "matched": True}
+        if method == "set_breakpoints":
+            return {"status": "running", "armed": bool(params["addresses"]), "breakpoints": list(params["addresses"])}
         if method == "single_step":
             return {"status": "paused", "count": params["count"], "executed": params["count"], "pc": "0x401004"}
         if method == "query_status":
@@ -318,6 +320,7 @@ class FakeProcessRunner:
         self.summary: str | None = None
         self._process = None
         self.stdin_writes: list[str] = []
+        self.stdin_closed = False
 
     def start(self, config) -> object:
         self.started = True
@@ -338,6 +341,11 @@ class FakeProcessRunner:
         self.stdin_writes.append(data)
         return len(data)
 
+    def close_stdin(self) -> dict:
+        already_closed = self.stdin_closed
+        self.stdin_closed = True
+        return {"closed": True, "already_closed": already_closed}
+
     def read_stdout(self, cursor: int = 0, max_chars: int = 4096) -> dict:
         del max_chars
         return {"data": "", "cursor": cursor, "eof": False}
@@ -353,6 +361,20 @@ class ExitedProcess:
 
     def poll(self) -> int:
         return self._returncode
+
+
+class TimeoutInstrumentationRpcClient(FakeInstrumentationRpcClient):
+    def __init__(self, instrumentation_client: FakeInstrumentationClient | None = None) -> None:
+        super().__init__(instrumentation_client=instrumentation_client)
+        self.timeout_methods: set[str] = set()
+
+    def request(self, method: str, params: dict | None = None, timeout: float | None = None) -> dict:
+        if method in self.timeout_methods:
+            self.request_timeouts.append((method, timeout))
+            if method not in {"capabilities", "query_status"}:
+                self.requests.append((method, dict(params or {})))
+            raise SessionTimeoutError("timed out waiting for instrumentation RPC response")
+        return super().request(method, params, timeout)
 
 
 class FailingInstrumentationRpcClient(FakeInstrumentationRpcClient):
@@ -492,6 +514,31 @@ def test_backend_run_until_address_uses_rpc_in_rpc_only_mode() -> None:
     assert result["state"]["last_stop_transition"]["reason"] == "run_until_address"
 
 
+def test_backend_run_until_address_does_not_invent_match_on_exit() -> None:
+    class ExitBeforeAddressRpc(FakeInstrumentationRpcClient):
+        def request(self, method: str, params: dict | None = None, timeout: float | None = None) -> dict:
+            if method == "resume_until_address":
+                self.requests.append((method, dict(params or {})))
+                self.request_timeouts.append((method, timeout))
+                return {"status": "exited", "matched": False, "pc": "0x400800", "matched_pc": "0x0"}
+            return super().request(method, params, timeout)
+
+    rpc = ExitBeforeAddressRpc()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {"capabilities_override": {"run_until_address": True}})
+
+    result = backend.run_until_address("0x401000", timeout=1.0)
+
+    assert result["result"]["matched"] is False
+    assert "matched_address" not in result["result"]
+    assert result["state"]["session_status"] == "exited"
+    assert result["state"]["pc"] == "0x400800"
+
+
 def test_backend_run_until_address_returns_immediately_when_already_at_address() -> None:
     rpc = FakeInstrumentationRpcClient()
     backend = QemuUserInstrumentedBackend(
@@ -524,6 +571,23 @@ def test_backend_break_at_addresses_uses_rpc_method() -> None:
     assert result["result"]["matched_address"] == "0x401000"
     assert result["state"]["pc"] == "0x401000"
     assert result["state"]["last_stop_transition"]["reason"] == "break_at_addresses"
+
+
+def test_backend_set_breakpoints_arms_rpc_without_pausing() -> None:
+    rpc = FakeInstrumentationRpcClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {"capabilities_override": {"run_until_address": True}})
+    backend._state["session_status"] = "running"
+
+    result = backend.set_breakpoints(["0x401000"])
+
+    assert rpc.requests[-1] == ("set_breakpoints", {"addresses": ["0x401000"]})
+    assert result["result"]["armed"] is True
+    assert result["state"]["session_status"] == "running"
 
 
 def test_backend_disassemble_uses_rpc_in_rpc_only_mode() -> None:
@@ -701,6 +765,49 @@ def test_backend_get_state_queries_qmp_status() -> None:
     state = backend.get_state()
 
     assert state["session_status"] == "paused"
+
+
+def test_backend_get_state_returns_cached_running_state_after_rpc_timeout() -> None:
+    rpc = TimeoutInstrumentationRpcClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+        process_runner=FakeProcessRunner(),
+    )
+    backend.start("target.bin", [], None, {})
+
+    rpc.timeout_methods.add("resume_until_basic_block")
+    with pytest.raises(SessionTimeoutError):
+        backend.advance_basic_blocks(count=1, timeout=0.25)
+    assert backend._state["session_status"] == "running"
+
+    rpc.timeout_methods.add("query_status")
+    state = backend.get_state()
+
+    assert state["session_status"] == "running"
+    assert "timed out waiting" in state["last_rpc_error"]
+
+
+def test_backend_stdout_does_not_query_rpc_after_running_timeout() -> None:
+    rpc = TimeoutInstrumentationRpcClient()
+    process_runner = FakeProcessRunner()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+        process_runner=process_runner,
+    )
+    backend.start("target.bin", [], None, {})
+    rpc.timeout_methods.update({"resume_until_basic_block", "query_status"})
+
+    with pytest.raises(SessionTimeoutError):
+        backend.advance_basic_blocks(count=1, timeout=0.25)
+    result = backend.read_stdout(cursor=0, max_chars=500)
+
+    assert result["state"]["session_status"] == "running"
+    assert result["result"] == {"data": "", "cursor": 0, "eof": False}
+    assert rpc.request_timeouts[-1][0] == "resume_until_basic_block"
 
 
 def test_backend_resume_uses_rpc_control_when_available() -> None:
@@ -1079,6 +1186,25 @@ def test_backend_write_stdin_mixed_chunks_preserve_queue_order() -> None:
         ("queue_stdin_chunk", {"size": 3, "symbolic": True}),
     ]
     assert runner.stdin_writes == ["ab", "cde"]
+
+
+def test_backend_close_stdin_signals_eof_without_rpc() -> None:
+    rpc = FakeInstrumentationRpcClient()
+    runner = FakeProcessRunner()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+        process_runner=runner,
+    )
+    backend.start("target.bin", [], None, {})
+
+    result = backend.close_stdin()
+
+    assert result["result"]["closed"] is True
+    assert result["result"]["already_closed"] is False
+    assert runner.stdin_closed is True
+    assert rpc.requests == []
 
 
 def test_backend_write_stdin_symbolic_requires_rpc_channel() -> None:

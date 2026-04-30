@@ -536,7 +536,7 @@ class ScriptSession:
         """
         return self._session.path_constraint_closure(label=label)
 
-    # I/O Operations (3 methods)
+    # I/O Operations (4 methods)
     # ==========================
 
     def write_stdin(self, data: str | bytes, symbolic: bool = False) -> dict[str, Any]:
@@ -554,6 +554,18 @@ class ScriptSession:
             InvalidStateError: If session not started
         """
         return self._session.write_stdin(data=data, symbolic=symbolic)
+
+    def close_stdin(self) -> dict[str, Any]:
+        """
+        Close target stdin to signal EOF.
+
+        Returns:
+            Response dict with close result.
+
+        Raises:
+            InvalidStateError: If session not started
+        """
+        return self._session.close_stdin()
 
     def read_stdout(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:
         """

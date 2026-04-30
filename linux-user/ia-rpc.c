@@ -1065,6 +1065,28 @@ static void ia_append_memory_labels(QList *bytes, const uint8_t *host_ptr, size_
     }
 }
 
+static bool ia_current_cpu_pc(CPUState *cpu, uint64_t *out)
+{
+    if (!cpu || !out) {
+        return false;
+    }
+#if defined(TARGET_X86_64) || defined(TARGET_I386)
+    {
+        CPUX86State *env = (CPUX86State *)cpu->env_ptr;
+        *out = env->eip;
+        return true;
+    }
+#elif defined(TARGET_AARCH64)
+    {
+        CPUARMState *env = (CPUARMState *)cpu->env_ptr;
+        *out = env->pc;
+        return true;
+    }
+#else
+    return false;
+#endif
+}
+
 #if defined(TARGET_X86_64) || defined(TARGET_I386)
 static bool ia_lookup_register_binding(CPUX86State *env, const char *name,
                                        target_ulong **out_shadow, uint64_t *out_value,
@@ -1570,6 +1592,93 @@ static QDict *ia_handle_close(int64_t id)
     return ia_make_ok_response(id, result);
 }
 
+static bool ia_stop_address_set_contains_locked(uint64_t address)
+{
+    size_t i;
+
+    if (ia_state.stop_address_enabled && ia_state.stop_address == address) {
+        return true;
+    }
+    if (!ia_state.stop_address_set_enabled) {
+        return false;
+    }
+    for (i = 0; i < ia_state.stop_address_count; i++) {
+        if (ia_state.stop_addresses[i] == address) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static QDict *ia_handle_set_breakpoints(int64_t id, QDict *params)
+{
+    QList *addresses;
+    const QListEntry *entry;
+    size_t count = 0;
+    QDict *result = qdict_new();
+    QList *installed = qlist_new();
+
+    if (!params) {
+        qobject_unref(installed);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+    addresses = qobject_to(QList, qdict_get(params, "addresses"));
+    if (!addresses) {
+        qobject_unref(installed);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params", "addresses must be a list");
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_state.attached || !ia_state.current_cpu) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(installed);
+        qobject_unref(result);
+        return ia_make_error_response(id, "not_attached", "backend is not attached");
+    }
+    if (ia_state.pending_termination) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(installed);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_state", "backend is in terminal pause");
+    }
+
+    QLIST_FOREACH_ENTRY(addresses, entry) {
+        QString *item = qobject_to(QString, qlist_entry_obj(entry));
+        uint64_t address = 0;
+        g_autofree char *address_hex = NULL;
+
+        if (!item || count >= G_N_ELEMENTS(ia_state.stop_addresses) ||
+            qemu_strtou64(qstring_get_str(item), NULL, 0, &address) != 0) {
+            qemu_mutex_unlock(&ia_state.lock);
+            qobject_unref(installed);
+            qobject_unref(result);
+            return ia_make_error_response(
+                id,
+                "invalid_params",
+                "addresses must contain 0-64 hex strings"
+            );
+        }
+        ia_state.stop_addresses[count++] = address;
+        address_hex = g_strdup_printf("0x%" PRIx64, address);
+        qlist_append_str(installed, address_hex);
+    }
+
+    ia_state.stop_address_enabled = false;
+    ia_state.stop_address_set_enabled = count > 0;
+    ia_state.stop_address_count = count;
+    ia_state.stop_address_matched = false;
+    ia_state.stop_address = 0;
+    ia_state.last_matched_pc = 0;
+    qdict_put_str(result, "status", ia_status_string_locked());
+    qdict_put_bool(result, "armed", count > 0);
+    qdict_put(result, "breakpoints", installed);
+    qemu_mutex_unlock(&ia_state.lock);
+
+    return ia_make_ok_response(id, result);
+}
+
 static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
 {
     const char *addr_str;
@@ -1601,7 +1710,13 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING || ia_state.pause_pending ||
+    if (ia_state.exec_state == IA_EXEC_RUNNING &&
+        !ia_stop_address_set_contains_locked(address)) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_state", "backend is already running");
+    }
+    if (ia_state.pause_pending ||
         ia_state.pending_termination) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(result);
@@ -1611,17 +1726,19 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
                                       : "backend is already running");
     }
 
-    ia_state.stop_address_enabled = true;
-    ia_state.stop_address_set_enabled = false;
-    ia_state.stop_address_count = 0;
-    ia_state.stop_address_matched = false;
-    ia_state.stop_address = address;
-    ia_state.instruction_budget = 0;
-    ia_state.last_matched_pc = 0;
-    ia_state.start_paused = false;
-    ia_state.run_requested = true;
-    ia_state.exec_state = IA_EXEC_RUNNING;
-    qemu_cond_signal(&ia_state.cond);
+    if (ia_state.exec_state != IA_EXEC_RUNNING) {
+        ia_state.stop_address_enabled = true;
+        ia_state.stop_address_set_enabled = false;
+        ia_state.stop_address_count = 0;
+        ia_state.stop_address_matched = false;
+        ia_state.stop_address = address;
+        ia_state.instruction_budget = 0;
+        ia_state.last_matched_pc = 0;
+        ia_state.start_paused = false;
+        ia_state.run_requested = true;
+        ia_state.exec_state = IA_EXEC_RUNNING;
+        qemu_cond_signal(&ia_state.cond);
+    }
 
     while (((ia_state.stop_address_enabled || ia_state.stop_address_set_enabled) || ia_state.pause_pending) &&
            ia_state.exec_state != IA_EXEC_EXITED &&
@@ -1638,12 +1755,9 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
     status = ia_status_string_locked();
     qemu_mutex_unlock(&ia_state.lock);
 
-#ifdef TARGET_X86_64
-    if (cpu && strcmp(status, "paused") == 0) {
-        CPUX86State *env = (CPUX86State *)cpu->env_ptr;
-        stop_pc = env->eip;
+    if (strcmp(status, "paused") == 0) {
+        ia_current_cpu_pc(cpu, &stop_pc);
     }
-#endif
 
     qdict_put_str(result, "status", status);
     qdict_put_bool(result, "matched", matched);
@@ -1688,8 +1802,7 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING || ia_state.pause_pending ||
-        ia_state.pending_termination) {
+    if (ia_state.pause_pending || ia_state.pending_termination) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(result);
         return ia_make_error_response(id, "invalid_state",
@@ -1720,17 +1833,34 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
         return ia_make_error_response(id, "invalid_params", "addresses must not be empty");
     }
 
-    ia_state.stop_address_enabled = false;
-    ia_state.stop_address_set_enabled = true;
-    ia_state.stop_address_count = count;
-    ia_state.stop_address_matched = false;
-    ia_state.stop_address = 0;
-    ia_state.instruction_budget = 0;
-    ia_state.last_matched_pc = 0;
-    ia_state.start_paused = false;
-    ia_state.run_requested = true;
-    ia_state.exec_state = IA_EXEC_RUNNING;
-    qemu_cond_signal(&ia_state.cond);
+    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+        bool armed = false;
+        size_t i;
+
+        for (i = 0; i < count; i++) {
+            if (ia_stop_address_set_contains_locked(ia_state.stop_addresses[i])) {
+                armed = true;
+                break;
+            }
+        }
+        if (!armed) {
+            qemu_mutex_unlock(&ia_state.lock);
+            qobject_unref(result);
+            return ia_make_error_response(id, "invalid_state", "backend is already running");
+        }
+    } else {
+        ia_state.stop_address_enabled = false;
+        ia_state.stop_address_set_enabled = true;
+        ia_state.stop_address_count = count;
+        ia_state.stop_address_matched = false;
+        ia_state.stop_address = 0;
+        ia_state.instruction_budget = 0;
+        ia_state.last_matched_pc = 0;
+        ia_state.start_paused = false;
+        ia_state.run_requested = true;
+        ia_state.exec_state = IA_EXEC_RUNNING;
+        qemu_cond_signal(&ia_state.cond);
+    }
 
     while (((ia_state.stop_address_enabled || ia_state.stop_address_set_enabled) || ia_state.pause_pending) &&
            ia_state.exec_state != IA_EXEC_EXITED &&
@@ -1746,12 +1876,9 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
     status = ia_status_string_locked();
     qemu_mutex_unlock(&ia_state.lock);
 
-#ifdef TARGET_X86_64
-    if (cpu && strcmp(status, "paused") == 0) {
-        CPUX86State *env = (CPUX86State *)cpu->env_ptr;
-        stop_pc = env->eip;
+    if (strcmp(status, "paused") == 0) {
+        ia_current_cpu_pc(cpu, &stop_pc);
     }
-#endif
 
     qdict_put_str(result, "status", status);
     qdict_put_bool(result, "matched", matched);
@@ -1819,12 +1946,9 @@ static QDict *ia_handle_resume_until_basic_block(int64_t id, QDict *params)
     status = ia_status_string_locked();
     qemu_mutex_unlock(&ia_state.lock);
 
-#ifdef TARGET_X86_64
-    if (cpu && strcmp(status, "paused") == 0) {
-        CPUX86State *env = (CPUX86State *)cpu->env_ptr;
-        stop_pc = env->eip;
+    if (strcmp(status, "paused") == 0) {
+        ia_current_cpu_pc(cpu, &stop_pc);
     }
-#endif
 
     qdict_put_str(result, "status", status);
     qdict_put_int(result, "blocks_executed", blocks_executed);
@@ -1908,12 +2032,9 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
         }
     }
 
-#ifdef TARGET_X86_64
-    if (cpu && strcmp(status, "paused") == 0) {
-        CPUX86State *env = (CPUX86State *)cpu->env_ptr;
-        stop_pc = env->eip;
+    if (strcmp(status, "paused") == 0) {
+        ia_current_cpu_pc(cpu, &stop_pc);
     }
-#endif
 
     qdict_put_str(result, "status", status);
     qdict_put_int(result, "count", count);
@@ -2593,6 +2714,9 @@ static QDict *ia_dispatch_request(QDict *request)
     }
     if (strcmp(method, "close") == 0) {
         return ia_handle_close(id);
+    }
+    if (strcmp(method, "set_breakpoints") == 0) {
+        return ia_handle_set_breakpoints(id, params);
     }
     if (strcmp(method, "start_trace") == 0) {
         return ia_handle_start_trace(id, params);

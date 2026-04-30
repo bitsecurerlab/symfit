@@ -251,6 +251,20 @@ class QemuUserProcessRunner:
             raise RuntimeError("stdin is closed (target likely exited)") from exc
         return int(written or 0)
 
+    def close_stdin(self) -> dict[str, Any]:
+        if self._process is None:
+            raise RuntimeError("qemu-user process is not running")
+        stream = self._process.stdin
+        if stream is None or stream.closed:
+            return {"closed": True, "already_closed": True}
+        try:
+            stream.close()
+        except BrokenPipeError:
+            self._process.stdin = None
+            return {"closed": True, "already_closed": False}
+        self._process.stdin = None
+        return {"closed": True, "already_closed": False}
+
     def read_stdout(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:
         self._drain_available_output()
         return self._read_stream("stdout", cursor, max_chars)

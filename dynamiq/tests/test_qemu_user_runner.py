@@ -161,6 +161,29 @@ def test_qemu_user_process_runner_reads_stdout_and_stderr_nonblocking() -> None:
     runner.close()
 
 
+def test_qemu_user_process_runner_close_stdin_sends_eof() -> None:
+    runner = QemuUserProcessRunner()
+    config = QemuUserLaunchConfig(
+        qemu_user_path="/bin/sh",
+        target="-c",
+        args=["cat; printf done"],
+        cwd=None,
+    )
+    process = runner.start(config)
+
+    assert runner.write_stdin(b"payload") == 7
+    result = runner.close_stdin()
+    process.wait(timeout=2.0)
+    time.sleep(0.05)
+    out = runner.read_stdout(cursor=0, max_chars=4096)
+
+    assert result == {"closed": True, "already_closed": False}
+    assert "payloaddone" in out["data"]
+    assert out["eof"] is True
+    assert runner.close_stdin() == {"closed": True, "already_closed": True}
+    runner.close()
+
+
 def test_qemu_user_process_runner_uses_process_group_cleanup() -> None:
     runner = QemuUserProcessRunner()
     config = QemuUserLaunchConfig(

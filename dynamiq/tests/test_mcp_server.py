@@ -18,6 +18,7 @@ class FakeSession:
         self.last_qemu_config = None
         self.close_calls = 0
         self.stdin_written = b""
+        self.stdin_closed = False
         self.stdout_cursors: list[int] = []
         self.stderr_cursors: list[int] = []
 
@@ -42,7 +43,7 @@ class FakeSession:
     def get_state(self):
         return {"ok": True, "command": "get_state", "result": {"session_status": "paused"}}
 
-    def symbols(self, max_count=500, name_filter=None):  # noqa: ANN001
+    def symbols(self, max_count=500, name_filter=None, module_filter=None, include_modules=False):  # noqa: ANN001
         return {
             "ok": True,
             "command": "symbols",
@@ -53,6 +54,8 @@ class FakeSession:
                 "symbols": [{"name": "main", "loaded_address": "0x401000"}],
                 "max_count": max_count,
                 "name_filter": name_filter,
+                "module_filter": module_filter,
+                "include_modules": include_modules,
             },
         }
 
@@ -177,6 +180,11 @@ class FakeSession:
         self.stdin_written += payload
         return {"ok": True, "command": "write_stdin", "result": {"written": len(payload), "symbolic": symbolic}}
 
+    def close_stdin(self):
+        already_closed = self.stdin_closed
+        self.stdin_closed = True
+        return {"ok": True, "command": "close_stdin", "result": {"closed": True, "already_closed": already_closed}}
+
     def read_stdout(self, cursor=0, max_chars=4096):  # noqa: ANN001
         self.stdout_cursors.append(cursor)
         return {"ok": True, "command": "read_stdout", "result": {"data": "abc", "cursor": cursor + 3, "eof": False, "max_chars": max_chars}}
@@ -259,6 +267,7 @@ def test_mcp_tools_list_contains_short_names() -> None:
     assert "pause" in names
     assert "send_bytes" in names
     assert "send_line" in names
+    assert "close_stdin" in names
     assert "stdout" in names
     assert "bp_add" in names
     assert "trace_start" in names
@@ -751,6 +760,25 @@ def test_mcp_tool_call_send_file(tmp_path) -> None:  # noqa: ANN001
     assert response["result"]["structuredContent"]["written"] == 6
 
 
+def test_mcp_tool_call_close_stdin() -> None:
+    fake = FakeSession()
+    server = InteractiveAnalysisMcpServer(session_factory=lambda: fake)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 576,
+            "method": "tools/call",
+            "params": {"name": "close_stdin", "arguments": {}},
+        }
+    )
+
+    assert response is not None
+    assert response["result"]["isError"] is False
+    assert fake.stdin_closed is True
+    assert response["result"]["structuredContent"]["command"] == "close_stdin"
+    assert response["result"]["structuredContent"]["result"]["closed"] is True
+
+
 def test_mcp_tool_call_send_bytes_data_hex() -> None:
     fake = FakeSession()
     server = InteractiveAnalysisMcpServer(session_factory=lambda: fake)
@@ -869,6 +897,29 @@ def test_mcp_tool_call_advance_continue() -> None:
     assert response["result"]["isError"] is False
     assert response["result"]["structuredContent"]["command"] == "advance"
     assert response["result"]["structuredContent"]["result"]["mode"] == "continue"
+
+
+def test_mcp_advance_caps_long_timeout_for_polling() -> None:
+    fake = FakeSession()
+    server = InteractiveAnalysisMcpServer(session_factory=lambda: fake)
+    server._max_advance_timeout = 2.5
+
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 72,
+            "method": "tools/call",
+            "params": {"name": "advance", "arguments": {"mode": "continue", "timeout": 120}},
+        }
+    )
+
+    assert response is not None
+    assert response["result"]["isError"] is False
+    result = response["result"]["structuredContent"]["result"]
+    assert result["timeout"] == 2.5
+    assert result["requested_timeout"] == 120
+    assert result["effective_timeout"] == 2.5
+    assert result["timeout_capped"] is True
 
 
 def test_mcp_tool_call_advance_insn() -> None:

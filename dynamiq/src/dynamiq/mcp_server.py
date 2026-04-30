@@ -24,6 +24,8 @@ MCP_PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "dynamiq"
 SERVER_VERSION = "0.1.0"
 MCP_LOCKED_QEMU_PATH_ENV = "DYNAMIQ_MCP_QEMU_USER_PATH"
+MCP_MAX_ADVANCE_TIMEOUT_ENV = "DYNAMIQ_MCP_MAX_ADVANCE_TIMEOUT"
+DEFAULT_MCP_MAX_ADVANCE_TIMEOUT = 20.0
 
 
 def _teardown_log(message: str) -> None:
@@ -67,6 +69,7 @@ class InteractiveAnalysisMcpServer:
         self._session: AnalysisSession | None = None
         self._stdout_cursor = 0
         self._stderr_cursor = 0
+        self._max_advance_timeout = self._read_max_advance_timeout()
         self._tools: dict[str, ToolSpec] = {tool.name: tool for tool in self._build_tools()}
 
     def handle_request(self, request: JSON) -> JSON | None:
@@ -199,22 +202,37 @@ class InteractiveAnalysisMcpServer:
             if name == "syms":
                 max_count = self._parse_int(arguments, "max_count", default=500, minimum=1)
                 name_filter = self._parse_optional_string(arguments, "name_filter", default=None)
+                module_filter = self._parse_optional_string(arguments, "module_filter", default=None)
+                include_modules = self._parse_bool(arguments, "include_modules", default=False)
                 return self._tool_ok(
                     self._ensure_session().symbols(
                         max_count=max_count,
                         name_filter=name_filter,
+                        module_filter=module_filter,
+                        include_modules=include_modules,
                     )
                 )
             if name == "advance":
-                timeout = self._parse_positive_float(arguments, "timeout", default=5.0)
+                requested_timeout = self._parse_positive_float(arguments, "timeout", default=5.0)
+                timeout = min(requested_timeout, self._max_advance_timeout)
                 mode = self._parse_nonempty_string(arguments, "mode")
                 count = arguments.get("count")
                 if count is not None:
                     count = self._parse_int(arguments, "count", required=True, minimum=1)
                 try:
-                    return self._tool_ok(self._ensure_session().advance(mode=mode, count=count, timeout=timeout))
+                    result = self._ensure_session().advance(mode=mode, count=count, timeout=timeout)
+                    self._annotate_timeout_cap(result, requested_timeout=requested_timeout, effective_timeout=timeout)
+                    return self._tool_ok(result)
                 except SessionTimeoutError as exc:
-                    return self._tool_timeout(command="advance", timeout=timeout, message=str(exc))
+                    payload = self._tool_timeout(command="advance", timeout=timeout, message=str(exc))
+                    structured = payload.get("structuredContent")
+                    if isinstance(structured, dict):
+                        self._annotate_timeout_cap(
+                            structured,
+                            requested_timeout=requested_timeout,
+                            effective_timeout=timeout,
+                        )
+                    return payload
             if name == "pause":
                 timeout = self._parse_positive_float(arguments, "timeout", default=5.0)
                 try:
@@ -370,6 +388,8 @@ class InteractiveAnalysisMcpServer:
                     write_result = session.write_stdin(data=b"\n", symbolic=symbolic)
                     total_written += int(write_result["result"].get("written", 0))
                 return self._tool_ok({"written": total_written, "path": str(path), "append_newline": append_newline, "symbolic": symbolic})
+            if name == "close_stdin":
+                return self._tool_ok(self._ensure_session().close_stdin())
             if name == "stdout":
                 max_chars = self._parse_int(arguments, "max_chars", default=4096, minimum=1)
                 wait_ms = self._parse_int(arguments, "wait_ms", default=150, minimum=0)
@@ -597,6 +617,28 @@ class InteractiveAnalysisMcpServer:
         return result
 
     @staticmethod
+    def _read_max_advance_timeout() -> float:
+        raw = os.getenv(MCP_MAX_ADVANCE_TIMEOUT_ENV)
+        if raw is None or raw.strip() == "":
+            return DEFAULT_MCP_MAX_ADVANCE_TIMEOUT
+        try:
+            value = float(raw)
+        except ValueError:
+            return DEFAULT_MCP_MAX_ADVANCE_TIMEOUT
+        return value if value > 0 else DEFAULT_MCP_MAX_ADVANCE_TIMEOUT
+
+    @staticmethod
+    def _annotate_timeout_cap(payload: JSON, *, requested_timeout: float, effective_timeout: float) -> None:
+        if requested_timeout <= effective_timeout:
+            return
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            return
+        result["requested_timeout"] = requested_timeout
+        result["effective_timeout"] = effective_timeout
+        result["timeout_capped"] = True
+
+    @staticmethod
     def _tool_ok(payload: JSON) -> JSON:
         # Always include machine-readable JSON for text-only clients.
         text = json.dumps(
@@ -728,6 +770,7 @@ class InteractiveAnalysisMcpServer:
                 name="syms",
                 description=(
                     "List ELF symbols and resolve runtime loaded addresses for THIS session. "
+                    "Set module_filter or include_modules=true to search loaded shared libraries. "
                     "Always use returned loaded_address for breakpoints; do not hardcode addresses across sessions."
                 ),
                 input_schema={
@@ -735,6 +778,8 @@ class InteractiveAnalysisMcpServer:
                     "properties": {
                         "max_count": {"type": "integer", "minimum": 1, "default": 500},
                         "name_filter": {"type": ["string", "null"]},
+                        "module_filter": {"type": ["string", "null"]},
+                        "include_modules": {"type": "boolean", "default": False},
                     },
                     "additionalProperties": False,
                 },
@@ -744,6 +789,7 @@ class InteractiveAnalysisMcpServer:
                 description=(
                     "Advance execution using one of four modes: continue, insn, bb, or return. "
                     "All modes may stop early on input, breakpoints, process exit, or other interactive stop conditions. "
+                    "Long MCP timeouts are capped into pollable slices so the server remains responsive. "
                     "When stop_reason is termination_pending, do post-mortem inspection with regs, mem, maps, "
                     "disasm, or bt before closing or resuming."
                 ),
@@ -764,7 +810,7 @@ class InteractiveAnalysisMcpServer:
                             "type": "number",
                             "exclusiveMinimum": 0,
                             "default": 5.0,
-                            "description": "Execution window in seconds.",
+                            "description": "Requested execution window in seconds; MCP calls may cap long values into pollable slices.",
                         }
                     },
                     "required": ["mode"],
@@ -1005,7 +1051,8 @@ class InteractiveAnalysisMcpServer:
                 name="bp_add",
                 description=(
                     "Add a persistent breakpoint address. "
-                    "Use syms.loaded_address from current session; avoid guessed static/base+offset addresses."
+                    "Use syms.loaded_address from current session; avoid guessed static/base+offset addresses. "
+                    "When supported, bp_add arms the backend stop condition immediately even if the target is running."
                 ),
                 input_schema={
                     "type": "object",
@@ -1091,7 +1138,8 @@ class InteractiveAnalysisMcpServer:
                 description=(
                     "Stream a local file's raw bytes into target stdin using fixed internal chunks. "
                     "Session must be active (idle/running/paused). "
-                    "Use this for large payloads that are too long for a single send_bytes call."
+                    "Use this for large payloads that are too long for a single send_bytes call. "
+                    "Use close_stdin afterwards when the target expects EOF."
                 ),
                 input_schema={
                     "type": "object",
@@ -1115,6 +1163,14 @@ class InteractiveAnalysisMcpServer:
                     "required": ["path"],
                     "additionalProperties": False,
                 },
+            ),
+            ToolSpec(
+                name="close_stdin",
+                description=(
+                    "Close the target stdin pipe to signal EOF without closing the analysis session. "
+                    "Use after send_file/send_bytes for programs that read until EOF."
+                ),
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             ),
             ToolSpec(
                 name="stdout",

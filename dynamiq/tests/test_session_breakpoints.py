@@ -13,6 +13,7 @@ class FakeBackend:
         self.step_calls = 0
         self.run_until_calls = 0
         self.pause_calls = 0
+        self.set_breakpoints_calls: list[list[str]] = []
 
     def start(self, target, args, cwd, qemu_config=None):  # noqa: ANN001
         del target, args, cwd, qemu_config
@@ -34,6 +35,14 @@ class FakeBackend:
         self.run_until_calls += 1
         del timeout
         return {"state": {"pc": address, "session_status": "paused"}, "result": {"matched_address": address}}
+
+    def set_breakpoints(self, addresses):  # noqa: ANN001
+        normalized = list(addresses)
+        self.set_breakpoints_calls.append(normalized)
+        return {
+            "state": {},
+            "result": {"armed": bool(normalized), "breakpoints": normalized},
+        }
 
     def step(self, count, timeout):  # noqa: ANN001
         del timeout
@@ -149,6 +158,16 @@ class FakeBackendNoRegisterReads(FakeBackend):
     def get_registers(self, names=None):  # noqa: ANN001
         del names
         raise RuntimeError("unsupported_arch: get_registers is only implemented for x86_64")
+
+
+class FakeBackendExitBeforeBreakpoint(FakeBackend):
+    def break_at_addresses(self, addresses, timeout, max_steps=10000):  # noqa: ANN001
+        del addresses, timeout, max_steps
+        return {
+            "state": {"session_status": "exited", "pc": "0x1004"},
+            "result": {"status": "exited", "matched": False, "pc": "0x1004", "matched_pc": "0x0"},
+        }
+
 
 class FakeBackendContinueIo(FakeBackend):
     def __init__(self) -> None:
@@ -319,6 +338,20 @@ def test_session_bp_run_multiple_breakpoints_selects_nearest_forward() -> None:
     assert session.backend.step_calls == 2
 
 
+def test_session_bp_add_arms_running_backend_without_pausing() -> None:
+    backend = FakeBackend()
+    session = AnalysisSession(backend=backend)
+    session.state.session_status = "running"
+
+    result = session.bp_add("0x1008")
+
+    assert result["state"]["session_status"] == "running"
+    assert result["result"]["armed"] is True
+    assert result["result"]["breakpoints"] == ["0x1008"]
+    assert backend.pause_calls == 0
+    assert backend.set_breakpoints_calls == [["0x1008"]]
+
+
 def test_session_bp_run_multiple_breakpoints_wraps_to_first_when_all_behind() -> None:
     session = AnalysisSession(backend=FakeBackend())
     session.state.session_status = "paused"
@@ -342,6 +375,15 @@ def test_session_bp_run_single_breakpoint_uses_run_until_address() -> None:
     assert result["result"]["matched_address"] == "0x1008"
     assert backend.run_until_calls == 0
     assert backend.step_calls == 2
+
+
+def test_session_bp_run_rejects_backend_stop_before_breakpoint() -> None:
+    session = AnalysisSession(backend=FakeBackendExitBeforeBreakpoint())
+    session.state.session_status = "paused"
+    session.bp_add("0x1008")
+
+    with pytest.raises(InvalidStateError, match="stopped before hitting"):
+        session.bp_run(timeout=1.0, max_steps=10)
 
 
 def test_session_close_clears_breakpoints_before_reuse() -> None:

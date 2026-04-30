@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from dynamiq.session import AnalysisSession
 
 
@@ -274,3 +276,46 @@ def test_symbols_include_imported_plt_entries_for_pie(monkeypatch) -> None:
 
     assert [item["name"] for item in symbols] == ["read", "read@plt"]
     assert symbols[1]["loaded_address"] == "0x5555555550b0"
+
+
+def test_symbols_can_search_loaded_shared_libraries(monkeypatch, tmp_path: Path) -> None:
+    module = tmp_path / "libffmpeg.so"
+    module.write_bytes(b"\x7fELFplaceholder")
+    target = tmp_path / "harness"
+    target.write_bytes(b"\x7fELFplaceholder")
+
+    def fake_run(cmd, check, capture_output, text):  # noqa: ANN001
+        del check, capture_output, text
+        if cmd[1] == "-h":
+            return ProcResult("Type:                              DYN (Shared object file)\n")
+        if cmd[1] == "-Ws" and cmd[2] == str(target):
+            return ProcResult(
+                "Symbol table '.symtab' contains 1 entry:\n"
+                "   Num:    Value          Size Type    Bind   Vis      Ndx Name\n"
+                "     1: 0000000000000100    10 FUNC    GLOBAL DEFAULT   14 harness_main\n"
+            )
+        if cmd[1] == "-Ws" and cmd[2] == str(module):
+            return ProcResult(
+                "Symbol table '.symtab' contains 1 entry:\n"
+                "   Num:    Value          Size Type    Bind   Vis      Ndx Name\n"
+                "     1: 0000000000018548    42 FUNC    LOCAL  DEFAULT   14 write_frame_8\n"
+            )
+        if cmd[0] == "objdump":
+            return ProcResult("")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr("dynamiq.session.subprocess.run", fake_run)
+    maps = [
+        {"start": "0x400000", "end": "0x401000", "perm": "r-x", "path": str(target), "offset": "0x0"},
+        {"start": "0x4216d70000", "end": "0x4216d90000", "perm": "r-x", "path": str(module), "offset": "0x0"},
+    ]
+    session = AnalysisSession(backend=FakeBackend(maps_result=maps))
+    session.state.target = str(target)
+
+    result = session.symbols(name_filter="write_frame_8", module_filter="libffmpeg.so")
+    symbol = result["result"]["symbols"][0]
+
+    assert symbol["name"] == "write_frame_8"
+    assert symbol["module"] == "libffmpeg.so"
+    assert symbol["module_path"] == str(module)
+    assert symbol["loaded_address"] == "0x4216d88548"

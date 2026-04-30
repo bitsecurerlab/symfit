@@ -116,7 +116,15 @@ class AnalysisSession:
         value = self._parse_address(normalized)
         if value not in self.breakpoints:
             self.breakpoints.append(value)
-        return self._response("bp_add", {"address": hex(value), "breakpoints": [hex(item) for item in self.breakpoints]})
+        armed = self._sync_backend_breakpoints()
+        return self._response(
+            "bp_add",
+            {
+                "address": hex(value),
+                "breakpoints": [hex(item) for item in self.breakpoints],
+                "armed": armed,
+            },
+        )
 
     def bp_del(self, address: str) -> dict[str, Any]:
         normalized = str(address).strip()
@@ -125,11 +133,20 @@ class AnalysisSession:
         value = self._parse_address(normalized)
         if value in self.breakpoints:
             self.breakpoints.remove(value)
-        return self._response("bp_del", {"address": hex(value), "breakpoints": [hex(item) for item in self.breakpoints]})
+        armed = self._sync_backend_breakpoints()
+        return self._response(
+            "bp_del",
+            {
+                "address": hex(value),
+                "breakpoints": [hex(item) for item in self.breakpoints],
+                "armed": armed,
+            },
+        )
 
     def bp_clear(self) -> dict[str, Any]:
         self.breakpoints.clear()
-        return self._response("bp_clear", {"breakpoints": []})
+        armed = self._sync_backend_breakpoints()
+        return self._response("bp_clear", {"breakpoints": [], "armed": armed})
 
     def bp_list(self) -> dict[str, Any]:
         return self._response("bp_list", {"breakpoints": [hex(item) for item in self.breakpoints]})
@@ -139,6 +156,19 @@ class AnalysisSession:
             raise InvalidStateError("no breakpoints configured")
         result = self.break_at_addresses([hex(item) for item in self.breakpoints], timeout=timeout, max_steps=max_steps)
         return self._response("bp_run", dict(result.get("result", {})))
+
+    def _sync_backend_breakpoints(self) -> bool:
+        backend_method = getattr(self.backend, "set_breakpoints", None)
+        if not callable(backend_method):
+            return False
+        try:
+            result = backend_method([hex(item) for item in self.breakpoints])
+        except UnsupportedOperationError:
+            return False
+        if not isinstance(result, dict):
+            return False
+        self._merge_state(result.get("state") or {})
+        return True
 
     def break_at_addresses(
         self,
@@ -154,7 +184,7 @@ class AnalysisSession:
         backend_break = getattr(self.backend, "break_at_addresses", None)
         if callable(backend_break):
             try:
-                return self._forward(
+                response = self._forward(
                     "break_at_addresses",
                     backend_break(
                         [hex(item) for item in targets],
@@ -162,6 +192,12 @@ class AnalysisSession:
                         max_steps=max_steps,
                     ),
                 )
+                payload = response.get("result", {})
+                matched = payload.get("matched")
+                matched_address = self._parse_optional_address(payload.get("matched_address"))
+                if matched is False or matched_address not in targets:
+                    raise InvalidStateError("process stopped before hitting any requested breakpoint")
+                return response
             except UnsupportedOperationError:
                 pass
 
@@ -203,7 +239,12 @@ class AnalysisSession:
         if self.breakpoints:
             result = self.bp_run(timeout=timeout)
             payload = dict(result.get("result", {}))
-            payload.update({"mode": "continue", "completed": False, "stop_reason": "breakpoint"})
+            matched_address = self._parse_optional_address(payload.get("matched_address"))
+            if matched_address in self.breakpoints:
+                stop_reason = "breakpoint"
+            else:
+                stop_reason = self._infer_stop_reason(payload, self._payload_pc(payload), completed=False)
+            payload.update({"mode": "continue", "completed": False, "stop_reason": stop_reason})
             return self._response("advance", payload)
 
         self._forward("advance", self.backend.resume(timeout))
@@ -452,13 +493,25 @@ class AnalysisSession:
     def write_stdin(self, data: str | bytes, symbolic: bool = False) -> dict[str, Any]:
         return self._forward("write_stdin", self.backend.write_stdin(data, symbolic=symbolic))
 
+    def close_stdin(self) -> dict[str, Any]:
+        backend_method = getattr(self.backend, "close_stdin", None)
+        if not callable(backend_method):
+            raise UnsupportedOperationError("backend does not support closing stdin")
+        return self._forward("close_stdin", backend_method())
+
     def read_stdout(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:
         return self._forward("read_stdout", self.backend.read_stdout(cursor, max_chars))
 
     def read_stderr(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:
         return self._forward("read_stderr", self.backend.read_stderr(cursor, max_chars))
 
-    def symbols(self, max_count: int = 500, name_filter: str | None = None) -> dict[str, Any]:
+    def symbols(
+        self,
+        max_count: int = 500,
+        name_filter: str | None = None,
+        module_filter: str | None = None,
+        include_modules: bool = False,
+    ) -> dict[str, Any]:
         if max_count < 1:
             raise InvalidStateError("max_count must be >= 1")
         target = self.state.target
@@ -485,12 +538,24 @@ class AnalysisSession:
                     existing_names={str(item.get("name")) for item in symbols},
                 )
             )
+        if len(symbols) < max_count and (include_modules or module_filter):
+            symbols.extend(
+                self._read_loaded_module_symbols(
+                    regions=self.list_memory_maps()["result"].get("maps", {}).get("regions", []),
+                    max_count=max_count - len(symbols),
+                    name_filter=name_filter,
+                    module_filter=module_filter,
+                    exclude_paths={os.path.realpath(target)},
+                )
+            )
         return self._response(
             "symbols",
             {
                 "target": target,
                 "elf_type": elf_type,
                 "load_base": hex(load_base),
+                "include_modules": include_modules,
+                "module_filter": module_filter,
                 "symbols": symbols,
             },
         )
@@ -843,6 +908,20 @@ class AnalysisSession:
             return None
 
     @staticmethod
+    def _parse_optional_int(value: Any) -> int | None:
+        if isinstance(value, int):
+            return value
+        if not isinstance(value, str) or value == "":
+            return None
+        try:
+            return int(value, 0)
+        except ValueError:
+            try:
+                return int(value, 16)
+            except ValueError:
+                return None
+
+    @staticmethod
     def _read_elf_type(target: str) -> str:
         result = subprocess.run(
             ["readelf", "-h", target],
@@ -971,6 +1050,76 @@ class AnalysisSession:
             if len(items) >= max_count:
                 break
         return items
+
+    def _read_loaded_module_symbols(
+        self,
+        *,
+        regions: Any,
+        max_count: int,
+        name_filter: str | None,
+        module_filter: str | None,
+        exclude_paths: set[str],
+    ) -> list[dict[str, Any]]:
+        modules = self._resolve_loaded_modules(regions, module_filter=module_filter, exclude_paths=exclude_paths)
+        items: list[dict[str, Any]] = []
+        for module in modules:
+            if len(items) >= max_count:
+                break
+            path = module["path"]
+            try:
+                elf_type = self._read_elf_type(path)
+                module_symbols = self._read_elf_symbols(
+                    path,
+                    elf_type=elf_type,
+                    load_base=int(module["load_base"]),
+                    max_count=max_count - len(items),
+                    name_filter=name_filter,
+                )
+            except Exception:
+                continue
+            for symbol in module_symbols:
+                symbol["module"] = module["name"]
+                symbol["module_path"] = path
+                items.append(symbol)
+                if len(items) >= max_count:
+                    break
+        return items
+
+    @staticmethod
+    def _resolve_loaded_modules(
+        regions: Any,
+        *,
+        module_filter: str | None,
+        exclude_paths: set[str],
+    ) -> list[dict[str, Any]]:
+        if not isinstance(regions, list):
+            return []
+        needle = module_filter.lower() if isinstance(module_filter, str) and module_filter else None
+        modules: dict[str, dict[str, Any]] = {}
+        for region in regions:
+            if not isinstance(region, dict):
+                continue
+            path_value = region.get("path") or region.get("name")
+            if not isinstance(path_value, str):
+                continue
+            path = path_value.strip()
+            if path == "" or path.startswith("[") or not os.path.exists(path):
+                continue
+            path_real = os.path.realpath(path)
+            if path_real in exclude_paths:
+                continue
+            name = os.path.basename(path_real)
+            if needle and needle not in path_real.lower() and needle not in name.lower():
+                continue
+            start = AnalysisSession._parse_optional_address(region.get("start"))
+            offset = AnalysisSession._parse_optional_int(region.get("offset"))
+            if start is None:
+                continue
+            load_base = start - (offset or 0)
+            existing = modules.get(path_real)
+            if existing is None or load_base < int(existing["load_base"]):
+                modules[path_real] = {"path": path_real, "name": name, "load_base": load_base}
+        return sorted(modules.values(), key=lambda item: (str(item["name"]), int(item["load_base"])))
 
     @staticmethod
     def _resolve_pie_bases(target: str, regions: Any) -> list[int]:

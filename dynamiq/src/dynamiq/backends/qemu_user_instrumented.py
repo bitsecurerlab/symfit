@@ -311,8 +311,14 @@ class QemuUserInstrumentedBackend:
         pc = result.get("pc")
         if isinstance(pc, str):
             self._state["pc"] = pc
+        if result.get("matched") is True:
+            matched_pc = result.get("matched_pc")
+            if isinstance(matched_pc, str):
+                result["matched_address"] = matched_pc
+            else:
+                result["matched_address"] = address
         self._record_stop_transition("run_until_address", before_status, before_pc)
-        return self._response({"matched_address": address, **result}, refresh_live_status=False)
+        return self._response(result, refresh_live_status=False)
 
     def break_at_addresses(self, addresses: list[str], timeout: float, max_steps: int = 10000) -> dict[str, Any]:
         del max_steps
@@ -344,6 +350,22 @@ class QemuUserInstrumentedBackend:
         if isinstance(matched_pc, str):
             result["matched_address"] = matched_pc
         self._record_stop_transition("break_at_addresses", before_status, before_pc)
+        return self._response(result, refresh_live_status=False)
+
+    def set_breakpoints(self, addresses: list[str]) -> dict[str, Any]:
+        self._require_started()
+        if self._instrumentation_rpc is None:
+            raise UnsupportedOperationError("backend does not have an instrumentation RPC channel configured")
+        normalized = [str(item).strip() for item in addresses if str(item).strip()]
+        try:
+            result = self._rpc_request("set_breakpoints", {"addresses": normalized})
+        except Exception as exc:
+            if "unknown instrumentation RPC method" in str(exc):
+                raise UnsupportedOperationError("backend RPC does not support set_breakpoints") from exc
+            raise
+        status = result.get("status")
+        if isinstance(status, str):
+            self._state["session_status"] = status
         return self._response(result, refresh_live_status=False)
 
     def step(self, count: int, timeout: float) -> dict[str, Any]:
@@ -405,17 +427,31 @@ class QemuUserInstrumentedBackend:
         written = self._process_runner.write_stdin(data)
         return self._response({"written": written, "symbolic": symbolic})
 
+    def close_stdin(self) -> dict[str, Any]:
+        self._require_started()
+        _debug_log(f"close_stdin session_status={self._state.get('session_status')}")
+        if self._process_runner is None:
+            raise UnsupportedOperationError("backend does not have a launched process")
+        self._sync_process_state()
+        status = self._state.get("session_status")
+        if status not in {"idle", "running", "paused"}:
+            raise InvalidStateError("session is not active; start session before close_stdin")
+        result = self._process_runner.close_stdin()
+        return self._response(result, refresh_live_status=False)
+
     def read_stdout(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:
         self._require_started()
         if self._process_runner is None:
             raise UnsupportedOperationError("backend does not have a launched process")
-        return self._response(self._process_runner.read_stdout(cursor=cursor, max_chars=max_chars))
+        self._sync_process_state()
+        return self._response(self._process_runner.read_stdout(cursor=cursor, max_chars=max_chars), refresh_live_status=False)
 
     def read_stderr(self, cursor: int = 0, max_chars: int = 4096) -> dict[str, Any]:
         self._require_started()
         if self._process_runner is None:
             raise UnsupportedOperationError("backend does not have a launched process")
-        return self._response(self._process_runner.read_stderr(cursor=cursor, max_chars=max_chars))
+        self._sync_process_state()
+        return self._response(self._process_runner.read_stderr(cursor=cursor, max_chars=max_chars), refresh_live_status=False)
 
     def get_registers(self, names: list[str] | None = None) -> dict[str, Any]:
         self._require_started()
@@ -734,6 +770,11 @@ class QemuUserInstrumentedBackend:
         if self._instrumentation_rpc is not None and self._started:
             try:
                 status = self._instrumentation_rpc.request("query_status")
+            except SessionTimeoutError as exc:
+                self._state["last_rpc_error"] = str(exc)
+                if self._state.get("session_status") not in {"exited", "closed"}:
+                    self._state["session_status"] = "running"
+                return
             except Exception as exc:
                 process_summary = None
                 if self._process_runner is not None:
@@ -863,6 +904,27 @@ class QemuUserInstrumentedBackend:
                 history_entry["pc"] = result.get("pc")
             self._append_rpc_history(history_entry)
             return result
+        except SessionTimeoutError as exc:
+            message = str(exc)
+            self._state["last_rpc_error"] = message
+            if method in {
+                "resume",
+                "resume_until_address",
+                "resume_until_any_address",
+                "resume_until_basic_block",
+                "single_step",
+            }:
+                self._state["session_status"] = "running"
+                self._state["last_rpc_status"] = "timeout"
+                history_entry["status"] = "timeout"
+            history_entry["error"] = message
+            self._append_rpc_history(history_entry)
+            process_summary = None
+            if self._process_runner is not None:
+                process_summary = self._process_runner.exited_summary()
+            if process_summary is not None:
+                raise InvalidStateError(f"{exc}; {process_summary}") from exc
+            raise
         except Exception as exc:
             message = str(exc)
             self._state["last_rpc_error"] = message

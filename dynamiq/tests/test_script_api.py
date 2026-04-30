@@ -103,6 +103,10 @@ class MockBackend(BackendAdapter):
         self.call_history.append(f"write_stdin:{len(data)}:{symbolic}")
         return {"ok": True, "state": {}, "result": {"written": len(data), "symbolic": symbolic}}
 
+    def close_stdin(self):
+        self.call_history.append("close_stdin")
+        return {"ok": True, "state": {}, "result": {"closed": True, "already_closed": False}}
+
     def read_stdout(self, cursor=0, max_chars=4096):
         self.call_history.append(f"read_stdout:{cursor}:{max_chars}")
         return {
@@ -209,7 +213,11 @@ class MockBackend(BackendAdapter):
 
     def break_at_addresses(self, addresses, timeout=5.0, max_steps=10000):
         self.call_history.append(f"break_at_addresses:{addresses}")
-        return {"ok": True, "state": {}, "result": {}}
+        return {
+            "ok": True,
+            "state": {},
+            "result": {"matched": True, "matched_address": addresses[0] if addresses else None},
+        }
 
     def run_until_address(self, address, timeout=5.0):
         self.call_history.append(f"run_until_address:{address}:{timeout}")
@@ -609,6 +617,17 @@ class TestScriptSessionInputOutput:
         assert result["result"]["symbolic"] is True
         assert backend.call_history[0] == "write_stdin:3:True"
 
+    def test_close_stdin(self):
+        """Test close_stdin() delegates to backend."""
+        backend = MockBackend()
+        session = ScriptSession(target="/bin/ls", backend=backend)
+
+        result = session.close_stdin()
+
+        assert result["ok"] is True
+        assert result["result"]["closed"] is True
+        assert backend.call_history[0] == "close_stdin"
+
     def test_read_stdout(self):
         """Test read_stdout() delegates to backend."""
         backend = MockBackend()
@@ -742,8 +761,9 @@ def test_all_expected_methods_accessible():
         "get_symbolic_expression",
         "recent_path_constraints",
         "path_constraint_closure",
-        # I/O (3)
+        # I/O (4)
         "write_stdin",
+        "close_stdin",
         "read_stdout",
         "read_stderr",
         # Tracing (4)
