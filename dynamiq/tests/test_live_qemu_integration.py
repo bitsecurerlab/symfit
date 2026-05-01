@@ -95,6 +95,25 @@ def test_live_qemu_backend_list_memory_maps_schema(live_qemu_start_kwargs: dict[
 
 
 @pytest.mark.live_qemu
+def test_live_qemu_backend_list_memory_maps_while_running(live_qemu_start_kwargs: dict[str, object]) -> None:
+    backend = QemuUserInstrumentedBackend()
+    backend.start(**live_qemu_start_kwargs)
+    try:
+        resume = backend.resume(timeout=1.0)
+        assert resume["state"]["session_status"] == "running"
+
+        result = backend.list_memory_maps()
+        maps = result["result"]["maps"]
+        regions = maps["regions"]
+
+        assert isinstance(regions, list)
+        assert len(regions) > 0
+        assert result["state"]["session_status"] == "running"
+    finally:
+        backend.close()
+
+
+@pytest.mark.live_qemu
 def test_live_qemu_backend_single_step(live_qemu_start_kwargs: dict[str, object]) -> None:
     backend = QemuUserInstrumentedBackend()
     backend.start(**live_qemu_start_kwargs)

@@ -2431,12 +2431,6 @@ static QDict *ia_handle_list_memory_maps(int64_t id)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING) {
-        qemu_mutex_unlock(&ia_state.lock);
-        qobject_unref(regions);
-        qobject_unref(result);
-        return ia_make_error_response(id, "invalid_state", "memory maps are only available while paused");
-    }
     cpu = ia_state.current_cpu;
     ts = cpu->opaque;
     qemu_mutex_unlock(&ia_state.lock);
