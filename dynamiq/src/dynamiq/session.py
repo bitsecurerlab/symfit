@@ -1146,7 +1146,7 @@ class AnalysisSession:
         return items
 
     def _resolve_module(self, module: str) -> dict[str, Any]:
-        regions = self._module_resolution_regions(module)
+        regions = self.list_memory_maps()["result"].get("maps", {}).get("regions", [])
         if not isinstance(regions, list):
             raise InvalidStateError(f"module not found in memory maps: {module}")
         matches: dict[str, dict[str, Any]] = {}
@@ -1178,19 +1178,6 @@ class AnalysisSession:
             names = ", ".join(str(item["path"]) for item in exact[:5])
             raise InvalidStateError(f"ambiguous module {module!r}; matches: {names}")
         return exact[0]
-
-    def _module_resolution_regions(self, module: str) -> list[dict[str, Any]]:
-        try:
-            regions = self.list_memory_maps()["result"].get("maps", {}).get("regions", [])
-        except Exception as exc:
-            cached = list(self.state.memory_maps)
-            if cached:
-                return cached
-            raise InvalidStateError(
-                f"module {module!r} cannot be resolved while the target is running and no memory-map cache is available; "
-                "pause first or call maps at a stop point, then retry bp_add(module=..., symbol=.../offset=...)."
-            ) from exc
-        return [dict(item) for item in regions if isinstance(item, dict)] if isinstance(regions, list) else []
 
     def _resolve_symbol_breakpoint(self, symbol: str, module: str | None) -> tuple[int, dict[str, Any]]:
         if module is None:

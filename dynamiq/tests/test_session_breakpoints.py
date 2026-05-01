@@ -393,20 +393,26 @@ def test_session_bp_add_resolves_module_relative_offset() -> None:
     assert backend.set_breakpoints_calls == [["0x7f00ad1548"]]
 
 
-def test_session_bp_add_resolves_module_relative_offset_while_running_from_cached_maps() -> None:
+def test_session_bp_add_resolves_module_relative_offset_while_running_from_backend_maps() -> None:
     backend = FakeBackend()
-    backend.list_memory_maps = lambda: (_ for _ in ()).throw(RuntimeError("memory maps are only available while paused"))  # type: ignore[method-assign]
+    backend.list_memory_maps = lambda: {  # type: ignore[method-assign]
+        "state": {"session_status": "running"},
+        "result": {
+            "maps": {
+                "regions": [
+                    {
+                        "start": "0x7f00001000",
+                        "end": "0x7f00002000",
+                        "perm": "r-x",
+                        "path": "/usr/lib/libffmpeg.so",
+                        "offset": "0x1000",
+                    }
+                ]
+            }
+        },
+    }
     session = AnalysisSession(backend=backend)
     session.state.session_status = "running"
-    session.state.memory_maps = [
-        {
-            "start": "0x7f00001000",
-            "end": "0x7f00002000",
-            "perm": "r-x",
-            "path": "/usr/lib/libffmpeg.so",
-            "offset": "0x1000",
-        }
-    ]
 
     result = session.bp_add(module="libffmpeg.so", offset="0xad1548")
 

@@ -178,7 +178,7 @@ results = checkpoint_restore_test(session, test_scenario, num_iterations=3)
 ### Workflow 1: Breakpoint-Driven Analysis
 ```python
 with ScriptSession(target="/bin/ls", auto_start=True) as session:
-    # Find main
+    # Find main in the main executable.
     symbols = session.symbols(name_filter="main")
     main_addr = symbols["result"]["symbols"][0]["loaded_address"]
     
@@ -190,6 +190,21 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
     regs = session.get_registers(["rsp", "rip"])
     print(f"At main: RIP={regs['result']['registers']['rip']}")
 ```
+
+For shared libraries, prefer module-relative breakpoints so ASLR and `dlopen`
+do not force you to recompute absolute addresses:
+
+```python
+with ScriptSession(target="/bin/myapp", auto_start=True) as session:
+    session.bp_add(module="libc.so", symbol="malloc")
+    session.bp_add(module="libffmpeg.so", offset="0xad1548")
+    session.bp_run(timeout=5.0)
+```
+
+Dynamiq can query memory maps while the target is running, so module-relative
+breakpoint resolution does not require manually pausing just to read `maps`. If
+the module has not been loaded yet, run until after the `dlopen` point and retry
+the same module-relative `bp_add`.
 
 ### Workflow 2: Trace Syscalls
 ```python

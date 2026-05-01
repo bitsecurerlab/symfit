@@ -50,6 +50,30 @@ Use this skill when operating the `dynamiq` MCP tools for live binary analysis.
 
 ### Breakpoint workflow
 
+1. Prefer library-relative breakpoints for ASLR and dlopen'd code:
+- `bp_add {"module":"libfoo.so", "offset":"0xad1548"}`
+- `bp_add {"module":"libfoo.so", "symbol":"write_frame_8"}`
+
+2. For main-binary symbols, `syms {"name_filter":"main"}` is also fine.
+3. `bp_clear`
+4. `bp_add {"address":"<loaded_address>"}` or a module-relative form above
+5. `advance {"mode":"continue"}`
+6. `regs`
+7. `bt`
+8. `disasm`
+
+### Library-relative breakpoints
+
+Use module-relative breakpoints whenever the target code lives in a shared object, especially one loaded with `dlopen`. Do not manually compute an absolute address from an old run: ASLR means it will change between sessions.
+
+Good:
+- `bp_add {"module":"libc.so", "symbol":"malloc"}`
+- `bp_add {"module":"libffmpeg.so", "offset":"0xad1548"}`
+- `bp_add {"module":"libffmpeg.so", "symbol":"write_frame_8"}`
+
+Dynamiq may query `maps` while the target is running so it can resolve loaded module bases before arming the breakpoint. If the module is not loaded yet, first run to a point after `dlopen`, then retry the module-relative breakpoint. Avoid falling back to absolute addresses unless you are deliberately pinning one specific already-observed runtime address.
+
+Fallback absolute-address flow:
 1. `syms {"name_filter":"main"}`
 2. `bp_clear`
 3. `bp_add {"address":"<loaded_address>"}`
