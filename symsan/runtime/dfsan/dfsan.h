@@ -90,6 +90,32 @@ uptr dfsan_get_nested_constraints(dfsan_label label, dfsan_label *out, uptr capa
 uptr dfsan_get_nested_constraint_directions(dfsan_label label, uint8_t *out, uptr capacity);
 uptr dfsan_format_simplified_expression(dfsan_label label, char *out, uptr capacity);
 
+#ifndef DFSAN_SOLVE_PATH_CONSTRAINT_TYPES
+#define DFSAN_SOLVE_PATH_CONSTRAINT_TYPES
+typedef struct {
+  u64 offset;
+  u8 value;
+} dfsan_solve_assignment;
+
+typedef struct {
+  dfsan_label load_label;
+  dfsan_label addr_label;
+  u64 concrete_addr;
+  u64 concrete_value;
+  u64 pc;
+  u16 size;
+} dfsan_solve_assumption;
+#endif
+
+int dfsan_solve_path_constraint(dfsan_label label, u8 desired_taken,
+                                dfsan_solve_assignment *assignments,
+                                uptr assignment_capacity,
+                                uptr *assignment_count,
+                                dfsan_solve_assumption *assumptions,
+                                uptr assumption_capacity,
+                                uptr *assumption_count,
+                                char *error, uptr error_capacity);
+
 // taint source
 void taint_set_file(const char *filename, int fd);
 off_t taint_get_file(int fd);

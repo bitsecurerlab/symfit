@@ -188,6 +188,7 @@ For symbolic path reasoning in the scripting API, use:
 - `session.get_state()` first to inspect `state["recent_symbolic_pcs"]` and `state["symbolic_registers"]`
 - `session.recent_path_constraints(limit=...)` to discover recent path-condition labels, whether each branch was taken, and to refresh `recent_symbolic_pcs`
 - `session.path_constraint_closure(label)` to inspect the chosen path-condition plus the nested earlier constraints it depends on, including their `taken` directions
+- `session.solve_path_constraint(label, negate=True)` to ask Z3 for concrete byte assignments for the opposite branch
 
 Typical flow:
 ```python
@@ -197,7 +198,14 @@ label = latest["label"]
 recent = session.recent_path_constraints(limit=8)
 expr = session.get_symbolic_expression(label)
 closure = session.path_constraint_closure(label)
+model = session.solve_path_constraint(label, negate=True)
 ```
+
+Solver results include `soundness`. `sound` means the path formula did not use
+symbolic-address load concretization. `conditional` means the model depends on
+reported assumptions such as a symbolic load address being fixed to the concrete
+address observed in this run; rerun with the assignments to verify target-PC
+reachability.
 
 ### MCP quickstart for interactive stdin/stdout
 

@@ -550,6 +550,10 @@ class QemuUserInstrumentedBackend:
         self._require_started()
         return self._response(self._rpc_request("get_path_constraints", {"label": label}))
 
+    def solve_path_constraint(self, label: str, negate: bool = True) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("solve_path_constraint", {"label": label, "negate": negate}))
+
     def disassemble(self, address: str, count: int) -> dict[str, Any]:
         self._require_started()
         if not self._capabilities.disassemble:

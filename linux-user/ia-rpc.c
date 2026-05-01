@@ -41,6 +41,23 @@ typedef struct IADfsanLabelInfo {
     uint32_t hash;
 } __attribute__((aligned(8), packed)) IADfsanLabelInfo;
 
+#ifndef DFSAN_SOLVE_PATH_CONSTRAINT_TYPES
+#define DFSAN_SOLVE_PATH_CONSTRAINT_TYPES
+typedef struct {
+    uint64_t offset;
+    uint8_t value;
+} dfsan_solve_assignment;
+
+typedef struct {
+    dfsan_label load_label;
+    dfsan_label addr_label;
+    uint64_t concrete_addr;
+    uint64_t concrete_value;
+    uint64_t pc;
+    uint16_t size;
+} dfsan_solve_assumption;
+#endif
+
 extern IADfsanLabelInfo *dfsan_get_label_info(dfsan_label label);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wredundant-decls"
@@ -54,6 +71,12 @@ extern size_t __attribute__((weak)) dfsan_get_nested_constraints(dfsan_label lab
 extern size_t __attribute__((weak)) dfsan_get_nested_constraint_directions(dfsan_label label,
                                                                            uint8_t *out,
                                                                            size_t capacity);
+extern int __attribute__((weak)) dfsan_solve_path_constraint(
+    dfsan_label label, uint8_t desired_taken,
+    dfsan_solve_assignment *assignments, size_t assignment_capacity,
+    size_t *assignment_count, dfsan_solve_assumption *assumptions,
+    size_t assumption_capacity, size_t *assumption_count,
+    char *error, size_t error_capacity);
 extern size_t dfsan_get_label_count(void);
 extern size_t dfsan_format_simplified_expression(dfsan_label label, char *out,
                                                  size_t capacity);
@@ -734,6 +757,134 @@ static QDict *ia_handle_get_path_constraints(int64_t id, QDict *params)
 
     g_free(constraint_directions);
     g_free(constraint_labels);
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_solve_path_constraint(int64_t id, QDict *params)
+{
+    dfsan_label label;
+    uint8_t root_taken = 0;
+    uint8_t desired_taken;
+    bool negate;
+    int solved;
+    size_t assignment_count = 0;
+    size_t assumption_count = 0;
+    dfsan_solve_assignment *assignments = NULL;
+    dfsan_solve_assumption *assumptions = NULL;
+    char error[256] = { 0 };
+    Error *err = NULL;
+    QDict *result = NULL;
+    QList *assignment_list = NULL;
+    QList *assumption_list = NULL;
+    size_t i;
+
+    if (!params) {
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+    if (!ia_parse_label_param(params, "label", &label, &err)) {
+        const char *message = error_get_pretty(err);
+        QDict *resp = ia_make_error_response(id, "invalid_params", message);
+        error_free(err);
+        return resp;
+    }
+    if (label == 0 || label > dfsan_get_label_count() || !dfsan_get_label_info(label)) {
+        return ia_make_error_response(id, "invalid_params", "label is not valid");
+    }
+    if (!dfsan_is_branch_condition_label ||
+        !dfsan_get_branch_direction ||
+        !dfsan_solve_path_constraint) {
+        return ia_make_error_response(id, "unsupported",
+                                      "path-constraint solving is unavailable in the current Symsan runtime");
+    }
+    if (!dfsan_is_branch_condition_label(label)) {
+        return ia_make_error_response(id, "invalid_params",
+                                      "label is not a branch-condition label");
+    }
+    if (!dfsan_get_branch_direction(label, &root_taken)) {
+        return ia_make_error_response(id, "invalid_params",
+                                      "failed to recover branch direction for label");
+    }
+
+    negate = qdict_get_try_bool(params, "negate", true);
+    desired_taken = negate ? !root_taken : root_taken;
+
+    solved = dfsan_solve_path_constraint(label, desired_taken, NULL, 0,
+                                         &assignment_count, NULL, 0,
+                                         &assumption_count, error,
+                                         sizeof(error));
+    if (solved < 0) {
+        return ia_make_error_response(id,
+                                      solved == -2 ? "solver_unknown" : "solver_error",
+                                      error[0] ? error : "path constraint solve failed");
+    }
+
+    if (assignment_count > 0) {
+        assignments = g_new0(dfsan_solve_assignment, assignment_count);
+    }
+    if (assumption_count > 0) {
+        assumptions = g_new0(dfsan_solve_assumption, assumption_count);
+    }
+
+    solved = dfsan_solve_path_constraint(label, desired_taken, assignments,
+                                         assignment_count, &assignment_count,
+                                         assumptions, assumption_count,
+                                         &assumption_count, error,
+                                         sizeof(error));
+    if (solved < 0) {
+        g_free(assignments);
+        g_free(assumptions);
+        return ia_make_error_response(id,
+                                      solved == -2 ? "solver_unknown" : "solver_error",
+                                      error[0] ? error : "path constraint solve failed");
+    }
+
+    result = qdict_new();
+    assignment_list = qlist_new();
+    assumption_list = qlist_new();
+
+    g_autofree char *label_hex = g_strdup_printf("0x%x", label);
+    qdict_put_str(result, "label", label_hex);
+    qdict_put_bool(result, "negate", negate);
+    qdict_put_bool(result, "root_taken", root_taken != 0);
+    qdict_put_bool(result, "desired_taken", desired_taken != 0);
+    qdict_put_str(result, "status", solved == 1 ? "sat" : "unsat");
+    qdict_put_str(result, "soundness", assumption_count > 0 ? "conditional" : "sound");
+
+    for (i = 0; i < assignment_count; i++) {
+        QDict *entry = qdict_new();
+        g_autofree char *offset_hex = g_strdup_printf("0x%" PRIx64, assignments[i].offset);
+        g_autofree char *value_hex = g_strdup_printf("0x%02x", assignments[i].value);
+
+        qdict_put_str(entry, "offset", offset_hex);
+        qdict_put_int(entry, "value", assignments[i].value);
+        qdict_put_str(entry, "value_hex", value_hex);
+        qlist_append(assignment_list, entry);
+    }
+    for (i = 0; i < assumption_count; i++) {
+        QDict *entry = qdict_new();
+        g_autofree char *load_label_hex = g_strdup_printf("0x%x", assumptions[i].load_label);
+        g_autofree char *addr_label_hex = g_strdup_printf("0x%x", assumptions[i].addr_label);
+        g_autofree char *addr_hex = g_strdup_printf("0x%" PRIx64, assumptions[i].concrete_addr);
+        g_autofree char *value_hex = g_strdup_printf("0x%" PRIx64, assumptions[i].concrete_value);
+        g_autofree char *pc_hex = g_strdup_printf("0x%" PRIx64, assumptions[i].pc);
+
+        qdict_put_str(entry, "kind", "concretized_symbolic_load");
+        qdict_put_str(entry, "load_label", load_label_hex);
+        qdict_put_str(entry, "addr_label", addr_label_hex);
+        qdict_put_str(entry, "concrete_address", addr_hex);
+        qdict_put_str(entry, "concrete_value", value_hex);
+        qdict_put_str(entry, "pc", pc_hex);
+        qdict_put_int(entry, "size", assumptions[i].size);
+        qlist_append(assumption_list, entry);
+    }
+
+    qdict_put(result, "assignments", assignment_list);
+    qdict_put_int(result, "assignment_count", assignment_count);
+    qdict_put(result, "assumptions", assumption_list);
+    qdict_put_int(result, "assumption_count", assumption_count);
+
+    g_free(assignments);
+    g_free(assumptions);
     return ia_make_ok_response(id, result);
 }
 
@@ -1521,6 +1672,7 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_bool(caps, "read_symbolic_expression", true);
     qdict_put_bool(caps, "read_path_constraints", true);
     qdict_put_bool(caps, "read_recent_path_constraints", true);
+    qdict_put_bool(caps, "solve_path_constraints", dfsan_solve_path_constraint != NULL);
     qdict_put_bool(caps, "queue_stdin_chunk", true);
     qdict_put_bool(caps, "close", true);
     qdict_put_bool(caps, "symbolize_memory", true);
@@ -2923,6 +3075,9 @@ static QDict *ia_dispatch_request(QDict *request)
     }
     if (strcmp(method, "get_path_constraints") == 0) {
         return ia_handle_get_path_constraints(id, params);
+    }
+    if (strcmp(method, "solve_path_constraint") == 0) {
+        return ia_handle_solve_path_constraint(id, params);
     }
     if (strcmp(method, "get_recent_path_constraints") == 0) {
         return ia_handle_get_recent_path_constraints(id, params);

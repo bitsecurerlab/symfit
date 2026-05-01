@@ -1,6 +1,6 @@
 ---
 name: dynamiq-scripting
-description: Use when implementing autonomous program analysis, testing, or security scanning workflows. For persistent session control with Python, including stepping, breakpoints, write watchpoints, memory inspection/search, symbolic stdin, and event tracing—without JSON-RPC round-trips.
+description: Use when implementing autonomous program analysis, testing, or security scanning workflows. For persistent session control with Python, including stepping, breakpoints, write watchpoints, memory inspection/search, symbolic stdin, path-constraint solving, and event tracing—without JSON-RPC round-trips.
 ---
 
 # Dynamiq Scripting API Skill
@@ -70,6 +70,7 @@ The scripting API now exposes symbolic-execution helpers through `AnalysisSessio
 - `get_symbolic_expression(label)`
 - `recent_path_constraints(limit=16)`
 - `path_constraint_closure(label)`
+- `solve_path_constraint(label, negate=True)`
 
 Important:
 - Dynamiq does not symbolize argv, stack buffers, heap buffers, or derived parser buffers automatically.
@@ -93,8 +94,12 @@ with ScriptSession(target="/path/to/target", auto_start=True) as session:
 
     expr = session.get_symbolic_expression(first_symbolic)
     recent = session.recent_path_constraints(limit=8)
-    closure = session.path_constraint_closure(recent["result"]["constraints"][0]["label"])
+    label = recent["result"]["constraints"][0]["label"]
+    closure = session.path_constraint_closure(label)
+    model = session.solve_path_constraint(label, negate=True)
     assert closure["result"]["root"]["taken"] is True
+    if model["result"]["soundness"] == "conditional":
+        print("model depends on concretized symbolic-load assumptions")
 ```
 
 ### 4. Auto-Detection (Zero Configuration)

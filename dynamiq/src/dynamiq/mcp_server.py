@@ -307,6 +307,10 @@ class InteractiveAnalysisMcpServer:
             if name == "path_constraint_closure":
                 label = self._parse_nonempty_string(arguments, "label")
                 return self._tool_ok(self._ensure_session().path_constraint_closure(label=label))
+            if name == "solve_path_constraint":
+                label = self._parse_nonempty_string(arguments, "label")
+                negate = self._parse_bool(arguments, "negate", default=True)
+                return self._tool_ok(self._ensure_session().solve_path_constraint(label=label, negate=negate))
             if name == "maps":
                 return self._tool_ok(self._ensure_session().list_memory_maps())
             if name == "trace_start":
@@ -1131,6 +1135,30 @@ class InteractiveAnalysisMcpServer:
                             "type": "string",
                             "description": "Branch-condition symbolic label as a hex string.",
                         }
+                    },
+                    "required": ["label"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
+                name="solve_path_constraint",
+                description=(
+                    "Solve a symbolic path-constraint label. By default this negates the recorded branch "
+                    "and returns concrete input byte assignments. Conditional answers include explicit "
+                    "concretized symbolic-load assumptions."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "label": {
+                            "type": "string",
+                            "description": "Branch-condition symbolic label as a hex string.",
+                        },
+                        "negate": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "When true, solve for the opposite branch direction.",
+                        },
                     },
                     "required": ["label"],
                     "additionalProperties": False,

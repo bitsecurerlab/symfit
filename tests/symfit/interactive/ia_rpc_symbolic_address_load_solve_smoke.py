@@ -155,6 +155,14 @@ def main():
         )
         req_id += 1
 
+        summary["solve_older_same"] = rpc_call(
+            stream,
+            req_id,
+            "solve_path_constraint",
+            {"label": older_label, "negate": False},
+        )
+        req_id += 1
+
         summary["resume"] = rpc_call(stream, req_id, "resume")
         req_id += 1
 
@@ -186,6 +194,9 @@ def main():
 
         if summary["capabilities"]["capabilities"].get("read_path_constraints") is not True:
             print("Expected read_path_constraints capability", file=sys.stderr)
+            return 1
+        if summary["capabilities"]["capabilities"].get("solve_path_constraints") is not True:
+            print("Expected solve_path_constraints capability", file=sys.stderr)
             return 1
         if summary["resume_until_address"].get("matched") is not True:
             print("Expected branch2_taken address to be matched", file=sys.stderr)
@@ -225,6 +236,17 @@ def main():
                 f"Expected nested constraints to include older path constraint {older_label}",
                 file=sys.stderr,
             )
+            return 1
+        solve_older = summary["solve_older_same"]
+        if solve_older.get("status") != "sat":
+            print(f"Expected symbolic-address solve to be sat, got {solve_older}", file=sys.stderr)
+            return 1
+        if solve_older.get("soundness") != "conditional":
+            print(f"Expected symbolic-address solve to be conditional, got {solve_older}", file=sys.stderr)
+            return 1
+        assumptions = solve_older.get("assumptions", [])
+        if not assumptions or any(item.get("kind") != "concretized_symbolic_load" for item in assumptions):
+            print(f"Expected concretized symbolic-load assumptions, got {assumptions}", file=sys.stderr)
             return 1
         final = summary["query_status_final"] or {}
         if not (

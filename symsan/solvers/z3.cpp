@@ -32,6 +32,8 @@ static z3::solver __z3_solver(__z3_context, "QF_BV");
 SANITIZER_INTERFACE_ATTRIBUTE THREADLOCAL u32 __taint_trace_callstack;
 
 static std::unordered_set<dfsan_label> __solved_labels;
+static std::unordered_map<dfsan_label, u64> __branch_order;
+static u64 __next_branch_order = 1;
 typedef std::pair<u32, void*> trace_context;
 struct context_hash {
   std::size_t operator()(const trace_context &context) const {
@@ -62,6 +64,8 @@ struct expr_equal {
 typedef std::unordered_set<z3::expr, expr_hash, expr_equal> expr_set_t;
 static expr_set_t __load_expr_deps;
 static bool __collect_load_expr_deps = false;
+static std::vector<dfsan_solve_assumption> __solve_assumptions;
+static bool __collect_solve_assumptions = false;
 typedef struct {
   expr_set_t expr_deps;
   std::unordered_set<dfsan_label> input_deps;
@@ -101,6 +105,18 @@ static inline expr_set_t take_load_expr_deps() {
 static inline void begin_load_expr_dep_collection() {
   __load_expr_deps.clear();
   __collect_load_expr_deps = true;
+}
+
+static inline void begin_solve_assumption_collection() {
+  __solve_assumptions.clear();
+  __collect_solve_assumptions = true;
+}
+
+static inline std::vector<dfsan_solve_assumption> take_solve_assumptions() {
+  std::vector<dfsan_solve_assumption> out;
+  out.swap(__solve_assumptions);
+  __collect_solve_assumptions = false;
+  return out;
 }
 
 static std::string format_simplified_expr(const z3::expr &expr, unsigned depth);
@@ -402,6 +418,10 @@ static void record_branch_inputs(dfsan_label label, bool taken) {
     return;
   }
 
+  if (__branch_order.count(label) == 0) {
+    __branch_order[label] = __next_branch_order++;
+  }
+
   for (auto off : inputs) {
     auto c = get_branch_dep(off);
     if (c == nullptr) {
@@ -424,9 +444,14 @@ static bool collect_nested_constraint_labels(dfsan_label label,
   std::vector<dfsan_label> ordered;
   std::unordered_set<dfsan_label> seen;
   std::vector<dfsan_label> worklist;
+  u64 root_order = UINT64_MAX;
 
   if (!dfsan_is_branch_condition_label(label)) {
     return false;
+  }
+  auto root_order_it = __branch_order.find(label);
+  if (root_order_it != __branch_order.end()) {
+    root_order = root_order_it->second;
   }
 
   try {
@@ -451,13 +476,20 @@ static bool collect_nested_constraint_labels(dfsan_label label,
     }
     for (const auto &entry : deps->cond_directions) {
       dfsan_label cond_label = entry.first;
+      auto order_it = __branch_order.find(cond_label);
+      if (order_it == __branch_order.end() || order_it->second >= root_order) {
+        continue;
+      }
       if (cond_label != label && seen.insert(cond_label).second) {
         ordered.push_back(cond_label);
       }
     }
   }
 
-  std::sort(ordered.begin(), ordered.end());
+  std::sort(ordered.begin(), ordered.end(),
+            [](dfsan_label lhs, dfsan_label rhs) {
+              return __branch_order[lhs] < __branch_order[rhs];
+            });
   if (directions != nullptr) {
     directions->clear();
     directions->reserve(ordered.size());
@@ -579,6 +611,16 @@ static z3::expr serialize(dfsan_label label, std::unordered_set<u32> &deps,
         }
         __load_expr_deps.insert(
             addr == __z3_context.bv_val(concrete_addr, addr.get_sort().bv_size()));
+      }
+      if (__collect_solve_assumptions) {
+        dfsan_solve_assumption assumption = {};
+        assumption.load_label = label;
+        assumption.addr_label = addr_label;
+        assumption.concrete_addr = concrete_addr;
+        assumption.concrete_value = concrete_value;
+        assumption.pc = pc;
+        assumption.size = info->size;
+        __solve_assumptions.push_back(assumption);
       }
     } else {
       u64 offset = get_label_info(info->l1)->op1.i;
@@ -1028,6 +1070,172 @@ dfsan_format_simplified_expression(dfsan_label label, char *out, size_t capacity
     out[n] = '\0';
   }
   return needed;
+}
+
+static void copy_solve_error(const char *message, char *error,
+                             uptr error_capacity) {
+  if (error == nullptr || error_capacity == 0) {
+    return;
+  }
+  uptr n = internal_strlen(message);
+  if (n >= error_capacity) {
+    n = error_capacity - 1;
+  }
+  internal_memcpy(error, message, n);
+  error[n] = '\0';
+}
+
+static z3::expr direction_expr(const z3::expr &cond, bool taken) {
+  if (cond.is_bool()) {
+    return cond == __z3_context.bool_val(taken);
+  }
+  if (cond.is_bv()) {
+    return cond == __z3_context.bv_val(taken ? 1 : 0,
+                                       cond.get_sort().bv_size());
+  }
+  throw z3::exception("path constraint is neither bool nor bit-vector");
+}
+
+static void append_model_assignments(z3::model &model,
+                                     std::vector<dfsan_solve_assignment> &out) {
+  unsigned num_constants = model.num_consts();
+
+  for (unsigned i = 0; i < num_constants; i++) {
+    z3::func_decl decl = model.get_const_decl(i);
+    z3::symbol name = decl.name();
+
+    if (name.kind() != Z3_INT_SYMBOL) {
+      continue;
+    }
+
+    z3::expr value = model.get_const_interp(decl);
+    uint64_t raw = 0;
+    if (!Z3_get_numeral_uint64(value.ctx(), value, &raw)) {
+      continue;
+    }
+
+    dfsan_solve_assignment assignment = {};
+    assignment.offset = static_cast<uint64_t>(name.to_int());
+    assignment.value = static_cast<uint8_t>(raw & 0xff);
+    out.push_back(assignment);
+  }
+
+  std::sort(out.begin(), out.end(),
+            [](const dfsan_solve_assignment &lhs,
+               const dfsan_solve_assignment &rhs) {
+              return lhs.offset < rhs.offset;
+            });
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE int
+dfsan_solve_path_constraint(dfsan_label label, u8 desired_taken,
+                            dfsan_solve_assignment *assignments,
+                            uptr assignment_capacity,
+                            uptr *assignment_count,
+                            dfsan_solve_assumption *assumptions,
+                            uptr assumption_capacity,
+                            uptr *assumption_count,
+                            char *error, uptr error_capacity) {
+  std::vector<dfsan_label> nested_labels;
+  std::vector<uint8_t> nested_directions;
+  std::vector<dfsan_solve_assignment> solved_assignments;
+  std::vector<dfsan_solve_assumption> solve_assumptions;
+  expr_set_t added;
+
+  if (assignment_count != nullptr) {
+    *assignment_count = 0;
+  }
+  if (assumption_count != nullptr) {
+    *assumption_count = 0;
+  }
+  if (error != nullptr && error_capacity != 0) {
+    error[0] = '\0';
+  }
+
+  if (!dfsan_is_branch_condition_label(label)) {
+    copy_solve_error("label is not a branch-condition label", error,
+                     error_capacity);
+    return -1;
+  }
+
+  try {
+    __z3_solver.reset();
+    __z3_solver.set("timeout", 5000U);
+    begin_solve_assumption_collection();
+
+    std::unordered_set<u32> root_inputs;
+    begin_load_expr_dep_collection();
+    z3::expr root = serialize(label, root_inputs, SerializeMode::Solve);
+    expr_set_t root_load_deps = take_load_expr_deps();
+    __z3_solver.add(direction_expr(root, desired_taken != 0));
+    for (auto &expr : root_load_deps) {
+      if (added.insert(expr).second) {
+        __z3_solver.add(expr);
+      }
+    }
+
+    collect_nested_constraint_labels(label, nested_labels, &nested_directions);
+    for (size_t i = 0; i < nested_labels.size() && i < nested_directions.size(); i++) {
+      if (nested_labels[i] == label) {
+        continue;
+      }
+      std::unordered_set<u32> nested_inputs;
+      begin_load_expr_dep_collection();
+      z3::expr nested = serialize(nested_labels[i], nested_inputs,
+                                  SerializeMode::Solve);
+      expr_set_t nested_load_deps = take_load_expr_deps();
+      z3::expr direction = direction_expr(nested, nested_directions[i] != 0);
+      if (added.insert(direction).second) {
+        __z3_solver.add(direction);
+      }
+      for (auto &expr : nested_load_deps) {
+        if (added.insert(expr).second) {
+          __z3_solver.add(expr);
+        }
+      }
+    }
+
+    z3::check_result result = __z3_solver.check();
+    solve_assumptions = take_solve_assumptions();
+    if (result == z3::unsat) {
+      if (assumption_count != nullptr) {
+        *assumption_count = solve_assumptions.size();
+      }
+      return 0;
+    }
+    if (result != z3::sat) {
+      copy_solve_error("solver returned unknown", error, error_capacity);
+      return -2;
+    }
+
+    z3::model model = __z3_solver.get_model();
+    append_model_assignments(model, solved_assignments);
+
+    if (assignment_count != nullptr) {
+      *assignment_count = solved_assignments.size();
+    }
+    if (assumption_count != nullptr) {
+      *assumption_count = solve_assumptions.size();
+    }
+    if (assignments != nullptr && assignment_capacity != 0) {
+      uptr n = std::min<uptr>(assignment_capacity, solved_assignments.size());
+      for (uptr i = 0; i < n; i++) {
+        assignments[i] = solved_assignments[i];
+      }
+    }
+    if (assumptions != nullptr && assumption_capacity != 0) {
+      uptr n = std::min<uptr>(assumption_capacity, solve_assumptions.size());
+      for (uptr i = 0; i < n; i++) {
+        assumptions[i] = solve_assumptions[i];
+      }
+    }
+    return 1;
+  } catch (z3::exception const &e) {
+    take_load_expr_deps();
+    take_solve_assumptions();
+    copy_solve_error(e.msg(), error, error_capacity);
+    return -1;
+  }
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void

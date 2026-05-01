@@ -858,6 +858,12 @@ class AnalysisSession:
             raise UnsupportedOperationError("backend does not support path-constraint closure lookup")
         return self._forward("path_constraint_closure", backend_method(label=label))
 
+    def solve_path_constraint(self, label: str, negate: bool = True) -> dict[str, Any]:
+        backend_method = getattr(self.backend, "solve_path_constraint", None)
+        if not callable(backend_method):
+            raise UnsupportedOperationError("backend does not support path-constraint solving")
+        return self._forward("solve_path_constraint", backend_method(label=label, negate=negate))
+
     def disassemble(self, address: str, count: int = 16) -> dict[str, Any]:
         if count > self.config.max_disassembly_instructions:
             raise InvalidStateError(

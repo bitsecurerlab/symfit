@@ -133,6 +133,32 @@ size_t dfsan_get_nested_constraints(dfsan_label label, dfsan_label *out, size_t 
 size_t dfsan_get_nested_constraint_directions(dfsan_label label, uint8_t *out, size_t capacity);
 size_t dfsan_format_simplified_expression(dfsan_label label, char *out, size_t capacity);
 
+#ifndef DFSAN_SOLVE_PATH_CONSTRAINT_TYPES
+#define DFSAN_SOLVE_PATH_CONSTRAINT_TYPES
+typedef struct {
+  uint64_t offset;
+  uint8_t value;
+} dfsan_solve_assignment;
+
+typedef struct {
+  dfsan_label load_label;
+  dfsan_label addr_label;
+  uint64_t concrete_addr;
+  uint64_t concrete_value;
+  uint64_t pc;
+  uint16_t size;
+} dfsan_solve_assumption;
+#endif
+
+int dfsan_solve_path_constraint(dfsan_label label, uint8_t desired_taken,
+                                dfsan_solve_assignment *assignments,
+                                size_t assignment_capacity,
+                                size_t *assignment_count,
+                                dfsan_solve_assumption *assumptions,
+                                size_t assumption_capacity,
+                                size_t *assumption_count,
+                                char *error, size_t error_capacity);
+
 void addContextRecording(u64 func_addr);
 
 /// Interceptor hooks.

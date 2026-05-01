@@ -1,6 +1,6 @@
 ---
 name: dynamiq-mcp
-description: Use when driving the Dynamiq MCP server (`dynamiq`) for live binary sessions: start/advance loops, stdin delivery/EOF, breakpoints, write watchpoints, memory inspection/search, symbolic input, symbolic expressions, and path-constraint discovery.
+description: Use when driving the Dynamiq MCP server (`dynamiq`) for live binary sessions: start/advance loops, stdin delivery/EOF, breakpoints, write watchpoints, memory inspection/search, symbolic input, symbolic expressions, path-constraint discovery, and path-constraint solving.
 ---
 
 # Dynamiq MCP Skill
@@ -227,6 +227,7 @@ Use this after symbolic data has influenced control flow.
 Tools:
 - `recent_path_constraints`
 - `path_constraint_closure`
+- `solve_path_constraint`
 
 Typical flow:
 1. send symbolic stdin or symbolize data explicitly
@@ -234,11 +235,20 @@ Typical flow:
 3. call `recent_path_constraints {"limit": 5}`
 4. pick the newest label from `constraints[0].label`
 5. call `path_constraint_closure {"label":"<newest>"}`
+6. call `solve_path_constraint {"label":"<label>", "negate":true}` when you want byte assignments for the opposite branch
 
 Read the results like this:
 - `expression`: the branch condition
 - `taken`: which direction was observed in this run
 - `pc`: where the condition was recorded
+
+`solve_path_constraint` returns:
+- `status`: `sat`, `unsat`, or a solver error
+- `assignments`: concrete symbolic-input byte values, keyed by input offset
+- `soundness`: `sound` when the formula did not require symbolic-address load concretization, or `conditional` when it did
+- `assumptions`: details such as `concretized_symbolic_load` with the observed concrete address/value
+
+Treat `soundness: "conditional"` as a candidate model tied to this run. It is useful for concolic exploration, but it is not proof that all symbolic memory aliases were modeled. For a target PC, rerun with the returned assignments and verify the PC is actually reached.
 
 Good times to query path constraints:
 - after a branch-oriented breakpoint
@@ -257,8 +267,9 @@ Goal: send symbolic stdin, inspect a symbolic branch, then inspect its expressio
 6. `recent_path_constraints {"limit": 5}`
 7. take `constraints[0].label`
 8. `path_constraint_closure {"label":"<that label>"}`
-9. if needed, use `regs` or `mem` to find a specific symbolic label
-10. `expr {"label":"0x..."}`
+9. `solve_path_constraint {"label":"<that label>", "negate":true}`
+10. if needed, use `regs` or `mem` to find a specific symbolic label
+11. `expr {"label":"0x..."}`
 
 ## Tool Guide
 
@@ -284,6 +295,7 @@ Goal: send symbolic stdin, inspect a symbolic branch, then inspect its expressio
 - `expr`: symbolic expression for one label
 - `recent_path_constraints`: newest observed path conditions
 - `path_constraint_closure`: nested constraint closure for one label
+- `solve_path_constraint`: solve a path-condition label for its current or opposite direction
 - `trace_start` / `trace_stop` / `trace_status` / `trace_get`: trace capture workflow
 
 ## Recovery

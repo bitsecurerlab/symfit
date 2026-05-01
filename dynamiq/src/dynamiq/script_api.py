@@ -604,6 +604,19 @@ class ScriptSession:
         """
         return self._session.path_constraint_closure(label=label)
 
+    def solve_path_constraint(self, label: str, negate: bool = True) -> dict[str, Any]:
+        """
+        Solve a path-constraint label for its current or opposite direction.
+
+        Args:
+            label: Root path-constraint label
+            negate: Solve for the opposite branch when true
+
+        Returns:
+            Response dict with concrete byte assignments and any assumptions.
+        """
+        return self._session.solve_path_constraint(label=label, negate=negate)
+
     # I/O Operations (4 methods)
     # ==========================
 

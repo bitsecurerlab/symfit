@@ -150,6 +150,22 @@ def main():
         )
         req_id += 1
 
+        summary["solve_older_negated"] = rpc_request_expect_ok(
+            stream,
+            req_id,
+            "solve_path_constraint",
+            {"label": older_label, "negate": True},
+        )
+        req_id += 1
+
+        summary["solve_newest_negated"] = rpc_request_expect_ok(
+            stream,
+            req_id,
+            "solve_path_constraint",
+            {"label": newest_label, "negate": True},
+        )
+        req_id += 1
+
         summary["resume"] = rpc_request_expect_ok(stream, req_id, "resume")
         req_id += 1
 
@@ -197,6 +213,9 @@ def main():
         if summary["capabilities"]["capabilities"].get("read_path_constraints") is not True:
             print("Expected read_path_constraints capability", file=sys.stderr)
             return 1
+        if summary["capabilities"]["capabilities"].get("solve_path_constraints") is not True:
+            print("Expected solve_path_constraints capability", file=sys.stderr)
+            return 1
         if summary["resume_until_address"].get("matched") is not True:
             print("Expected branch2_taken address to be matched", file=sys.stderr)
             return 1
@@ -236,6 +255,24 @@ def main():
         if older_label.lower() not in {entry["label"].lower() for entry in nested}:
             print(
                 f"Expected nested constraints to include older path constraint {older_label}",
+                file=sys.stderr,
+            )
+            return 1
+        solve_older = summary["solve_older_negated"]
+        if solve_older.get("status") != "sat":
+            print(f"Expected older negated constraint to be sat, got {solve_older}", file=sys.stderr)
+            return 1
+        if solve_older.get("soundness") != "sound":
+            print(f"Expected concrete path solve to be sound, got {solve_older}", file=sys.stderr)
+            return 1
+        assignments = solve_older.get("assignments", [])
+        if not any(item.get("offset") == "0x0" and item.get("value") != 0x41 for item in assignments):
+            print(f"Expected solve to assign input offset 0 away from 0x41, got {assignments}", file=sys.stderr)
+            return 1
+        solve_newest = summary["solve_newest_negated"]
+        if solve_newest.get("status") != "unsat":
+            print(
+                f"Expected newest negated constraint to be unsat under nested branch, got {solve_newest}",
                 file=sys.stderr,
             )
             return 1
