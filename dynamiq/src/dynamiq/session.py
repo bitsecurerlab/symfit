@@ -347,6 +347,54 @@ class AnalysisSession:
             result["pc"] = self.state.pc
         return self._response("advance", result)
 
+    def _wait_for_continue_stop(self, timeout: float) -> dict[str, Any]:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            state_payload = self.backend.get_state()
+            self._merge_state(state_payload)
+            if self.state.session_status in {"paused", "idle", "blocked", "exited", "closed"}:
+                result = self._continue_stop_result(state_payload)
+                return self._response("advance", result)
+            time.sleep(0.05)
+        self._merge_state(self.backend.get_state())
+        result = {
+            "mode": "continue",
+            "completed": False,
+            "timed_out": True,
+            "stop_reason": "running" if self.state.session_status == "running" else "unknown",
+        }
+        if isinstance(self.state.pc, str):
+            result["pc"] = self.state.pc
+        return self._response("advance", result)
+
+    def _continue_stop_result(self, state_payload: dict[str, Any]) -> dict[str, Any]:
+        current_pc = self._parse_optional_address(self.state.pc)
+        if current_pc is None and self.state.session_status in {"paused", "idle", "blocked"}:
+            current_pc = self._read_live_pc()
+        stop_reason = self._infer_stop_reason(state_payload, current_pc, completed=False)
+        result: dict[str, Any] = {
+            "mode": "continue",
+            "completed": False,
+            "stop_reason": stop_reason,
+        }
+        if self.state.session_status == "blocked":
+            if isinstance(self.state.syscall, str):
+                result["syscall"] = self.state.syscall
+            if isinstance(self.state.syscall_number, int):
+                result["syscall_number"] = self.state.syscall_number
+        if stop_reason == "paused" and self.state.session_status in {"paused", "idle"}:
+            if self.state.pending_termination:
+                result["stop_reason"] = "termination_pending"
+                if isinstance(self.state.termination_kind, str):
+                    result["termination_kind"] = self.state.termination_kind
+            else:
+                result["stop_reason"] = "io"
+                result["stdout_ready"] = False
+                result["stderr_ready"] = False
+        if isinstance(self.state.pc, str):
+            result["pc"] = self.state.pc
+        return result
+
     def _advance_counted(self, mode: str, count: int, timeout: float) -> dict[str, Any]:
         current_pc = self._read_live_pc()
         executed = 0
@@ -557,6 +605,31 @@ class AnalysisSession:
 
     def write_stdin(self, data: str | bytes, symbolic: bool = False) -> dict[str, Any]:
         return self._forward("write_stdin", self.backend.write_stdin(data, symbolic=symbolic))
+
+    def write_stdin_and_advance(
+        self,
+        data: str | bytes,
+        *,
+        symbolic: bool = False,
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        try:
+            self._merge_state(self.backend.get_state())
+        except Exception:
+            pass
+        should_observe_without_resume = self.state.session_status in {"blocked", "running"}
+        write_result = self.write_stdin(data=data, symbolic=symbolic)
+        if should_observe_without_resume:
+            advance_result = self._wait_for_continue_stop(timeout)
+        else:
+            advance_result = self.advance(mode="continue", timeout=timeout)
+        return self._response(
+            "write_stdin_and_advance",
+            {
+                "write": dict(write_result.get("result") or {}),
+                "advance": dict(advance_result.get("result") or {}),
+            },
+        )
 
     def close_stdin(self) -> dict[str, Any]:
         backend_method = getattr(self.backend, "close_stdin", None)

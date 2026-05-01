@@ -627,6 +627,18 @@ class TestScriptSessionInputOutput:
         assert result["result"]["symbolic"] is True
         assert backend.call_history[0] == "write_stdin:3:True"
 
+    def test_write_stdin_and_advance(self):
+        """Test write_stdin_and_advance() writes input then advances."""
+        backend = MockBackend()
+        session = ScriptSession(target="/bin/ls", backend=backend)
+
+        result = session.write_stdin_and_advance("go", timeout=2.0)
+
+        assert result["ok"] is True
+        assert result["result"]["write"]["written"] == 2
+        assert result["result"]["advance"]["mode"] == "continue"
+        assert backend.call_history[:3] == ["get_state", "write_stdin:2:False", "resume:2.0"]
+
     def test_close_stdin(self):
         """Test close_stdin() delegates to backend."""
         backend = MockBackend()
@@ -774,6 +786,7 @@ def test_all_expected_methods_accessible():
         "path_constraint_closure",
         # I/O (4)
         "write_stdin",
+        "write_stdin_and_advance",
         "close_stdin",
         "read_stdout",
         "read_stderr",

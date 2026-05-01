@@ -392,6 +392,42 @@ class FakeBackendContinueBlocked(FakeBackend):
         return {"session_status": "blocked", "pc": self.pc_seq[self.idx], "capabilities": self.capabilities()}
 
 
+class FakeBackendBlockedSendHitsBreakpoint(FakeBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.resume_calls = 0
+        self.stdin_writes: list[tuple[object, bool]] = []
+        self.state_reads = 0
+        self.hit_after_write = False
+
+    def resume(self, timeout):  # noqa: ANN001
+        del timeout
+        self.resume_calls += 1
+        return {"state": {"session_status": "running"}, "result": {}}
+
+    def write_stdin(self, data, symbolic=False):  # noqa: ANN001
+        self.stdin_writes.append((data, symbolic))
+        self.hit_after_write = True
+        return {"state": {"session_status": "running"}, "result": {"written": len(data), "symbolic": symbolic}}
+
+    def get_state(self):
+        self.state_reads += 1
+        if not self.hit_after_write:
+            return {
+                "session_status": "blocked",
+                "stop_reason": "syscall_block",
+                "syscall": "read",
+                "syscall_number": 0,
+                "pc": "0x1000",
+                "capabilities": self.capabilities(),
+            }
+        return {
+            "session_status": "paused",
+            "pc": "0x1008",
+            "capabilities": self.capabilities(),
+        }
+
+
 def test_session_bp_run_multiple_breakpoints_selects_nearest_forward() -> None:
     session = AnalysisSession(backend=FakeBackend())
     session.state.session_status = "paused"
@@ -437,6 +473,21 @@ def test_session_watch_arms_running_backend_without_pausing() -> None:
     }
     assert backend.pause_calls == 0
     assert backend.set_watchpoints_calls == [[{"address": "0x41651d47a0", "size": 8, "mode": "write"}]]
+
+
+def test_session_write_stdin_and_advance_observes_breakpoint_without_resume() -> None:
+    backend = FakeBackendBlockedSendHitsBreakpoint()
+    session = AnalysisSession(backend=backend)
+    session.state.session_status = "blocked"
+    session.bp_add("0x1008")
+
+    result = session.write_stdin_and_advance("go\n", symbolic=True, timeout=1.0)
+
+    assert result["result"]["write"] == {"written": 3, "symbolic": True}
+    assert result["result"]["advance"]["stop_reason"] == "breakpoint"
+    assert result["result"]["advance"]["pc"] == "0x1008"
+    assert backend.resume_calls == 0
+    assert backend.stdin_writes == [("go\n", True)]
 
 
 def test_session_bp_add_resolves_module_relative_offset() -> None:

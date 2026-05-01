@@ -623,6 +623,20 @@ class ScriptSession:
         """
         return self._session.write_stdin(data=data, symbolic=symbolic)
 
+    def write_stdin_and_advance(
+        self,
+        data: str | bytes,
+        symbolic: bool = False,
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        """
+        Write stdin and atomically wait for the next continue stop.
+
+        Use this when stdin will unblock the target and a separate
+        write_stdin()+advance() pair could race with a breakpoint hit.
+        """
+        return self._session.write_stdin_and_advance(data=data, symbolic=symbolic, timeout=timeout)
+
     def close_stdin(self) -> dict[str, Any]:
         """
         Close target stdin to signal EOF.

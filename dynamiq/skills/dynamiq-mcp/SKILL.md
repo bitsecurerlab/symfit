@@ -88,6 +88,7 @@ Fallback absolute-address flow:
 Use:
 - `send_line` for prompt-driven text input
 - `send_bytes` for exact byte sequences
+- `send_line_advance` / `send_bytes_advance` when input may immediately hit a breakpoint
 - `send_file` for larger payloads
 
 Typical loop:
@@ -110,6 +111,15 @@ or `wait`. Inspection tools still work there:
 Use this to inspect parser buffers or symbolize data before sending more input
 or calling `close_stdin`. Avoid setting blind breakpoints just to get an
 inspectable state.
+
+If the next input is expected to unblock `read()` and immediately hit a
+breakpoint/watchpoint, use the atomic helpers:
+- `send_bytes_advance {"data_hex":"...", "timeout":5.0}`
+- `send_line_advance {"line":"1", "timeout":5.0}`
+
+These write stdin and then observe the next stop without issuing an extra
+resume first, avoiding the race where separate `send_bytes` then `advance`
+can run past a breakpoint before the LLM gets the second tool call out.
 
 ### Memory search workflow
 
@@ -262,6 +272,7 @@ Goal: send symbolic stdin, inspect a symbolic branch, then inspect its expressio
 - `watch` / `watch_clear`: persistent write watchpoints for guest memory ranges
 - `stdout` / `stderr`: incremental stream reads
 - `send_line` / `send_bytes` / `send_file`: stdin delivery
+- `send_line_advance` / `send_bytes_advance`: atomic stdin delivery plus continue-stop wait
 - `close_stdin`: close stdin so EOF-driven readers stop blocking
 - `regs`: register snapshot and symbolic register labels
 - `mem`: memory bytes and symbolic byte labels

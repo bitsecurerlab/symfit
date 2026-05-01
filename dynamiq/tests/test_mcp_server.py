@@ -195,6 +195,21 @@ class FakeSession:
         self.stdin_written += payload
         return {"ok": True, "command": "write_stdin", "result": {"written": len(payload), "symbolic": symbolic}}
 
+    def write_stdin_and_advance(self, data, symbolic=False, timeout=5.0):  # noqa: ANN001
+        if isinstance(data, str):
+            payload = data.encode("utf-8")
+        else:
+            payload = data
+        self.stdin_written += payload
+        return {
+            "ok": True,
+            "command": "write_stdin_and_advance",
+            "result": {
+                "write": {"written": len(payload), "symbolic": symbolic},
+                "advance": {"mode": "continue", "stop_reason": "breakpoint", "timeout": timeout},
+            },
+        }
+
     def close_stdin(self):
         already_closed = self.stdin_closed
         self.stdin_closed = True
@@ -299,7 +314,9 @@ def test_mcp_tools_list_contains_short_names() -> None:
     assert "syms" in names
     assert "pause" in names
     assert "send_bytes" in names
+    assert "send_bytes_advance" in names
     assert "send_line" in names
+    assert "send_line_advance" in names
     assert "close_stdin" in names
     assert "stdout" in names
     assert "bp_add" in names
@@ -858,6 +875,46 @@ def test_mcp_tool_call_send_bytes_data_hex() -> None:
     assert response["result"]["isError"] is False
     assert fake.stdin_written == bytes.fromhex("040000000680ffffffffffff")
     assert response["result"]["structuredContent"]["result"]["written"] == 12
+
+
+def test_mcp_tool_call_send_bytes_advance_data_hex() -> None:
+    fake = FakeSession()
+    server = InteractiveAnalysisMcpServer(session_factory=lambda: fake)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 577,
+            "method": "tools/call",
+            "params": {
+                "name": "send_bytes_advance",
+                "arguments": {"data_hex": "414243", "symbolic": True, "timeout": 2.5},
+            },
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is False
+    assert fake.stdin_written == b"ABC"
+    result = response["result"]["structuredContent"]["result"]
+    assert result["write"] == {"written": 3, "symbolic": True}
+    assert result["advance"]["stop_reason"] == "breakpoint"
+    assert result["advance"]["timeout"] == 2.5
+
+
+def test_mcp_tool_call_send_line_advance() -> None:
+    fake = FakeSession()
+    server = InteractiveAnalysisMcpServer(session_factory=lambda: fake)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 578,
+            "method": "tools/call",
+            "params": {"name": "send_line_advance", "arguments": {"line": "go"}},
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is False
+    assert fake.stdin_written == b"go\n"
+    assert response["result"]["structuredContent"]["result"]["advance"]["stop_reason"] == "breakpoint"
 
 
 def test_mcp_tool_call_advance_rejects_nonpositive_timeout() -> None:

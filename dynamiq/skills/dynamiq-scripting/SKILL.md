@@ -57,7 +57,7 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
 - **Execution**: `step()`, `run()`, `pause()`, `advance_basic_blocks()`, `run_until_address()`
 - **Breakpoints/watchpoints**: `bp_add()`, `bp_del()`, `bp_list()`, `bp_clear()`, `bp_run()`, `watch()`, `watch_clear()`
 - **Inspection**: `get_registers()`, `read_memory()`, `mem_search()`, `backtrace()`, `disassemble()`, `symbols()`, `list_memory_maps()`, `get_state()`
-- **I/O**: `write_stdin()`, `read_stdout()`, `read_stderr()`
+- **I/O**: `write_stdin()`, `write_stdin_and_advance()`, `read_stdout()`, `read_stderr()`
 - **Tracing**: `trace_start()`, `trace_stop()`, `trace_status()`, `trace_get()`, `get_recent_events()`
 - **Snapshots**: `take_snapshot()`, `restore_snapshot()`, `diff_snapshots()`
 - **Annotations**: `annotate()`, `list_annotations()`
@@ -127,6 +127,22 @@ with ScriptSession(target="/bin/myapp", auto_start=True) as session:
 This is the right time to inspect or symbolize known buffers before sending
 more stdin or calling `close_stdin()`. Do not set blind breakpoints just to make
 the target inspectable.
+
+When stdin may immediately unblock execution and hit a breakpoint, prefer
+`write_stdin_and_advance(...)` over separate `write_stdin()` and
+`advance(mode="continue")` calls:
+
+```python
+with ScriptSession(target="/bin/myapp", auto_start=True) as session:
+    session.bp_add("0x401234")
+    session.advance(mode="continue", timeout=5.0)  # stops blocked in read()
+    hit = session.write_stdin_and_advance(b"A", timeout=5.0)
+    assert hit["result"]["advance"]["stop_reason"] == "breakpoint"
+```
+
+This writes stdin and then observes the next stop without issuing an extra
+resume first, avoiding a race where the process can hit the breakpoint and exit
+between two separate calls.
 
 ## Helper Utilities
 

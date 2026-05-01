@@ -390,6 +390,43 @@ class InteractiveAnalysisMcpServer:
                         '(example: {"data":"1\n"} or {"data_hex":"4142430a"})'
                     )
                 return self._tool_ok(self._ensure_session().write_stdin(data=data, symbolic=symbolic))
+            if name == "send_bytes_advance":
+                data = arguments.get("data")
+                data_hex = arguments.get("data_hex")
+                symbolic = self._parse_bool(arguments, "symbolic", default=False)
+                timeout = self._parse_positive_float(arguments, "timeout", default=5.0)
+                if data is not None and data_hex is not None:
+                    return self._tool_error("send_bytes_advance accepts either `data` or `data_hex`, not both")
+                if data_hex is not None:
+                    if not isinstance(data_hex, str) or data_hex.strip() == "":
+                        return self._tool_error(
+                            "send_bytes_advance `data_hex` must be a non-empty hex string "
+                            '(example: {"data_hex":"4142430a"})'
+                        )
+                    compact = "".join(data_hex.split())
+                    if compact.startswith(("0x", "0X")):
+                        compact = compact[2:]
+                    try:
+                        payload = bytes.fromhex(compact)
+                    except ValueError:
+                        return self._tool_error("send_bytes_advance `data_hex` must contain only hex byte pairs")
+                    if len(payload) == 0:
+                        return self._tool_error("send_bytes_advance decoded payload is empty")
+                    return self._tool_ok(
+                        self._ensure_session().write_stdin_and_advance(
+                            data=payload, symbolic=symbolic, timeout=timeout
+                        )
+                    )
+                if not isinstance(data, str) or data == "":
+                    return self._tool_error(
+                        "send_bytes_advance requires non-empty string argument `data` or `data_hex` "
+                        '(example: {"data":"1\n"} or {"data_hex":"4142430a"})'
+                    )
+                return self._tool_ok(
+                    self._ensure_session().write_stdin_and_advance(
+                        data=data, symbolic=symbolic, timeout=timeout
+                    )
+                )
             if name == "send_line":
                 line = arguments.get("line", "")
                 symbolic = self._parse_bool(arguments, "symbolic", default=False)
@@ -399,6 +436,20 @@ class InteractiveAnalysisMcpServer:
                         '(example: {"line":"1"})'
                     )
                 return self._tool_ok(self._ensure_session().write_stdin(data=f"{line}\n", symbolic=symbolic))
+            if name == "send_line_advance":
+                line = arguments.get("line", "")
+                symbolic = self._parse_bool(arguments, "symbolic", default=False)
+                timeout = self._parse_positive_float(arguments, "timeout", default=5.0)
+                if not isinstance(line, str):
+                    return self._tool_error(
+                        "send_line_advance requires string argument `line` "
+                        '(example: {"line":"1"})'
+                    )
+                return self._tool_ok(
+                    self._ensure_session().write_stdin_and_advance(
+                        data=f"{line}\n", symbolic=symbolic, timeout=timeout
+                    )
+                )
             if name == "send_file":
                 path_value = arguments.get("path")
                 if not isinstance(path_value, str) or path_value.strip() == "":
@@ -1235,7 +1286,7 @@ class InteractiveAnalysisMcpServer:
                 name="send_bytes",
                 description=(
                     "Pwntools-style raw send. Write data to target stdin immediately. "
-                    "Session must be active (idle/running/paused). "
+                    "Session must be active (idle/running/blocked/paused). "
                     "Use `data` for text or `data_hex` for exact raw bytes."
                 ),
                 input_schema={
@@ -1259,11 +1310,42 @@ class InteractiveAnalysisMcpServer:
                 },
             ),
             ToolSpec(
+                name="send_bytes_advance",
+                description=(
+                    "Atomically write raw stdin and wait for the next continue stop without an extra resume. "
+                    "Use this when stdin unblocks a read and a separate send_bytes then advance could race past a breakpoint."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "data": {
+                            "type": "string",
+                            "description": "Text data to write (UTF-8 encoding). Provide either data or data_hex.",
+                        },
+                        "data_hex": {
+                            "type": "string",
+                            "description": "Exact raw bytes encoded as hex. Provide either data or data_hex.",
+                        },
+                        "symbolic": {
+                            "type": "boolean",
+                            "description": "Queue this stdin chunk for symbolic labeling when the guest consumes it.",
+                            "default": False,
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "description": "Maximum seconds to wait for the post-send stop.",
+                            "default": 5.0,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
                 name="send_line",
                 description=(
                     "Pwntools-style line send. Appends a single '\\n' and writes to stdin. "
                     "If `line` is omitted, sends only newline. "
-                    "Session must be active (idle/running/paused). "
+                    "Session must be active (idle/running/blocked/paused). "
                     "For menu flows, prefer send_line over send_bytes."
                 ),
                 input_schema={
@@ -1279,6 +1361,34 @@ class InteractiveAnalysisMcpServer:
                             "description": "Queue this stdin line for symbolic labeling when the guest consumes it.",
                             "default": False,
                         }
+                    },
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
+                name="send_line_advance",
+                description=(
+                    "Atomically send a line and wait for the next continue stop without an extra resume. "
+                    "Use this for prompt/menu input that may immediately hit a breakpoint."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "line": {
+                            "type": "string",
+                            "description": "Line content without trailing newline.",
+                            "default": "",
+                        },
+                        "symbolic": {
+                            "type": "boolean",
+                            "description": "Queue this stdin line for symbolic labeling when the guest consumes it.",
+                            "default": False,
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "description": "Maximum seconds to wait for the post-send stop.",
+                            "default": 5.0,
+                        },
                     },
                     "additionalProperties": False,
                 },
