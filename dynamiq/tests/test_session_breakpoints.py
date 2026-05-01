@@ -154,6 +154,11 @@ class FakeBackend:
         return None
 
 
+class ProcResult:
+    def __init__(self, stdout: str) -> None:
+        self.stdout = stdout
+
+
 class FakeBackendNoRegisterReads(FakeBackend):
     def get_registers(self, names=None):  # noqa: ANN001
         del names
@@ -350,6 +355,82 @@ def test_session_bp_add_arms_running_backend_without_pausing() -> None:
     assert result["result"]["breakpoints"] == ["0x1008"]
     assert backend.pause_calls == 0
     assert backend.set_breakpoints_calls == [["0x1008"]]
+
+
+def test_session_bp_add_resolves_module_relative_offset() -> None:
+    backend = FakeBackend()
+    backend.list_memory_maps = lambda: {  # type: ignore[method-assign]
+        "state": {},
+        "result": {
+            "maps": {
+                "regions": [
+                    {
+                        "start": "0x7f00001000",
+                        "end": "0x7f00002000",
+                        "perm": "r-x",
+                        "path": "/usr/lib/libffmpeg.so",
+                        "offset": "0x1000",
+                    },
+                    {
+                        "start": "0x7f00004000",
+                        "end": "0x7f00005000",
+                        "perm": "r--",
+                        "path": "/usr/lib/libffmpeg.so",
+                        "offset": "0x4000",
+                    },
+                ]
+            }
+        },
+    }
+    session = AnalysisSession(backend=backend)
+
+    result = session.bp_add(module="libffmpeg.so", offset="0xad1548")
+
+    assert result["result"]["address"] == "0x7f00ad1548"
+    assert result["result"]["resolved"]["module_base"] == "0x7f00000000"
+    assert result["result"]["resolved"]["offset"] == "0xad1548"
+    assert result["result"]["armed"] is True
+    assert backend.set_breakpoints_calls == [["0x7f00ad1548"]]
+
+
+def test_session_bp_add_resolves_symbol_in_module(monkeypatch) -> None:
+    def fake_run(cmd, check, capture_output, text):  # noqa: ANN001
+        del check, capture_output, text
+        if cmd[0] == "readelf" and cmd[1] == "-h":
+            return ProcResult("Type:                              DYN (Shared object file)\n")
+        if cmd[0] == "readelf":
+            return ProcResult(
+                "Symbol table '.dynsym' contains 2 entries:\n"
+                "   Num:    Value          Size Type    Bind   Vis      Ndx Name\n"
+                "     1: 0000000000ad1548    42 FUNC    GLOBAL DEFAULT   14 write_frame_8\n"
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("dynamiq.session.subprocess.run", fake_run)
+    backend = FakeBackend()
+    backend.list_memory_maps = lambda: {  # type: ignore[method-assign]
+        "state": {},
+        "result": {
+            "maps": {
+                "regions": [
+                    {
+                        "start": "0x7f00001000",
+                        "end": "0x7f00002000",
+                        "perm": "r-x",
+                        "path": "/usr/lib/libffmpeg.so",
+                        "offset": "0x1000",
+                    }
+                ]
+            }
+        },
+    }
+    session = AnalysisSession(backend=backend)
+
+    result = session.bp_add(symbol="write_frame_8", module="libffmpeg.so")
+
+    assert result["result"]["address"] == "0x7f00ad1548"
+    assert result["result"]["resolved"]["matched_symbol"] == "write_frame_8"
+    assert result["result"]["resolved"]["module_base"] == "0x7f00000000"
 
 
 def test_session_bp_run_multiple_breakpoints_wraps_to_first_when_all_behind() -> None:

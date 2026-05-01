@@ -317,8 +317,22 @@ class InteractiveAnalysisMcpServer:
                     )
                 )
             if name == "bp_add":
-                address = self._parse_nonempty_string(arguments, "address")
-                return self._tool_ok(self._ensure_session().bp_add(address=address))
+                address = self._parse_optional_string(arguments, "address")
+                module = self._parse_optional_string(arguments, "module")
+                symbol = self._parse_optional_string(arguments, "symbol")
+                offset = arguments.get("offset") if "offset" in arguments else None
+                if offset is not None and (
+                    isinstance(offset, bool) or not isinstance(offset, (int, str))
+                ):
+                    raise ValueError("offset must be an integer or string")
+                return self._tool_ok(
+                    self._ensure_session().bp_add(
+                        address=address,
+                        module=module,
+                        offset=offset,
+                        symbol=symbol,
+                    )
+                )
             if name == "bp_del":
                 address = self._parse_nonempty_string(arguments, "address")
                 return self._tool_ok(self._ensure_session().bp_del(address=address))
@@ -1050,14 +1064,33 @@ class InteractiveAnalysisMcpServer:
             ToolSpec(
                 name="bp_add",
                 description=(
-                    "Add a persistent breakpoint address. "
-                    "Use syms.loaded_address from current session; avoid guessed static/base+offset addresses. "
+                    "Add a persistent breakpoint by absolute address, module-relative offset, "
+                    "or symbol. Prefer module+offset or module+symbol for ASLR/dlopen'd code. "
                     "When supported, bp_add arms the backend stop condition immediately even if the target is running."
                 ),
                 input_schema={
                     "type": "object",
-                    "properties": {"address": {"type": "string", "minLength": 1}},
-                    "required": ["address"],
+                    "properties": {
+                        "address": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Absolute guest address, for example 0x401000.",
+                        },
+                        "module": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Mapped module path or basename, for example libffmpeg.so.",
+                        },
+                        "offset": {
+                            "type": ["integer", "string"],
+                            "description": "Offset from module load base. Strings may be hex, for example 0xad1548.",
+                        },
+                        "symbol": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Symbol name to resolve, optionally within module.",
+                        },
+                    },
                     "additionalProperties": False,
                 },
             ),

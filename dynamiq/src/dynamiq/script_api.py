@@ -307,20 +307,35 @@ class ScriptSession:
     # Breakpoint Management (4 methods)
     # =================================
 
-    def bp_add(self, address: str) -> dict[str, Any]:
+    def bp_add(
+        self,
+        address: str | None = None,
+        *,
+        module: str | None = None,
+        offset: int | str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
         """
-        Add breakpoint at address.
+        Add breakpoint by absolute address, module-relative offset, or symbol.
 
         Args:
-            address: Address for breakpoint (hex or decimal string)
+            address: Absolute address for breakpoint (hex or decimal string)
+            module: Mapped module path or basename for module-relative lookup
+            offset: Offset from module load base (integer or hex string)
+            symbol: Symbol name to resolve, optionally within module
 
         Returns:
             Response dict with breakpoint list.
 
         Raises:
-            InvalidStateError: If address is invalid
+            InvalidStateError: If the breakpoint target is invalid
         """
-        return self._session.bp_add(address=address)
+        return self._session.bp_add(
+            address=address,
+            module=module,
+            offset=offset,
+            symbol=symbol,
+        )
 
     def bp_del(self, address: str) -> dict[str, Any]:
         """

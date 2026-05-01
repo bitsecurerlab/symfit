@@ -193,8 +193,12 @@ class FakeSession:
         self.stderr_cursors.append(cursor)
         return {"ok": True, "command": "read_stderr", "result": {"data": "", "cursor": cursor, "eof": False, "max_chars": max_chars}}
 
-    def bp_add(self, address):  # noqa: ANN001
-        return {"ok": True, "command": "bp_add", "result": {"address": address, "breakpoints": [address]}}
+    def bp_add(self, address=None, module=None, offset=None, symbol=None):  # noqa: ANN001
+        resolved_address = address or "0x7f00ad1548"
+        result = {"address": resolved_address, "breakpoints": [resolved_address]}
+        if module is not None or offset is not None or symbol is not None:
+            result["resolved"] = {"module": module, "offset": offset, "symbol": symbol}
+        return {"ok": True, "command": "bp_add", "result": result}
 
     def bp_del(self, address):  # noqa: ANN001
         return {"ok": True, "command": "bp_del", "result": {"address": address, "breakpoints": []}}
@@ -1122,6 +1126,48 @@ def test_mcp_tool_call_bp_add() -> None:
     assert response is not None
     assert response["result"]["isError"] is False
     assert response["result"]["structuredContent"]["result"]["address"] == "0x401000"
+
+
+def test_mcp_tool_call_bp_add_module_offset() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 82,
+            "method": "tools/call",
+            "params": {
+                "name": "bp_add",
+                "arguments": {"module": "libffmpeg.so", "offset": "0xad1548"},
+            },
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is False
+    result = response["result"]["structuredContent"]["result"]
+    assert result["address"] == "0x7f00ad1548"
+    assert result["resolved"]["module"] == "libffmpeg.so"
+    assert result["resolved"]["offset"] == "0xad1548"
+
+
+def test_mcp_tool_call_bp_add_module_symbol() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 83,
+            "method": "tools/call",
+            "params": {
+                "name": "bp_add",
+                "arguments": {"module": "libffmpeg.so", "symbol": "write_frame_8"},
+            },
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is False
+    result = response["result"]["structuredContent"]["result"]
+    assert result["address"] == "0x7f00ad1548"
+    assert result["resolved"]["module"] == "libffmpeg.so"
+    assert result["resolved"]["symbol"] == "write_frame_8"
 
 
 def test_mcp_tool_call_syms() -> None:

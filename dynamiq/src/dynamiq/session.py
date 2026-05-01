@@ -109,22 +109,31 @@ class AnalysisSession:
         return self._advance_return(timeout)
 
 
-    def bp_add(self, address: str) -> dict[str, Any]:
-        normalized = str(address).strip()
-        if normalized == "":
-            raise InvalidStateError("breakpoint address must be non-empty")
-        value = self._parse_address(normalized)
+    def bp_add(
+        self,
+        address: str | None = None,
+        *,
+        module: str | None = None,
+        offset: int | str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
+        value, resolved = self._resolve_breakpoint_address(
+            address=address,
+            module=module,
+            offset=offset,
+            symbol=symbol,
+        )
         if value not in self.breakpoints:
             self.breakpoints.append(value)
         armed = self._sync_backend_breakpoints()
-        return self._response(
-            "bp_add",
-            {
-                "address": hex(value),
-                "breakpoints": [hex(item) for item in self.breakpoints],
-                "armed": armed,
-            },
-        )
+        result: dict[str, Any] = {
+            "address": hex(value),
+            "breakpoints": [hex(item) for item in self.breakpoints],
+            "armed": armed,
+        }
+        if resolved:
+            result["resolved"] = resolved
+        return self._response("bp_add", result)
 
     def bp_del(self, address: str) -> dict[str, Any]:
         normalized = str(address).strip()
@@ -683,6 +692,49 @@ class AnalysisSession:
     def list_memory_maps(self) -> dict[str, Any]:
         return self._forward("list_memory_maps", self.backend.list_memory_maps())
 
+    def _resolve_breakpoint_address(
+        self,
+        *,
+        address: str | None,
+        module: str | None,
+        offset: int | str | None,
+        symbol: str | None,
+    ) -> tuple[int, dict[str, Any]]:
+        if address is not None:
+            if module is not None or offset is not None or symbol is not None:
+                raise InvalidStateError("address breakpoints cannot include module, offset, or symbol")
+            normalized = str(address).strip()
+            if normalized == "":
+                raise InvalidStateError("breakpoint address must be non-empty")
+            return self._parse_address(normalized), {}
+
+        if offset is not None:
+            if symbol is not None:
+                raise InvalidStateError("module+offset breakpoints cannot include symbol")
+            if module is None or str(module).strip() == "":
+                raise InvalidStateError("breakpoint module must be non-empty")
+            module_name = str(module).strip()
+            resolved_module = self._resolve_module(module_name)
+            offset_value = self._parse_address(offset)
+            address_value = int(resolved_module["load_base"]) + offset_value
+            return address_value, {
+                "module": module_name,
+                "module_path": resolved_module["path"],
+                "module_base": hex(int(resolved_module["load_base"])),
+                "offset": hex(offset_value),
+            }
+
+        if symbol is None:
+            raise InvalidStateError("provide exactly one breakpoint target: address, module+offset, or symbol")
+        symbol_name = str(symbol).strip()
+        if symbol_name == "":
+            raise InvalidStateError("breakpoint symbol must be non-empty")
+        module_name = str(module).strip() if module is not None else None
+        if module_name is not None and module_name == "":
+            raise InvalidStateError("breakpoint module must be non-empty")
+        address_value, resolved = self._resolve_symbol_breakpoint(symbol_name, module_name)
+        return address_value, resolved
+
     def take_snapshot(self, name: str | None = None) -> dict[str, Any]:
         response = self._forward("take_snapshot", self.backend.take_snapshot(name))
         snapshot_result = response["result"]
@@ -892,7 +944,11 @@ class AnalysisSession:
         }
 
     @staticmethod
-    def _parse_address(address: str) -> int:
+    def _parse_address(address: int | str) -> int:
+        if isinstance(address, bool):
+            raise InvalidStateError(f"invalid address: {address!r}")
+        if isinstance(address, int):
+            return address
         try:
             return int(address, 0)
         except Exception as exc:  # noqa: BLE001
@@ -1084,6 +1140,111 @@ class AnalysisSession:
                 if len(items) >= max_count:
                     break
         return items
+
+    def _resolve_module(self, module: str) -> dict[str, Any]:
+        regions = self.list_memory_maps()["result"].get("maps", {}).get("regions", [])
+        if not isinstance(regions, list):
+            raise InvalidStateError(f"module not found in memory maps: {module}")
+        matches: dict[str, dict[str, Any]] = {}
+        for region in regions:
+            if not isinstance(region, dict):
+                continue
+            path_value = region.get("path") or region.get("name")
+            if not isinstance(path_value, str):
+                continue
+            path = path_value.strip()
+            if path == "" or path.startswith("["):
+                continue
+            path_real = os.path.realpath(path)
+            name = os.path.basename(path_real)
+            if not self._module_name_matches(module, path, name):
+                continue
+            start = self._parse_optional_address(region.get("start"))
+            offset = self._parse_optional_int(region.get("offset"))
+            if start is None:
+                continue
+            load_base = start - (offset or 0)
+            existing = matches.get(path_real)
+            if existing is None or load_base < int(existing["load_base"]):
+                matches[path_real] = {"path": path_real, "name": name, "load_base": load_base}
+        exact = sorted(matches.values(), key=lambda item: (str(item["name"]), int(item["load_base"])))
+        if not exact:
+            raise InvalidStateError(f"module not found in memory maps: {module}")
+        if len({str(item["path"]) for item in exact}) > 1:
+            names = ", ".join(str(item["path"]) for item in exact[:5])
+            raise InvalidStateError(f"ambiguous module {module!r}; matches: {names}")
+        return exact[0]
+
+    def _resolve_symbol_breakpoint(self, symbol: str, module: str | None) -> tuple[int, dict[str, Any]]:
+        if module is None:
+            payload = self.symbols(max_count=4096, name_filter=symbol)["result"]
+            candidates = payload.get("symbols", [])
+            module_base = payload.get("load_base", "0x0")
+        else:
+            resolved_module = self._resolve_module(module)
+            module_base = hex(int(resolved_module["load_base"]))
+            candidates = self._read_elf_symbols(
+                str(resolved_module["path"]),
+                elf_type=self._read_elf_type(str(resolved_module["path"])),
+                load_base=int(resolved_module["load_base"]),
+                max_count=4096,
+                name_filter=symbol,
+            )
+            for item in candidates:
+                item["module"] = resolved_module["name"]
+                item["module_path"] = resolved_module["path"]
+
+        exact = [
+            item
+            for item in candidates
+            if isinstance(item, dict) and self._symbol_name_matches(str(item.get("name", "")), symbol)
+        ]
+        resolved_by_address: dict[str, dict[str, Any]] = {}
+        for item in exact:
+            loaded_address = item.get("loaded_address")
+            if isinstance(loaded_address, str):
+                resolved_by_address.setdefault(loaded_address.lower(), item)
+        resolved = list(resolved_by_address.values())
+        if not resolved:
+            raise InvalidStateError(f"symbol not found or not loaded: {symbol}")
+        if len(resolved) > 1:
+            names = ", ".join(str(item.get("name")) for item in resolved[:5])
+            raise InvalidStateError(f"ambiguous symbol {symbol!r}; matches: {names}")
+
+        item = resolved[0]
+        address = self._parse_address(str(item["loaded_address"]))
+        payload: dict[str, Any] = {
+            "symbol": symbol,
+            "matched_symbol": item.get("name"),
+            "module_base": module_base,
+            "symbol_value": item.get("value"),
+        }
+        if module is not None:
+            payload["module"] = module
+            payload["module_path"] = item.get("module_path")
+        elif item.get("module") is not None:
+            payload["module"] = item.get("module")
+            payload["module_path"] = item.get("module_path")
+        return address, payload
+
+    @staticmethod
+    def _module_name_matches(requested: str, path: str, name: str) -> bool:
+        requested_text = requested.strip()
+        requested_real = os.path.realpath(requested_text)
+        requested_base = os.path.basename(requested_real)
+        path_real = os.path.realpath(path)
+        path_base = os.path.basename(path_real)
+        return (
+            path == requested_text
+            or path_real == requested_real
+            or name == requested_base
+            or path_base == requested_base
+            or path_base.startswith(f"{requested_base}.")
+        )
+
+    @staticmethod
+    def _symbol_name_matches(candidate: str, requested: str) -> bool:
+        return candidate == requested or candidate.split("@", 1)[0] == requested
 
     @staticmethod
     def _resolve_loaded_modules(
