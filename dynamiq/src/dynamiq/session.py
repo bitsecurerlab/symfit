@@ -690,7 +690,11 @@ class AnalysisSession:
         return self._forward("disassemble", self.backend.disassemble(address, count))
 
     def list_memory_maps(self) -> dict[str, Any]:
-        return self._forward("list_memory_maps", self.backend.list_memory_maps())
+        response = self._forward("list_memory_maps", self.backend.list_memory_maps())
+        regions = response.get("result", {}).get("maps", {}).get("regions", [])
+        if isinstance(regions, list):
+            self.state.memory_maps = [dict(item) for item in regions if isinstance(item, dict)]
+        return response
 
     def _resolve_breakpoint_address(
         self,
@@ -1142,7 +1146,7 @@ class AnalysisSession:
         return items
 
     def _resolve_module(self, module: str) -> dict[str, Any]:
-        regions = self.list_memory_maps()["result"].get("maps", {}).get("regions", [])
+        regions = self._module_resolution_regions(module)
         if not isinstance(regions, list):
             raise InvalidStateError(f"module not found in memory maps: {module}")
         matches: dict[str, dict[str, Any]] = {}
@@ -1174,6 +1178,19 @@ class AnalysisSession:
             names = ", ".join(str(item["path"]) for item in exact[:5])
             raise InvalidStateError(f"ambiguous module {module!r}; matches: {names}")
         return exact[0]
+
+    def _module_resolution_regions(self, module: str) -> list[dict[str, Any]]:
+        try:
+            regions = self.list_memory_maps()["result"].get("maps", {}).get("regions", [])
+        except Exception as exc:
+            cached = list(self.state.memory_maps)
+            if cached:
+                return cached
+            raise InvalidStateError(
+                f"module {module!r} cannot be resolved while the target is running and no memory-map cache is available; "
+                "pause first or call maps at a stop point, then retry bp_add(module=..., symbol=.../offset=...)."
+            ) from exc
+        return [dict(item) for item in regions if isinstance(item, dict)] if isinstance(regions, list) else []
 
     def _resolve_symbol_breakpoint(self, symbol: str, module: str | None) -> tuple[int, dict[str, Any]]:
         if module is None:
