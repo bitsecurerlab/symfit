@@ -3560,23 +3560,23 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         memop &= ~MO_BSWAP;
     }
 
+    TCGv_i64 mmu_idx = tcg_const_i64(idx); // TO DO: Should we be using the 32-bit equivalent for this op?
+    store_size = tcg_const_i64(1 << (memop & MO_SIZE));
+
+    gen_helper_symsan_watch_store_guest(cpu_env, addr, store_size);
     gen_ldst_i32(INDEX_op_qemu_st_i32, val, addr, memop, idx);
 
     /* Perform the symbolic memory access. Doing so _after_ the concrete
      * operation ensures that the target address is in the TLB. */
-    TCGv_i64 mmu_idx = tcg_const_i64(idx); // TO DO: Should we be using the 32-bit equivalent for this op?
 
     if(second_ccache_flag) {
-        store_size = tcg_const_i64(1 << (memop & MO_SIZE));
         // gen_helper_sym_store_guest_i32(cpu_env, val, tcgv_i32_expr(val), addr, tcgv_i64_expr(addr), store_size);
         gen_helper_symsan_store_guest_i32(cpu_env, tcgv_i32_expr_num(val), addr, tcgv_i64_expr_num(addr), store_size, mmu_idx);
-        tcg_temp_free_i64(store_size);
     } else {
-        store_size = tcg_const_i64(1 << (memop & MO_SIZE));
         //gen_helper_sym_check_store_guest_i32(cpu_env, addr, store_size);
         gen_helper_symsan_check_store_guest(cpu_env, addr, store_size, mmu_idx);
-        tcg_temp_free_i64(store_size);
     }
+    tcg_temp_free_i64(store_size);
     tcg_temp_free_i64(mmu_idx);
 
     if (swap) {
@@ -3717,23 +3717,22 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         memop &= ~MO_BSWAP;
     }
     
-    gen_ldst_i64(INDEX_op_qemu_st_i64, val, addr, memop, idx);
     TCGv_i64 mmu_idx = tcg_const_i64(idx);
+    store_size = tcg_const_i64(1 << (memop & MO_SIZE));
+    gen_helper_symsan_watch_store_guest(cpu_env, addr, store_size);
+    gen_ldst_i64(INDEX_op_qemu_st_i64, val, addr, memop, idx);
     /* Perform the symbolic memory access. Doing so _after_ the concrete
      * operation ensures that the target address is in the TLB. */
     if(second_ccache_flag) {
-        store_size = tcg_const_i64(1 << (memop & MO_SIZE));
         /*gen_helper_sym_store_guest_i64(cpu_env, val, tcgv_i64_expr(val),
                                        addr, tcgv_i64_expr(addr),
                                        store_size);*/
         gen_helper_symsan_store_guest_i64(cpu_env, shadow_i64(val), addr, tcgv_i64_expr_num(addr), store_size, mmu_idx);
-        tcg_temp_free_i64(store_size);
     } else {
-        store_size = tcg_const_i64(1 << (memop & MO_SIZE));
         //gen_helper_sym_check_store_guest_i64(cpu_env, addr, store_size);
         gen_helper_symsan_check_store_guest(cpu_env, addr, store_size, mmu_idx);
-        tcg_temp_free_i64(store_size);
     }
+    tcg_temp_free_i64(store_size);
     tcg_temp_free_i64(mmu_idx);
 
     if (swap) {

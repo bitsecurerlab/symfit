@@ -1,6 +1,6 @@
 ---
 name: dynamiq-scripting
-description: Use when implementing autonomous program analysis, testing, or security scanning workflows. For persistent session control with Python, including stepping, breakpoints, memory inspection, and event tracing—without JSON-RPC round-trips.
+description: Use when implementing autonomous program analysis, testing, or security scanning workflows. For persistent session control with Python, including stepping, breakpoints, write watchpoints, memory inspection/search, symbolic stdin, and event tracing—without JSON-RPC round-trips.
 ---
 
 # Dynamiq Scripting API Skill
@@ -55,7 +55,7 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
 ### 2. All AnalysisSession Methods Available
 - **Lifecycle**: `start()`, `close()`, `capabilities()`
 - **Execution**: `step()`, `run()`, `pause()`, `advance_basic_blocks()`, `run_until_address()`
-- **Breakpoints**: `bp_add()`, `bp_del()`, `bp_list()`, `bp_clear()`, `bp_run()`
+- **Breakpoints/watchpoints**: `bp_add()`, `bp_del()`, `bp_list()`, `bp_clear()`, `bp_run()`, `watch()`, `watch_clear()`
 - **Inspection**: `get_registers()`, `read_memory()`, `mem_search()`, `backtrace()`, `disassemble()`, `symbols()`, `list_memory_maps()`, `get_state()`
 - **I/O**: `write_stdin()`, `read_stdout()`, `read_stderr()`
 - **Tracing**: `trace_start()`, `trace_stop()`, `trace_status()`, `trace_get()`, `get_recent_events()`
@@ -255,6 +255,29 @@ def test_function():
 ```
 
 ### Workflow 5: Memory Watching
+Use runtime write watchpoints when you need to stop at the exact instruction
+that writes a watched guest address range:
+
+```python
+with ScriptSession(target="/bin/myapp", auto_start=True) as session:
+    session.watch(address="0x41651d47a0", size=8, mode="write")
+
+    hit = session.advance(mode="continue", timeout=5.0)
+    assert hit["result"]["stop_reason"] == "watchpoint"
+    print(hit["state"]["watchpoint"])
+
+    # The store has not executed yet at the watchpoint stop. Continuing
+    # reexecutes that instruction once, then later matching writes still trap.
+    session.advance(mode="continue", timeout=5.0)
+```
+
+Watchpoints are persistent until `watch_clear()` or session close. They work in
+both concrete and symbolic execution modes. Use them for corruption debugging,
+for example catching the write that changes a struct field or heap metadata.
+
+Use polling-style `MemoryWatch` only when you want change detection from Python
+and do not need the exact writer instruction:
+
 ```python
 from dynamiq.script_helpers import MemoryWatch
 

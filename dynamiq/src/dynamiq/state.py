@@ -16,6 +16,7 @@ class ExecutionState:
     args: list[str] = field(default_factory=list)
     cwd: str | None = None
     stop_reason: str | None = None
+    watchpoint: dict[str, Any] | None = None
     pending_termination: bool = False
     termination_kind: str | None = None
     exit_code: int | None = None
@@ -58,6 +59,7 @@ class ExecutionState:
             "args": list(self.args),
             "cwd": self.cwd,
             "stop_reason": self.stop_reason,
+            "watchpoint": dict(self.watchpoint) if isinstance(self.watchpoint, dict) else self.watchpoint,
             "pending_termination": self.pending_termination,
             "termination_kind": self.termination_kind,
             "exit_code": self.exit_code,

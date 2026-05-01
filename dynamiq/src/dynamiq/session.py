@@ -41,6 +41,7 @@ class AnalysisSession:
     snapshots: dict[str, Snapshot] = field(default_factory=dict)
     annotations: dict[str, list[Annotation]] = field(default_factory=dict)
     breakpoints: list[int] = field(default_factory=list)
+    watchpoints: list[dict[str, Any]] = field(default_factory=list)
 
     def start(
         self,
@@ -180,6 +181,52 @@ class AnalysisSession:
         self._merge_state(result.get("state") or {})
         return True
 
+    def watch(self, address: int | str, size: int, mode: str = "write") -> dict[str, Any]:
+        value = self._parse_address(address)
+        normalized_mode = str(mode).strip().lower()
+        if normalized_mode != "write":
+            raise InvalidStateError("only write watchpoints are supported")
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            raise InvalidStateError("watchpoint size must be a positive integer")
+        entry = {"address": hex(value), "size": size, "mode": normalized_mode}
+        self.watchpoints = [
+            item
+            for item in self.watchpoints
+            if not (
+                item.get("address") == entry["address"]
+                and item.get("size") == size
+                and item.get("mode") == normalized_mode
+            )
+        ]
+        self.watchpoints.append(entry)
+        armed = self._sync_backend_watchpoints()
+        return self._response(
+            "watch",
+            {
+                "watchpoint": dict(entry),
+                "watchpoints": [dict(item) for item in self.watchpoints],
+                "armed": armed,
+            },
+        )
+
+    def watch_clear(self) -> dict[str, Any]:
+        self.watchpoints.clear()
+        armed = self._sync_backend_watchpoints()
+        return self._response("watch_clear", {"watchpoints": [], "armed": armed})
+
+    def _sync_backend_watchpoints(self) -> bool:
+        backend_method = getattr(self.backend, "set_watchpoints", None)
+        if not callable(backend_method):
+            return False
+        try:
+            result = backend_method([dict(item) for item in self.watchpoints])
+        except UnsupportedOperationError:
+            return False
+        if not isinstance(result, dict):
+            return False
+        self._merge_state(result.get("state") or {})
+        return True
+
     def break_at_addresses(
         self,
         addresses: list[str],
@@ -264,7 +311,8 @@ class AnalysisSession:
             self._merge_state(state_payload)
 
             if self.state.session_status in {"paused", "idle", "exited", "closed"}:
-                stop_reason = self._infer_stop_reason({}, self._read_live_pc(), completed=False)
+                current_pc = self._parse_optional_address(self.state.pc)
+                stop_reason = self._infer_stop_reason(state_payload, current_pc, completed=False)
                 result = {
                     "mode": "continue",
                     "completed": False,
@@ -428,6 +476,8 @@ class AnalysisSession:
                 return "exited"
         if self.state.session_status == "exited":
             return "exited"
+        if isinstance(self.state.stop_reason, str) and self.state.stop_reason:
+            return self.state.stop_reason
         if completed:
             return "target_reached"
         return "paused"
@@ -1068,6 +1118,7 @@ class AnalysisSession:
         self.backend.close()
         _teardown_log("close backend.close returned")
         self.breakpoints.clear()
+        self.watchpoints.clear()
         self.state.session_status = "closed"
         self.state.trace_active = False
         self.state.trace_kind = None
@@ -1080,6 +1131,11 @@ class AnalysisSession:
         return self._response(command, payload.get("result") or {})
 
     def _merge_state(self, payload: dict[str, Any]) -> None:
+        if payload and "stop_reason" not in payload and (
+            "session_status" in payload or "pc" in payload or "status" in payload
+        ):
+            self.state.stop_reason = None
+            self.state.watchpoint = None
         for key, value in payload.items():
             if hasattr(self.state, key):
                 setattr(self.state, key, value)

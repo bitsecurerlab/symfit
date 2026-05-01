@@ -32,6 +32,8 @@ bool ia_rpc_finalize_pending_termination(CPUArchState *env);
 void ia_wait_if_paused(void);
 bool ia_should_stop_before_instruction(CPUState *cpu, vaddr pc);
 void ia_on_basic_block_executed(CPUState *cpu, vaddr pc);
+bool ia_rpc_check_write_watchpoint(CPUState *cpu, uint64_t address,
+                                   uint64_t size, uint64_t pc);
 void symsan_record_path_constraint(uint64_t pc, dfsan_label label, bool taken);
 bool ia_rpc_queue_stdin_chunk(uint64_t size, bool symbolic,
                               uint64_t *stream_offset, Error **errp);

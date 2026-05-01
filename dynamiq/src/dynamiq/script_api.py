@@ -383,6 +383,29 @@ class ScriptSession:
         """
         return self._session.bp_run(timeout=timeout, max_steps=max_steps)
 
+    def watch(self, address: int | str, size: int, mode: str = "write") -> dict[str, Any]:
+        """
+        Arm a persistent memory watchpoint.
+
+        Args:
+            address: Guest address to watch (integer or hex string)
+            size: Number of bytes in the watched range
+            mode: Watch mode; currently only "write" is supported
+
+        Returns:
+            Response dict with armed watchpoints.
+        """
+        return self._session.watch(address=address, size=size, mode=mode)
+
+    def watch_clear(self) -> dict[str, Any]:
+        """
+        Clear all memory watchpoints.
+
+        Returns:
+            Response dict with an empty watchpoint list.
+        """
+        return self._session.watch_clear()
+
     # State Inspection (7 methods)
     # ============================
 

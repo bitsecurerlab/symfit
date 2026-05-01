@@ -155,8 +155,9 @@ class FakeInstrumentationRpcClient:
                     "trace_branch": False,
                     "trace_memory": False,
                     "trace_syscall": False,
-                "run_until_address": True,
+                    "run_until_address": True,
                     "single_step": True,
+                    "watchpoints": True,
                 },
             }
         if method == "resume":
@@ -174,6 +175,8 @@ class FakeInstrumentationRpcClient:
             return {"status": "paused", "pc": matched, "matched_pc": matched, "matched": True}
         if method == "set_breakpoints":
             return {"status": "running", "armed": bool(params["addresses"]), "breakpoints": list(params["addresses"])}
+        if method == "set_watchpoints":
+            return {"status": "running", "armed": bool(params["watchpoints"]), "watchpoints": list(params["watchpoints"])}
         if method == "single_step":
             return {"status": "paused", "count": params["count"], "executed": params["count"], "pc": "0x401004"}
         if method == "query_status":
@@ -586,6 +589,26 @@ def test_backend_set_breakpoints_arms_rpc_without_pausing() -> None:
     result = backend.set_breakpoints(["0x401000"])
 
     assert rpc.requests[-1] == ("set_breakpoints", {"addresses": ["0x401000"]})
+    assert result["result"]["armed"] is True
+    assert result["state"]["session_status"] == "running"
+
+
+def test_backend_set_watchpoints_arms_rpc_without_pausing() -> None:
+    rpc = FakeInstrumentationRpcClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {"capabilities_override": {"watchpoints": True}})
+    backend._state["session_status"] = "running"
+
+    result = backend.set_watchpoints([{"address": "0x41651d47a0", "size": 8, "mode": "write"}])
+
+    assert rpc.requests[-1] == (
+        "set_watchpoints",
+        {"watchpoints": [{"address": "0x41651d47a0", "size": 8, "mode": "write"}]},
+    )
     assert result["result"]["armed"] is True
     assert result["state"]["session_status"] == "running"
 

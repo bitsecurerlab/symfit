@@ -224,6 +224,20 @@ class FakeSession:
     def bp_clear(self):
         return {"ok": True, "command": "bp_clear", "result": {"breakpoints": []}}
 
+    def watch(self, address, size, mode="write"):  # noqa: ANN001
+        return {
+            "ok": True,
+            "command": "watch",
+            "result": {
+                "watchpoint": {"address": address, "size": size, "mode": mode},
+                "watchpoints": [{"address": address, "size": size, "mode": mode}],
+                "armed": True,
+            },
+        }
+
+    def watch_clear(self):
+        return {"ok": True, "command": "watch_clear", "result": {"watchpoints": [], "armed": True}}
+
     def bp_run(self, timeout=5.0, max_steps=10000):  # noqa: ANN001
         del max_steps
         return {
@@ -289,6 +303,8 @@ def test_mcp_tools_list_contains_short_names() -> None:
     assert "close_stdin" in names
     assert "stdout" in names
     assert "bp_add" in names
+    assert "watch" in names
+    assert "watch_clear" in names
     assert "trace_start" in names
     assert "trace_stop" in names
     assert "trace_status" in names
@@ -1170,6 +1186,25 @@ def test_mcp_tool_call_bp_add() -> None:
     assert response is not None
     assert response["result"]["isError"] is False
     assert response["result"]["structuredContent"]["result"]["address"] == "0x401000"
+
+
+def test_mcp_tool_call_watch() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 84,
+            "method": "tools/call",
+            "params": {
+                "name": "watch",
+                "arguments": {"address": "0x41651d47a0", "size": 8, "mode": "write"},
+            },
+        }
+    )
+    assert response is not None
+    assert response["result"]["isError"] is False
+    result = response["result"]["structuredContent"]["result"]
+    assert result["watchpoint"] == {"address": "0x41651d47a0", "size": 8, "mode": "write"}
 
 
 def test_mcp_tool_call_bp_add_module_offset() -> None:

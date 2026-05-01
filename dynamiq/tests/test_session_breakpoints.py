@@ -14,6 +14,7 @@ class FakeBackend:
         self.run_until_calls = 0
         self.pause_calls = 0
         self.set_breakpoints_calls: list[list[str]] = []
+        self.set_watchpoints_calls: list[list[dict[str, object]]] = []
 
     def start(self, target, args, cwd, qemu_config=None):  # noqa: ANN001
         del target, args, cwd, qemu_config
@@ -42,6 +43,14 @@ class FakeBackend:
         return {
             "state": {},
             "result": {"armed": bool(normalized), "breakpoints": normalized},
+        }
+
+    def set_watchpoints(self, watchpoints):  # noqa: ANN001
+        normalized = [dict(item) for item in watchpoints]
+        self.set_watchpoints_calls.append(normalized)
+        return {
+            "state": {},
+            "result": {"armed": bool(normalized), "watchpoints": normalized},
         }
 
     def step(self, count, timeout):  # noqa: ANN001
@@ -148,6 +157,7 @@ class FakeBackend:
             "trace_syscall": False,
             "run_until_address": True,
             "single_step": True,
+            "watchpoints": True,
         }
 
     def close(self):
@@ -328,6 +338,36 @@ class FakeBackendContinueExited(FakeBackend):
         return {"state": {}, "result": {"data": "", "cursor": cursor, "eof": False}}
 
 
+class FakeBackendContinueWatchpoint(FakeBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.running = False
+
+    def resume(self, timeout):  # noqa: ANN001
+        del timeout
+        self.running = True
+        return {"state": {"session_status": "running"}, "result": {}}
+
+    def get_state(self):
+        if self.running:
+            self.running = False
+            return {
+                "session_status": "paused",
+                "pc": "0x401117",
+                "stop_reason": "watchpoint",
+                "watchpoint": {
+                    "mode": "write",
+                    "address": "0x41651d47a0",
+                    "size": 8,
+                    "hit_address": "0x41651d47a0",
+                    "hit_size": 4,
+                    "pc": "0x401117",
+                },
+                "capabilities": self.capabilities(),
+            }
+        return {"session_status": "paused", "pc": "0x401117", "capabilities": self.capabilities()}
+
+
 def test_session_bp_run_multiple_breakpoints_selects_nearest_forward() -> None:
     session = AnalysisSession(backend=FakeBackend())
     session.state.session_status = "paused"
@@ -355,6 +395,24 @@ def test_session_bp_add_arms_running_backend_without_pausing() -> None:
     assert result["result"]["breakpoints"] == ["0x1008"]
     assert backend.pause_calls == 0
     assert backend.set_breakpoints_calls == [["0x1008"]]
+
+
+def test_session_watch_arms_running_backend_without_pausing() -> None:
+    backend = FakeBackend()
+    session = AnalysisSession(backend=backend)
+    session.state.session_status = "running"
+
+    result = session.watch("0x41651d47a0", size=8)
+
+    assert result["state"]["session_status"] == "running"
+    assert result["result"]["armed"] is True
+    assert result["result"]["watchpoint"] == {
+        "address": "0x41651d47a0",
+        "size": 8,
+        "mode": "write",
+    }
+    assert backend.pause_calls == 0
+    assert backend.set_watchpoints_calls == [[{"address": "0x41651d47a0", "size": 8, "mode": "write"}]]
 
 
 def test_session_bp_add_resolves_module_relative_offset() -> None:
@@ -693,6 +751,27 @@ def test_session_advance_continue_reports_exited_without_io() -> None:
     assert result["result"]["completed"] is False
     assert result["result"]["stop_reason"] == "exited"
     assert result["state"]["session_status"] == "exited"
+
+
+def test_session_advance_continue_watchpoint_hit_reports_watchpoint() -> None:
+    backend = FakeBackendContinueWatchpoint()
+    session = AnalysisSession(backend=backend)
+    session.state.session_status = "paused"
+    session.watch("0x41651d47a0", size=8)
+
+    result = session.advance(mode="continue", timeout=1.0)
+
+    assert result["result"]["mode"] == "continue"
+    assert result["result"]["stop_reason"] == "watchpoint"
+    assert result["state"]["watchpoint"] == {
+        "mode": "write",
+        "address": "0x41651d47a0",
+        "size": 8,
+        "hit_address": "0x41651d47a0",
+        "hit_size": 4,
+        "pc": "0x401117",
+    }
+    assert session.watchpoints == [{"address": "0x41651d47a0", "size": 8, "mode": "write"}]
 
 
 def test_session_advance_continue_reports_terminal_pause_before_exit() -> None:

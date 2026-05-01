@@ -355,6 +355,13 @@ class InteractiveAnalysisMcpServer:
                 return self._tool_ok(self._ensure_session().bp_list())
             if name == "bp_clear":
                 return self._tool_ok(self._ensure_session().bp_clear())
+            if name == "watch":
+                address = self._parse_nonempty_string(arguments, "address")
+                size = self._parse_int(arguments, "size", required=True, minimum=1)
+                mode = self._parse_optional_string(arguments, "mode", default="write") or "write"
+                return self._tool_ok(self._ensure_session().watch(address=address, size=size, mode=mode))
+            if name == "watch_clear":
+                return self._tool_ok(self._ensure_session().watch_clear())
             if name == "send_bytes":
                 data = arguments.get("data")
                 data_hex = arguments.get("data_hex")
@@ -1188,6 +1195,40 @@ class InteractiveAnalysisMcpServer:
             ToolSpec(
                 name="bp_clear",
                 description="Clear all configured persistent breakpoints.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+            ToolSpec(
+                name="watch",
+                description=(
+                    "Arm a persistent software write watchpoint. After arming, use advance "
+                    "{\"mode\":\"continue\"} to stop before a guest store overlaps the watched range."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "address": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Absolute guest address to watch, for example 0x41651d47a0.",
+                        },
+                        "size": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Number of bytes in the watched range.",
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["write"],
+                            "default": "write",
+                        },
+                    },
+                    "required": ["address", "size"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
+                name="watch_clear",
+                description="Clear all configured memory watchpoints.",
                 input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             ),
             ToolSpec(

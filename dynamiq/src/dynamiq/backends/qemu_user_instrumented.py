@@ -76,6 +76,8 @@ class QemuUserInstrumentedBackend:
             "trace_file": None,
             "pending_termination": False,
             "termination_kind": None,
+            "stop_reason": None,
+            "watchpoint": None,
             "last_rpc_method": None,
             "last_rpc_timeout": None,
             "last_rpc_params": {},
@@ -113,6 +115,7 @@ class QemuUserInstrumentedBackend:
             trace_syscall=True,
             run_until_address=True,
             single_step=True,
+            watchpoints=True,
         )
 
     def start(
@@ -224,6 +227,7 @@ class QemuUserInstrumentedBackend:
                     "args": list(args),
                     "cwd": cwd,
                     "stop_reason": None,
+                    "watchpoint": None,
                     "exit_code": None,
                     "exit_signal": None,
                     "pc": None,
@@ -366,6 +370,37 @@ class QemuUserInstrumentedBackend:
         status = result.get("status")
         if isinstance(status, str):
             self._state["session_status"] = status
+        return self._response(result, refresh_live_status=False)
+
+    def set_watchpoints(self, watchpoints: list[dict[str, Any]]) -> dict[str, Any]:
+        self._require_started()
+        if not self._capabilities.watchpoints:
+            raise UnsupportedOperationError("backend does not support watchpoints")
+        if self._instrumentation_rpc is None:
+            raise UnsupportedOperationError("backend does not have an instrumentation RPC channel configured")
+        normalized: list[dict[str, Any]] = []
+        for item in watchpoints:
+            address = str(item.get("address", "")).strip()
+            mode = str(item.get("mode", "write")).strip().lower()
+            size = item.get("size")
+            if not address:
+                raise InvalidStateError("watchpoint address must be non-empty")
+            if mode != "write":
+                raise InvalidStateError("only write watchpoints are supported")
+            if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+                raise InvalidStateError("watchpoint size must be a positive integer")
+            normalized.append({"address": address, "size": size, "mode": mode})
+        try:
+            result = self._rpc_request("set_watchpoints", {"watchpoints": normalized})
+        except Exception as exc:
+            if "unknown instrumentation RPC method" in str(exc):
+                raise UnsupportedOperationError("backend RPC does not support set_watchpoints") from exc
+            raise
+        status = result.get("status")
+        if isinstance(status, str):
+            self._state["session_status"] = status
+        self._state["watchpoint"] = None
+        self._state["stop_reason"] = None
         return self._response(result, refresh_live_status=False)
 
     def step(self, count: int, timeout: float) -> dict[str, Any]:
@@ -734,6 +769,7 @@ class QemuUserInstrumentedBackend:
         self._state["rpc_history"] = []
         self._state["last_stop_transition"] = {}
         self._state["stop_reason"] = None
+        self._state["watchpoint"] = None
         self._state["exit_code"] = None
         self._state["exit_signal"] = None
         self._state["pc"] = None
@@ -1008,6 +1044,16 @@ class QemuUserInstrumentedBackend:
         if "termination_kind" in payload:
             termination_kind = payload.get("termination_kind")
             self._state["termination_kind"] = termination_kind if isinstance(termination_kind, str) else None
+        if "stop_reason" in payload:
+            stop_reason = payload.get("stop_reason")
+            self._state["stop_reason"] = stop_reason if isinstance(stop_reason, str) else None
+        elif payload.get("status") == "running":
+            self._state["stop_reason"] = None
+            self._state["watchpoint"] = None
+        if "watchpoint" in payload:
+            watchpoint = payload.get("watchpoint")
+            self._state["watchpoint"] = dict(watchpoint) if isinstance(watchpoint, dict) else None
+
     def _apply_trace_status(self, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict):
             return

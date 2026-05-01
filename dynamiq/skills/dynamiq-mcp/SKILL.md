@@ -1,6 +1,6 @@
 ---
 name: dynamiq-mcp
-description: Use when driving the Dynamiq MCP server (`dynamiq`) for live binary sessions: start/advance loops, stdin delivery, breakpoints, low-level inspection, symbolic input, symbolic expressions, and path-constraint discovery.
+description: Use when driving the Dynamiq MCP server (`dynamiq`) for live binary sessions: start/advance loops, stdin delivery/EOF, breakpoints, write watchpoints, memory inspection/search, symbolic input, symbolic expressions, and path-constraint discovery.
 ---
 
 # Dynamiq MCP Skill
@@ -108,6 +108,36 @@ Examples:
 If `start` and `end` are omitted, Dynamiq searches readable mapped regions from
 `maps`. Prefer `pattern_hex` for binary signatures with NUL bytes.
 
+### Write watchpoint workflow
+
+Use `watch` when you need the exact write that corrupts a watched guest address
+range. This is better than breaking every loop iteration and manually checking
+the destination pointer.
+
+Example:
+- `watch {"address":"0x41651d47a0", "size":8, "mode":"write"}`
+- `advance {"mode":"continue"}`
+- inspect `state.watchpoint`, `regs`, `bt`, `disasm`, and `mem`
+- `advance {"mode":"continue"}` to let the trapped store execute
+
+Semantics:
+- Watchpoints are persistent until `watch_clear` or session close.
+- A hit stops before the overlapping store executes.
+- Continuing reexecutes that one store once, without immediately trapping on the
+  same instruction.
+- Later overlapping writes still trap.
+- Watchpoints work in both concrete and symbolic SymFit execution modes.
+
+At a hit, expect:
+- `state.stop_reason == "watchpoint"`
+- `state.watchpoint.mode == "write"`
+- `state.watchpoint.address` / `size`: configured watched range
+- `state.watchpoint.hit_address` / `hit_size`: actual store range
+- `state.watchpoint.pc`: writer instruction
+
+Use `watch_clear` before changing to a different watched object or when a
+watchpoint becomes too noisy.
+
 ## Symbolic Features
 
 Dynamiq supports two main symbolic workflows:
@@ -214,6 +244,7 @@ Goal: send symbolic stdin, inspect a symbolic branch, then inspect its expressio
 - `pause`: force a pause while running
 - `syms`: resolve runtime symbols for this session
 - `bp_add` / `bp_del` / `bp_clear` / `bp_list`: breakpoint management
+- `watch` / `watch_clear`: persistent write watchpoints for guest memory ranges
 - `stdout` / `stderr`: incremental stream reads
 - `send_line` / `send_bytes` / `send_file`: stdin delivery
 - `close_stdin`: close stdin so EOF-driven readers stop blocking
