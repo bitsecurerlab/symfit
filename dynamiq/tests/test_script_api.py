@@ -96,7 +96,7 @@ class MockBackend(BackendAdapter):
         return {
             "ok": True,
             "state": {},
-            "result": {"maps": {"regions": []}},
+            "result": {"maps": {"regions": [{"start": "0x401000", "end": "0x401010", "perm": "rw-"}]}},
         }
 
     def write_stdin(self, data, symbolic=False):
@@ -406,6 +406,16 @@ class TestScriptSessionMethodDelegation:
 
         assert result["ok"] is True
         assert "read_memory:0x401000:32" in backend.call_history
+
+    def test_mem_search(self):
+        """Test mem_search() scans through the scripting API."""
+        backend = MockBackend()
+        session = ScriptSession(target="/bin/ls", backend=backend)
+
+        result = session.mem_search(b"\xde\xad", start="0x401000", end="0x401004")
+
+        assert result["ok"] is True
+        assert result["result"]["matches"] == ["0x401000"]
 
     def test_symbolize_memory_delegation(self):
         """Test symbolize_memory() delegates to backend."""
@@ -752,6 +762,7 @@ def test_all_expected_methods_accessible():
         "get_state",
         "get_registers",
         "read_memory",
+        "mem_search",
         "backtrace",
         "disassemble",
         "list_memory_maps",

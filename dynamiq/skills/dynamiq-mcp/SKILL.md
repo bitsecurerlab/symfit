@@ -96,6 +96,18 @@ Typical loop:
 4. `stderr`
 5. `state`
 
+### Memory search workflow
+
+Use `mem_search` to locate byte signatures, heap metadata, embedded files, or
+struct markers without guessing addresses and reading chunks manually.
+
+Examples:
+- `mem_search {"pattern_hex":"0000000c6a502020"}`
+- `mem_search {"pattern_hex":"0000000c6a502020", "start":"0x4000000000", "end":"0x4200000000"}`
+
+If `start` and `end` are omitted, Dynamiq searches readable mapped regions from
+`maps`. Prefer `pattern_hex` for binary signatures with NUL bytes.
+
 ## Symbolic Features
 
 Dynamiq supports two main symbolic workflows:
@@ -204,8 +216,10 @@ Goal: send symbolic stdin, inspect a symbolic branch, then inspect its expressio
 - `bp_add` / `bp_del` / `bp_clear` / `bp_list`: breakpoint management
 - `stdout` / `stderr`: incremental stream reads
 - `send_line` / `send_bytes` / `send_file`: stdin delivery
+- `close_stdin`: close stdin so EOF-driven readers stop blocking
 - `regs`: register snapshot and symbolic register labels
 - `mem`: memory bytes and symbolic byte labels
+- `mem_search`: search guest memory for byte patterns
 - `disasm`: instruction view around an address
 - `bt`: quick call-chain context
 - `maps`: guest memory map summary

@@ -263,6 +263,21 @@ class InteractiveAnalysisMcpServer:
                         size=size,
                     )
                 )
+            if name == "mem_search":
+                pattern = self._parse_memory_search_pattern(arguments)
+                start = self._parse_optional_string(arguments, "start", default=None)
+                end = self._parse_optional_string(arguments, "end", default=None)
+                max_matches = self._parse_int(arguments, "max_matches", default=100, minimum=1)
+                chunk_size = self._parse_int(arguments, "chunk_size", default=256, minimum=1)
+                return self._tool_ok(
+                    self._ensure_session().mem_search(
+                        pattern=pattern,
+                        start=start,
+                        end=end,
+                        max_matches=max_matches,
+                        chunk_size=chunk_size,
+                    )
+                )
             if name == "symbolize_mem":
                 address = self._parse_nonempty_string(arguments, "address")
                 size = self._parse_int(arguments, "size", required=True, minimum=1)
@@ -500,6 +515,31 @@ class InteractiveAnalysisMcpServer:
         if not isinstance(value, str) or value.strip() == "":
             raise ValueError(f"{key} must be a non-empty string")
         return value
+
+    @staticmethod
+    def _parse_memory_search_pattern(arguments: JSON) -> bytes:
+        pattern = arguments.get("pattern")
+        pattern_hex = arguments.get("pattern_hex")
+        if pattern is not None and pattern_hex is not None:
+            raise ValueError("mem_search accepts either pattern or pattern_hex, not both")
+        if isinstance(pattern_hex, str):
+            cleaned = "".join(pattern_hex.split())
+            if cleaned.startswith(("0x", "0X")):
+                cleaned = cleaned[2:]
+            if cleaned == "" or len(cleaned) % 2 != 0:
+                raise ValueError("pattern_hex must contain hex byte pairs")
+            try:
+                return bytes.fromhex(cleaned)
+            except ValueError as exc:
+                raise ValueError("pattern_hex must contain only hex byte pairs") from exc
+        if isinstance(pattern, str):
+            if pattern == "":
+                raise ValueError("pattern must not be empty")
+            try:
+                return pattern.encode("latin-1")
+            except UnicodeEncodeError as exc:
+                raise ValueError("pattern must contain only byte-sized characters; use pattern_hex for arbitrary bytes") from exc
+        raise ValueError("mem_search requires non-empty string argument pattern or pattern_hex")
 
     @staticmethod
     def _parse_string_list(arguments: JSON, key: str, default: list[str] | None = None) -> list[str]:
@@ -929,6 +969,42 @@ class InteractiveAnalysisMcpServer:
                         },
                     },
                     "required": ["address", "size"],
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
+                name="mem_search",
+                description=(
+                    "Search readable guest memory for a byte pattern. Use pattern_hex for binary signatures "
+                    "such as JP2 boxes, heap metadata, or struct markers. If start/end are omitted, searches "
+                    "all readable mapped regions from maps."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Byte pattern as a latin-1 string. Use pattern_hex for arbitrary binary.",
+                        },
+                        "pattern_hex": {
+                            "type": "string",
+                            "description": "Byte pattern as hex byte pairs, for example 0000000c6a502020.",
+                        },
+                        "start": {"type": ["string", "null"], "description": "Optional inclusive start address."},
+                        "end": {"type": ["string", "null"], "description": "Optional exclusive end address."},
+                        "max_matches": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 100,
+                            "description": "Maximum number of matches to return.",
+                        },
+                        "chunk_size": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 256,
+                            "description": "Memory read size per chunk.",
+                        },
+                    },
                     "additionalProperties": False,
                 },
             ),

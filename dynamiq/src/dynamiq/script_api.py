@@ -432,6 +432,36 @@ class ScriptSession:
         """
         return self._session.read_memory(address=address, size=size)
 
+    def mem_search(
+        self,
+        pattern: bytes | str,
+        start: int | str | None = None,
+        end: int | str | None = None,
+        *,
+        max_matches: int | None = None,
+        chunk_size: int | None = None,
+    ) -> dict[str, Any]:
+        """
+        Search guest memory for a byte pattern.
+
+        Args:
+            pattern: Bytes to search for. Strings are encoded as latin-1.
+            start: Optional start address. Must be paired with end.
+            end: Optional exclusive end address. Must be paired with start.
+            max_matches: Optional maximum number of matches to return.
+            chunk_size: Optional read chunk size.
+
+        Returns:
+            Response dict with hex address matches.
+        """
+        return self._session.mem_search(
+            pattern=pattern,
+            start=start,
+            end=end,
+            max_matches=max_matches,
+            chunk_size=chunk_size,
+        )
+
     def backtrace(self, max_frames: int = 16) -> dict[str, Any]:
         """
         Build stack backtrace with symbol resolution.

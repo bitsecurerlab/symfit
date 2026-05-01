@@ -52,11 +52,11 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
     # Session auto-closes on exit
 ```
 
-### 2. All 31 AnalysisSession Methods Available
+### 2. All AnalysisSession Methods Available
 - **Lifecycle**: `start()`, `close()`, `capabilities()`
 - **Execution**: `step()`, `run()`, `pause()`, `advance_basic_blocks()`, `run_until_address()`
 - **Breakpoints**: `bp_add()`, `bp_del()`, `bp_list()`, `bp_clear()`, `bp_run()`
-- **Inspection**: `get_registers()`, `read_memory()`, `backtrace()`, `disassemble()`, `symbols()`, `list_memory_maps()`, `get_state()`
+- **Inspection**: `get_registers()`, `read_memory()`, `mem_search()`, `backtrace()`, `disassemble()`, `symbols()`, `list_memory_maps()`, `get_state()`
 - **I/O**: `write_stdin()`, `read_stdout()`, `read_stderr()`
 - **Tracing**: `trace_start()`, `trace_stop()`, `trace_status()`, `trace_get()`, `get_recent_events()`
 - **Snapshots**: `take_snapshot()`, `restore_snapshot()`, `diff_snapshots()`
@@ -219,7 +219,22 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
         print(f"Syscall: {event.get('name')}")
 ```
 
-### Workflow 3: Automated Testing
+### Workflow 3: Memory Search
+```python
+with ScriptSession(target="/bin/myapp", auto_start=True) as session:
+    # Find a JP2 box signature without guessing the heap address.
+    result = session.mem_search(
+        b"\x00\x00\x00\x0cjP  ",
+        start="0x4000000000",
+        end="0x4200000000",
+    )
+    print(result["result"]["matches"])
+```
+
+Omit `start` and `end` to search all readable mapped regions. Use bytes for
+binary signatures; strings are treated as byte-sized latin-1 text.
+
+### Workflow 4: Automated Testing
 ```python
 def test_function():
     with ScriptSession(target="/bin/myapp", auto_start=True) as session:
@@ -239,7 +254,7 @@ def test_function():
         return True
 ```
 
-### Workflow 4: Memory Watching
+### Workflow 5: Memory Watching
 ```python
 from dynamiq.script_helpers import MemoryWatch
 
@@ -255,7 +270,7 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
             # Check triggers on_change callback if memory changed
 ```
 
-### Workflow 5: Mixed Concrete and Symbolic Stdin
+### Workflow 6: Mixed Concrete and Symbolic Stdin
 ```python
 with ScriptSession(target="/bin/myapp", auto_start=True) as session:
     session.write_stdin("1\n", symbolic=False)    # concrete menu input

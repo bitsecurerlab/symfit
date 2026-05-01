@@ -29,6 +29,7 @@ class SessionConfig:
     max_recent_events: int = 1024
     max_trace_entries: int = 4096
     max_memory_read: int = 256
+    max_memory_search_matches: int = 1024
     max_disassembly_instructions: int = 64
 
 
@@ -650,6 +651,53 @@ class AnalysisSession:
             raise InvalidStateError(f"memory read exceeds max of {self.config.max_memory_read} bytes")
         return self._forward("read_memory", self.backend.read_memory(address, size))
 
+    def mem_search(
+        self,
+        pattern: bytes | str,
+        start: int | str | None = None,
+        end: int | str | None = None,
+        *,
+        max_matches: int | None = None,
+        chunk_size: int | None = None,
+    ) -> dict[str, Any]:
+        needle = self._normalize_search_pattern(pattern)
+        if not needle:
+            raise InvalidStateError("memory search pattern must not be empty")
+        effective_chunk_size = chunk_size or self.config.max_memory_read
+        if effective_chunk_size < len(needle):
+            effective_chunk_size = len(needle)
+        if effective_chunk_size > self.config.max_memory_read:
+            raise InvalidStateError(f"memory search chunk size exceeds max of {self.config.max_memory_read} bytes")
+        effective_max_matches = max_matches if max_matches is not None else self.config.max_memory_search_matches
+        if effective_max_matches < 1:
+            raise InvalidStateError("max_matches must be >= 1")
+        ranges = self._memory_search_ranges(start, end)
+        matches: list[int] = []
+        truncated = False
+        for range_start, range_end in ranges:
+            if range_end <= range_start:
+                continue
+            truncated = self._search_memory_range(
+                needle=needle,
+                start=range_start,
+                end=range_end,
+                chunk_size=effective_chunk_size,
+                max_matches=effective_max_matches,
+                matches=matches,
+            )
+            if truncated:
+                break
+        return self._response(
+            "mem_search",
+            {
+                "pattern": needle.hex(),
+                "matches": [hex(item) for item in matches],
+                "count": len(matches),
+                "truncated": truncated,
+                "ranges_scanned": len(ranges),
+            },
+        )
+
     def symbolize_memory(self, address: str, size: int, name: str | None = None) -> dict[str, Any]:
         if size > self.config.max_memory_read:
             raise InvalidStateError(f"memory symbolization exceeds max of {self.config.max_memory_read} bytes")
@@ -695,6 +743,103 @@ class AnalysisSession:
         if isinstance(regions, list):
             self.state.memory_maps = [dict(item) for item in regions if isinstance(item, dict)]
         return response
+
+    @staticmethod
+    def _normalize_search_pattern(pattern: bytes | str) -> bytes:
+        if isinstance(pattern, bytes):
+            return pattern
+        if isinstance(pattern, str):
+            try:
+                return pattern.encode("latin-1")
+            except UnicodeEncodeError as exc:
+                raise InvalidStateError("memory search string pattern must contain only byte-sized characters") from exc
+        raise InvalidStateError("memory search pattern must be bytes or string")
+
+    def _memory_search_ranges(self, start: int | str | None, end: int | str | None) -> list[tuple[int, int]]:
+        start_value = self._parse_address(start) if start is not None else None
+        end_value = self._parse_address(end) if end is not None else None
+        if (start_value is None) != (end_value is None):
+            raise InvalidStateError("memory search requires both start and end or neither")
+        if start_value is not None and end_value is not None:
+            if end_value <= start_value:
+                raise InvalidStateError("memory search end must be greater than start")
+
+        try:
+            maps = self.list_memory_maps()["result"].get("maps", {}).get("regions", [])
+        except Exception:
+            if start_value is not None and end_value is not None:
+                return [(start_value, end_value)]
+            raise
+        ranges: list[tuple[int, int]] = []
+        if not isinstance(maps, list):
+            if start_value is not None and end_value is not None:
+                return [(start_value, end_value)]
+            return ranges
+        for region in maps:
+            if not isinstance(region, dict):
+                continue
+            perm = region.get("perm")
+            if isinstance(perm, str) and not perm.startswith("r"):
+                continue
+            region_start = self._parse_optional_address(region.get("start"))
+            region_end = self._parse_optional_address(region.get("end"))
+            if region_start is None or region_end is None or region_end <= region_start:
+                continue
+            if start_value is not None and end_value is not None:
+                region_start = max(region_start, start_value)
+                region_end = min(region_end, end_value)
+            if region_end > region_start:
+                ranges.append((region_start, region_end))
+        return ranges
+
+    def _search_memory_range(
+        self,
+        *,
+        needle: bytes,
+        start: int,
+        end: int,
+        chunk_size: int,
+        max_matches: int,
+        matches: list[int],
+    ) -> bool:
+        overlap = max(len(needle) - 1, 0)
+        carry = b""
+        cursor = start
+        while cursor < end:
+            size = min(chunk_size, end - cursor)
+            try:
+                response = self.read_memory(hex(cursor), size)
+            except Exception:
+                carry = b""
+                cursor += size
+                continue
+            hex_bytes = response.get("result", {}).get("bytes")
+            if not isinstance(hex_bytes, str):
+                carry = b""
+                cursor += size
+                continue
+            try:
+                data = bytes.fromhex(hex_bytes)
+            except ValueError:
+                carry = b""
+                cursor += size
+                continue
+            combined = carry + data
+            combined_base = cursor - len(carry)
+            search_from = 0
+            while True:
+                found = combined.find(needle, search_from)
+                if found < 0:
+                    break
+                address = combined_base + found
+                if start <= address and address + len(needle) <= end and (not matches or matches[-1] != address):
+                    matches.append(address)
+                    if len(matches) >= max_matches:
+                        return True
+                search_from = found + 1
+            carry = combined[-overlap:] if overlap else b""
+            cursor += size
+        return False
 
     def _resolve_breakpoint_address(
         self,

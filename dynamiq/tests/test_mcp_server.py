@@ -104,6 +104,21 @@ class FakeSession:
             },
         }
 
+    def mem_search(self, pattern, start=None, end=None, max_matches=None, chunk_size=None):  # noqa: ANN001
+        return {
+            "ok": True,
+            "command": "mem_search",
+            "result": {
+                "pattern": pattern.hex(),
+                "matches": ["0x401000"],
+                "count": 1,
+                "start": start,
+                "end": end,
+                "max_matches": max_matches,
+                "chunk_size": chunk_size,
+            },
+        }
+
     def symbolize_memory(self, address, size, name=None):  # noqa: ANN001
         return {
             "ok": True,
@@ -278,6 +293,7 @@ def test_mcp_tools_list_contains_short_names() -> None:
     assert "trace_stop" in names
     assert "trace_status" in names
     assert "trace_get" in names
+    assert "mem_search" in names
     assert "symbolize_mem" in names
     assert "symbolize_reg" in names
     assert "expr" in names
@@ -353,6 +369,34 @@ def test_mcp_tool_call_symbolize_memory() -> None:
     result = response["result"]
     assert result["isError"] is False
     assert result["structuredContent"]["result"]["address"] == "0x401000"
+
+
+def test_mcp_tool_call_mem_search() -> None:
+    server = _server()
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 311,
+            "method": "tools/call",
+            "params": {
+                "name": "mem_search",
+                "arguments": {
+                    "pattern_hex": "0000000c6a502020",
+                    "start": "0x4000000000",
+                    "end": "0x4200000000",
+                    "max_matches": 10,
+                    "chunk_size": 128,
+                },
+            },
+        }
+    )
+    assert response is not None
+    result = response["result"]
+    assert result["isError"] is False
+    content = result["structuredContent"]
+    assert content["command"] == "mem_search"
+    assert content["result"]["pattern"] == "0000000c6a502020"
+    assert content["result"]["matches"] == ["0x401000"]
 
 
 def test_mcp_tool_call_expr() -> None:
