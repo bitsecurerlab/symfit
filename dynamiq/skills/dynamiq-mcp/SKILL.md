@@ -242,13 +242,22 @@ Read the results like this:
 - `taken`: which direction was observed in this run
 - `pc`: where the condition was recorded
 
-`solve_path_constraint` returns:
-- `status`: `sat`, `unsat`, or a solver error
-- `assignments`: concrete symbolic-input byte values, keyed by input offset
-- `soundness`: `sound` when the formula did not require symbolic-address load concretization, or `conditional` when it did
-- `assumptions`: details such as `concretized_symbolic_load` with the observed concrete address/value
+`solve_path_constraint` returns solver candidates: `status`, concrete byte
+`assignments`, and optional diagnostic assumptions from the concolic engine.
+Treat the output as a candidate, not proof of reachability. For a target PC,
+rerun with the returned assignments and verify the PC is actually reached.
 
-Treat `soundness: "conditional"` as a candidate model tied to this run. It is useful for concolic exploration, but it is not proof that all symbolic memory aliases were modeled. For a target PC, rerun with the returned assignments and verify the PC is actually reached.
+For complex harnesses such as FFmpeg, do not expect the MCP solver tool to
+perform the rerun by itself. Use the scripting helper `solve_for` with a replay
+adapter, or manually apply assignments in the harness script and verify a
+breakpoint/PC hit. The replay adapter owns harness details such as patching a
+seed file, driving WAIT markers, closing stdin, and deciding whether the target
+PC was truly reached.
+
+If the harness is fast, let the replay adapter return additional `candidates`
+from each missed replay. The scripting helper will explore those breadth-first
+up to `max_replays`, rather than stopping after one flip per branch from the
+original run.
 
 Good times to query path constraints:
 - after a branch-oriented breakpoint

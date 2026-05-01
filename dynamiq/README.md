@@ -201,11 +201,31 @@ closure = session.path_constraint_closure(label)
 model = session.solve_path_constraint(label, negate=True)
 ```
 
-Solver results include `soundness`. `sound` means the path formula did not use
-symbolic-address load concretization. `conditional` means the model depends on
-reported assumptions such as a symbolic load address being fixed to the concrete
-address observed in this run; rerun with the assignments to verify target-PC
-reachability.
+Solver results may include diagnostic assumptions from the underlying concolic
+engine. Prefer `solve_for` when you need a reachability answer: it treats solver
+models as candidates and trusts only the replay result.
+
+For verified target-PC reachability, use `dynamiq.script_helpers.solve_for`
+with a replay adapter. The solver only proposes byte assignments; the adapter
+owns harness-specific replay such as patching a seed file, launching FFmpeg,
+driving WAIT markers, closing stdin, and checking whether the requested PC was
+actually hit.
+
+`solve_for` tries the latest path constraints first. If the adapter's replay
+verdict returns more `candidates`, it keeps exploring those breadth-first up to
+`max_replays`, so fast harnesses can do more than one branch flip.
+
+```python
+from dynamiq.script_helpers import BytesReplayAdapter, solve_for
+
+def run_candidate(candidate: bytes, target_pc: str, timeout: float) -> dict:
+    # Write candidate to the harness input, launch/drive the target, and return
+    # {"reached": True} only when target_pc is verified.
+    ...
+
+replay = BytesReplayAdapter(seed=seed_jp2_bytes, runner=run_candidate)
+result = solve_for(session, "0x4218b6faf0", replay, limit=16, max_replays=128)
+```
 
 ### MCP quickstart for interactive stdin/stdout
 

@@ -71,6 +71,7 @@ The scripting API now exposes symbolic-execution helpers through `AnalysisSessio
 - `recent_path_constraints(limit=16)`
 - `path_constraint_closure(label)`
 - `solve_path_constraint(label, negate=True)`
+- `dynamiq.script_helpers.solve_for(session, target_pc, replay, ...)` for verified rerun through a harness-specific replay adapter
 
 Important:
 - Dynamiq does not symbolize argv, stack buffers, heap buffers, or derived parser buffers automatically.
@@ -98,8 +99,28 @@ with ScriptSession(target="/path/to/target", auto_start=True) as session:
     closure = session.path_constraint_closure(label)
     model = session.solve_path_constraint(label, negate=True)
     assert closure["result"]["root"]["taken"] is True
-    if model["result"]["soundness"] == "conditional":
-        print("model depends on concretized symbolic-load assumptions")
+```
+
+Use `solve_for` when you need to prove a target PC is reachable. It negates
+recent path constraints and asks a replay adapter to rerun the real harness with
+the candidate bytes. The adapter is responsible for patching seed input,
+launching the target, driving WAIT states, closing stdin, setting verification
+breakpoints, and returning `{"reached": True}` only after the target PC is
+actually hit.
+
+For deeper exploration, the adapter's replay verdict may return additional
+`candidates`. `solve_for` queues those candidates breadth-first and keeps
+replaying them up to `max_replays`, which is useful when SymFit reruns are cheap.
+
+```python
+from dynamiq.script_helpers import BytesReplayAdapter, solve_for
+
+def run_candidate(candidate: bytes, target_pc: str, timeout: float) -> dict:
+    # Harness-specific replay and verification.
+    return {"reached": False}
+
+replay = BytesReplayAdapter(seed=seed_bytes, runner=run_candidate)
+result = solve_for(session, "0x4218b6faf0", replay, limit=16, max_replays=128)
 ```
 
 ### 4. Auto-Detection (Zero Configuration)

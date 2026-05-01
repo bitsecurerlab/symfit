@@ -7,10 +7,291 @@ like managing temporary breakpoint sets, memory watches, and tracing regions.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from contextlib import contextmanager
-from typing import Any, Callable, Generator
+from typing import Any, Callable, Generator, Protocol
 
 from .script_api import ScriptSession
+
+
+class ReplayAdapter(Protocol):
+    """Adapter that turns solver assignments into a verified target rerun."""
+
+    def seed_input(self) -> bytes:
+        """Return the original input bytes that solver assignments patch."""
+        ...
+
+    def apply_assignments(self, seed: bytes, assignments: list[dict[str, Any]]) -> bytes:
+        """Apply solver byte assignments to seed input bytes."""
+        ...
+
+    def run(self, candidate: bytes, target_pc: str, timeout: float) -> dict[str, Any]:
+        """Run the harness with candidate bytes and report whether target_pc was reached."""
+        ...
+
+
+@dataclass(slots=True)
+class BytesReplayAdapter:
+    """
+    Minimal replay adapter for callers that only need byte patching.
+
+    Provide a ``runner`` callback to launch the real harness. The callback
+    receives ``candidate``, ``target_pc``, and ``timeout`` and should return a
+    dict containing ``reached: True`` when verification succeeds.
+    """
+
+    seed: bytes
+    runner: Callable[[bytes, str, float], dict[str, Any]]
+
+    def seed_input(self) -> bytes:
+        return bytes(self.seed)
+
+    def apply_assignments(self, seed: bytes, assignments: list[dict[str, Any]]) -> bytes:
+        return apply_byte_assignments(seed, assignments)
+
+    def run(self, candidate: bytes, target_pc: str, timeout: float) -> dict[str, Any]:
+        return self.runner(candidate, target_pc, timeout)
+
+
+def _parse_assignment_int(value: Any, field: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"assignment {field} must be an integer or numeric string")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return int(value, 0)
+    raise ValueError(f"assignment {field} must be an integer or numeric string")
+
+
+def apply_byte_assignments(seed: bytes | bytearray, assignments: list[dict[str, Any]]) -> bytes:
+    """
+    Apply solver byte assignments to a seed input.
+
+    Assignments are the entries returned by ``solve_path_constraint`` and may
+    use either integer fields or hex string fields:
+    ``{"offset": "0x10", "value": 65}``.
+    """
+    candidate = bytearray(seed)
+    for assignment in assignments:
+        offset = _parse_assignment_int(assignment.get("offset"), "offset")
+        value_obj = assignment.get("value")
+        if value_obj is None:
+            value_obj = assignment.get("value_hex")
+        value = _parse_assignment_int(value_obj, "value")
+        if offset < 0:
+            raise ValueError(f"assignment offset must be non-negative: {offset}")
+        if value < 0 or value > 0xFF:
+            raise ValueError(f"assignment value must fit in one byte: {value}")
+        if offset >= len(candidate):
+            candidate.extend(b"\x00" * (offset + 1 - len(candidate)))
+        candidate[offset] = value
+    return bytes(candidate)
+
+
+def _result_payload(response: dict[str, Any]) -> dict[str, Any]:
+    result = response.get("result")
+    if isinstance(result, dict):
+        return result
+    return response
+
+
+def _constraint_labels(recent: dict[str, Any]) -> list[dict[str, Any]]:
+    constraints = _result_payload(recent).get("constraints", [])
+    labels: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if not isinstance(constraints, list):
+        return labels
+    for constraint in constraints:
+        if not isinstance(constraint, dict):
+            continue
+        label = constraint.get("label")
+        if not isinstance(label, str):
+            continue
+        normalized = label.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        labels.append(constraint)
+    return labels
+
+
+def _candidate_models_from_session(session: ScriptSession, limit: int) -> list[dict[str, Any]]:
+    recent = session.recent_path_constraints(limit=limit)
+    candidates: list[dict[str, Any]] = []
+    for constraint in _constraint_labels(recent):
+        label = constraint["label"]
+        solve_response = session.solve_path_constraint(label, negate=True)
+        model = _result_payload(solve_response)
+        candidate = {"constraint": constraint, "model": model}
+        if model.get("status") != "sat":
+            candidate["skipped"] = "not_sat"
+        elif not isinstance(model.get("assignments", []), list):
+            candidate["skipped"] = "invalid_assignments"
+        candidates.append(candidate)
+    return candidates
+
+
+def _candidate_models_from_verdict(verdict: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_candidates = verdict.get("candidates", [])
+    if not isinstance(raw_candidates, list):
+        return []
+    candidates: list[dict[str, Any]] = []
+    for item in raw_candidates:
+        if not isinstance(item, dict):
+            continue
+        model = item.get("model")
+        if model is None and "assignments" in item:
+            model = {"status": "sat", "assignments": item.get("assignments", [])}
+        if not isinstance(model, dict):
+            continue
+        candidate = {"constraint": item.get("constraint"), "model": model}
+        if "candidate" in item:
+            candidate["candidate"] = item["candidate"]
+        if "candidate_hex" in item:
+            candidate["candidate_hex"] = item["candidate_hex"]
+        candidates.append(candidate)
+    return candidates
+
+
+def _coerce_candidate_bytes(value: Any) -> bytes | None:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, str):
+        return bytes.fromhex(value)
+    return None
+
+
+def solve_for(
+    session: ScriptSession,
+    target_pc: str,
+    replay: ReplayAdapter,
+    *,
+    limit: int = 16,
+    timeout: float = 10.0,
+    max_replays: int = 64,
+) -> dict[str, Any]:
+    """
+    Try to reach ``target_pc`` by negating recent path constraints and replaying.
+
+    This is a verified concolic orchestration helper. The current session
+    supplies path constraints and solver models; the replay adapter owns the
+    harness-specific work of applying assignments, launching the target, and
+    deciding whether ``target_pc`` was actually reached.
+
+    For deeper exploration, a replay adapter may return ``candidates`` in its
+    verdict. Each candidate can contain a ``model`` with solver ``assignments``,
+    or simply an ``assignments`` list. Those candidates are patched onto the
+    input that produced the verdict and replayed breadth-first until
+    ``max_replays`` is exhausted.
+    """
+    attempts: list[dict[str, Any]] = []
+    queue: list[dict[str, Any]] = []
+    seen_inputs: set[bytes] = set()
+    seed = replay.seed_input()
+
+    for model_candidate in _candidate_models_from_session(session, limit):
+        model = model_candidate["model"]
+        attempt: dict[str, Any] = {
+            "constraint": model_candidate.get("constraint"),
+            "model": model,
+            "reached": False,
+            "depth": 0,
+        }
+        if "skipped" in model_candidate:
+            attempt["skipped"] = model_candidate["skipped"]
+            attempts.append(attempt)
+            continue
+        queue.append({"base": seed, **model_candidate, "depth": 0})
+
+    replay_count = 0
+    while queue and replay_count < max_replays:
+        queued = queue.pop(0)
+        model = queued["model"]
+        base = queued["base"]
+        depth = int(queued.get("depth", 0))
+        explicit_candidate = _coerce_candidate_bytes(queued.get("candidate"))
+        if explicit_candidate is None and isinstance(queued.get("candidate_hex"), str):
+            explicit_candidate = _coerce_candidate_bytes(queued["candidate_hex"])
+        if explicit_candidate is not None:
+            candidate = explicit_candidate
+        else:
+            assignments = model.get("assignments", [])
+            if not isinstance(assignments, list):
+                attempts.append(
+                    {
+                        "constraint": queued.get("constraint"),
+                        "model": model,
+                        "reached": False,
+                        "depth": depth,
+                        "skipped": "invalid_assignments",
+                    }
+                )
+                continue
+            candidate = replay.apply_assignments(base, assignments)
+
+        if candidate in seen_inputs:
+            attempts.append(
+                {
+                    "constraint": queued.get("constraint"),
+                    "model": model,
+                    "candidate": candidate,
+                    "candidate_hex": candidate.hex(),
+                    "reached": False,
+                    "depth": depth,
+                    "skipped": "duplicate_candidate",
+                }
+            )
+            continue
+        seen_inputs.add(candidate)
+
+        replay_count += 1
+        verdict = replay.run(candidate, target_pc, timeout)
+        reached = bool(verdict.get("reached"))
+        attempt = {
+            "constraint": queued.get("constraint"),
+            "model": model,
+            "candidate": candidate,
+            "candidate_hex": candidate.hex(),
+            "verdict": verdict,
+            "reached": reached,
+            "depth": depth,
+        }
+        attempts.append(attempt)
+        if reached:
+            return {
+                "status": "reached",
+                "target_pc": target_pc,
+                "constraint": queued.get("constraint"),
+                "model": model,
+                "candidate": candidate,
+                "candidate_hex": candidate.hex(),
+                "verdict": verdict,
+                "attempts": attempts,
+            }
+
+        for next_candidate in _candidate_models_from_verdict(verdict):
+            next_model = next_candidate["model"]
+            if next_model.get("status", "sat") != "sat":
+                attempts.append(
+                    {
+                        "constraint": next_candidate.get("constraint"),
+                        "model": next_model,
+                        "reached": False,
+                        "depth": depth + 1,
+                        "skipped": "not_sat",
+                    }
+                )
+                continue
+            queue.append({"base": candidate, "depth": depth + 1, **next_candidate})
+
+    return {
+        "status": "not_found",
+        "target_pc": target_pc,
+        "attempts": attempts,
+        "exhausted": bool(queue),
+    }
 
 
 class MemoryWatch:
