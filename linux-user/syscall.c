@@ -703,32 +703,52 @@ const char *target_strerror(int err)
 #define safe_syscall0(type, name) \
 static type safe_##name(void) \
 { \
-    return safe_syscall(__NR_##name); \
+    type ret; \
+    ia_rpc_enter_blocking_syscall(__NR_##name, #name); \
+    ret = safe_syscall(__NR_##name); \
+    ia_rpc_leave_blocking_syscall(); \
+    return ret; \
 }
 
 #define safe_syscall1(type, name, type1, arg1) \
 static type safe_##name(type1 arg1) \
 { \
-    return safe_syscall(__NR_##name, arg1); \
+    type ret; \
+    ia_rpc_enter_blocking_syscall(__NR_##name, #name); \
+    ret = safe_syscall(__NR_##name, arg1); \
+    ia_rpc_leave_blocking_syscall(); \
+    return ret; \
 }
 
 #define safe_syscall2(type, name, type1, arg1, type2, arg2) \
 static type safe_##name(type1 arg1, type2 arg2) \
 { \
-    return safe_syscall(__NR_##name, arg1, arg2); \
+    type ret; \
+    ia_rpc_enter_blocking_syscall(__NR_##name, #name); \
+    ret = safe_syscall(__NR_##name, arg1, arg2); \
+    ia_rpc_leave_blocking_syscall(); \
+    return ret; \
 }
 
 #define safe_syscall3(type, name, type1, arg1, type2, arg2, type3, arg3) \
 static type safe_##name(type1 arg1, type2 arg2, type3 arg3) \
 { \
-    return safe_syscall(__NR_##name, arg1, arg2, arg3); \
+    type ret; \
+    ia_rpc_enter_blocking_syscall(__NR_##name, #name); \
+    ret = safe_syscall(__NR_##name, arg1, arg2, arg3); \
+    ia_rpc_leave_blocking_syscall(); \
+    return ret; \
 }
 
 #define safe_syscall4(type, name, type1, arg1, type2, arg2, type3, arg3, \
     type4, arg4) \
 static type safe_##name(type1 arg1, type2 arg2, type3 arg3, type4 arg4) \
 { \
-    return safe_syscall(__NR_##name, arg1, arg2, arg3, arg4); \
+    type ret; \
+    ia_rpc_enter_blocking_syscall(__NR_##name, #name); \
+    ret = safe_syscall(__NR_##name, arg1, arg2, arg3, arg4); \
+    ia_rpc_leave_blocking_syscall(); \
+    return ret; \
 }
 
 #define safe_syscall5(type, name, type1, arg1, type2, arg2, type3, arg3, \
@@ -736,7 +756,11 @@ static type safe_##name(type1 arg1, type2 arg2, type3 arg3, type4 arg4) \
 static type safe_##name(type1 arg1, type2 arg2, type3 arg3, type4 arg4, \
     type5 arg5) \
 { \
-    return safe_syscall(__NR_##name, arg1, arg2, arg3, arg4, arg5); \
+    type ret; \
+    ia_rpc_enter_blocking_syscall(__NR_##name, #name); \
+    ret = safe_syscall(__NR_##name, arg1, arg2, arg3, arg4, arg5); \
+    ia_rpc_leave_blocking_syscall(); \
+    return ret; \
 }
 
 #define safe_syscall6(type, name, type1, arg1, type2, arg2, type3, arg3, \
@@ -744,7 +768,11 @@ static type safe_##name(type1 arg1, type2 arg2, type3 arg3, type4 arg4, \
 static type safe_##name(type1 arg1, type2 arg2, type3 arg3, type4 arg4, \
     type5 arg5, type6 arg6) \
 { \
-    return safe_syscall(__NR_##name, arg1, arg2, arg3, arg4, arg5, arg6); \
+    type ret; \
+    ia_rpc_enter_blocking_syscall(__NR_##name, #name); \
+    ret = safe_syscall(__NR_##name, arg1, arg2, arg3, arg4, arg5, arg6); \
+    ia_rpc_leave_blocking_syscall(); \
+    return ret; \
 }
 
 safe_syscall3(ssize_t, read, int, fd, void *, buff, size_t, count)
@@ -815,16 +843,34 @@ safe_syscall5(int, mq_timedreceive, int, mqdes, char *, msg_ptr,
  * "third argument might be integer or pointer or not present" behaviour of
  * the libc function.
  */
-#define safe_ioctl(...) safe_syscall(__NR_ioctl, __VA_ARGS__)
+#define safe_ioctl(...) ({ \
+    abi_long ret_; \
+    ia_rpc_enter_blocking_syscall(__NR_ioctl, "ioctl"); \
+    ret_ = safe_syscall(__NR_ioctl, __VA_ARGS__); \
+    ia_rpc_leave_blocking_syscall(); \
+    ret_; \
+})
 /* Similarly for fcntl. Note that callers must always:
  *  pass the F_GETLK64 etc constants rather than the unsuffixed F_GETLK
  *  use the flock64 struct rather than unsuffixed flock
  * This will then work and use a 64-bit offset for both 32-bit and 64-bit hosts.
  */
 #ifdef __NR_fcntl64
-#define safe_fcntl(...) safe_syscall(__NR_fcntl64, __VA_ARGS__)
+#define safe_fcntl(...) ({ \
+    abi_long ret_; \
+    ia_rpc_enter_blocking_syscall(__NR_fcntl64, "fcntl"); \
+    ret_ = safe_syscall(__NR_fcntl64, __VA_ARGS__); \
+    ia_rpc_leave_blocking_syscall(); \
+    ret_; \
+})
 #else
-#define safe_fcntl(...) safe_syscall(__NR_fcntl, __VA_ARGS__)
+#define safe_fcntl(...) ({ \
+    abi_long ret_; \
+    ia_rpc_enter_blocking_syscall(__NR_fcntl, "fcntl"); \
+    ret_ = safe_syscall(__NR_fcntl, __VA_ARGS__); \
+    ia_rpc_leave_blocking_syscall(); \
+    ret_; \
+})
 #endif
 
 static inline int host_to_target_sock_type(int host_type)
@@ -7314,7 +7360,9 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                 return -TARGET_EFAULT;
             //ret = get_errno(read_symbolized(arg1, p, arg3));
             //ret = get_errno(read_flag_symbolized(arg1, p, arg3, &isSymbolicPage));
+            ia_rpc_enter_blocking_syscall(__NR_read, "read");
             ret = get_errno(__dfsan_read(arg1, p, arg3, &isSymbolicPage));
+            ia_rpc_leave_blocking_syscall();
             /*zx012 if symbolic, clear the corresponding entry in user tlb*/
             if (ret >= 0 &&
                 fd_trans_host_to_target_data(arg1)) {

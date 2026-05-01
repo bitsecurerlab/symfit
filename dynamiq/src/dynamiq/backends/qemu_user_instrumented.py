@@ -77,6 +77,8 @@ class QemuUserInstrumentedBackend:
             "pending_termination": False,
             "termination_kind": None,
             "stop_reason": None,
+            "syscall": None,
+            "syscall_number": None,
             "watchpoint": None,
             "last_rpc_method": None,
             "last_rpc_timeout": None,
@@ -227,6 +229,8 @@ class QemuUserInstrumentedBackend:
                     "args": list(args),
                     "cwd": cwd,
                     "stop_reason": None,
+                    "syscall": None,
+                    "syscall_number": None,
                     "watchpoint": None,
                     "exit_code": None,
                     "exit_signal": None,
@@ -440,7 +444,7 @@ class QemuUserInstrumentedBackend:
         if self._process_runner is None:
             raise UnsupportedOperationError("backend does not have a launched process")
         status = self._state.get("session_status")
-        if status not in {"idle", "running", "paused"}:
+        if status not in {"idle", "running", "blocked", "paused"}:
             raise InvalidStateError("session is not active; start session before write_stdin")
         if isinstance(data, bytes):
             payload_size = len(data)
@@ -469,7 +473,7 @@ class QemuUserInstrumentedBackend:
             raise UnsupportedOperationError("backend does not have a launched process")
         self._sync_process_state()
         status = self._state.get("session_status")
-        if status not in {"idle", "running", "paused"}:
+        if status not in {"idle", "running", "blocked", "paused"}:
             raise InvalidStateError("session is not active; start session before close_stdin")
         result = self._process_runner.close_stdin()
         return self._response(result, refresh_live_status=False)
@@ -769,6 +773,8 @@ class QemuUserInstrumentedBackend:
         self._state["rpc_history"] = []
         self._state["last_stop_transition"] = {}
         self._state["stop_reason"] = None
+        self._state["syscall"] = None
+        self._state["syscall_number"] = None
         self._state["watchpoint"] = None
         self._state["exit_code"] = None
         self._state["exit_signal"] = None
@@ -1049,7 +1055,19 @@ class QemuUserInstrumentedBackend:
             self._state["stop_reason"] = stop_reason if isinstance(stop_reason, str) else None
         elif payload.get("status") == "running":
             self._state["stop_reason"] = None
+            self._state["syscall"] = None
+            self._state["syscall_number"] = None
             self._state["watchpoint"] = None
+        if "syscall" in payload:
+            syscall = payload.get("syscall")
+            self._state["syscall"] = syscall if isinstance(syscall, str) else None
+        elif payload.get("status") != "blocked":
+            self._state["syscall"] = None
+        if "syscall_number" in payload:
+            syscall_number = payload.get("syscall_number")
+            self._state["syscall_number"] = syscall_number if isinstance(syscall_number, int) else None
+        elif payload.get("status") != "blocked":
+            self._state["syscall_number"] = None
         if "watchpoint" in payload:
             watchpoint = payload.get("watchpoint")
             self._state["watchpoint"] = dict(watchpoint) if isinstance(watchpoint, dict) else None

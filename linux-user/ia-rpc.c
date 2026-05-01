@@ -73,6 +73,9 @@ typedef struct IAState {
     bool run_requested;
     bool pause_pending;
     IAExecState exec_state;
+    bool syscall_blocked;
+    int syscall_blocked_nr;
+    char syscall_blocked_name[32];
     int exit_code;
     bool has_exit_code;
     bool pending_termination;
@@ -144,6 +147,7 @@ static QDict *ia_make_error_response(int64_t id, const char *code,
 static QDict *ia_make_ok_response(int64_t id, QDict *result);
 static void ia_clear_watchpoint_match_locked(void);
 static void ia_clear_watchpoint_skip_locked(void);
+static bool ia_inspection_available_locked(void);
 
 static target_ulong get_pc(CPUArchState *env)
 {
@@ -235,6 +239,13 @@ static void ia_clear_watchpoint_skip_locked(void)
     ia_state.write_watchpoint_skip_address = 0;
     ia_state.write_watchpoint_skip_size = 0;
     ia_state.write_watchpoint_skip_pc = 0;
+}
+
+static void ia_clear_blocked_syscall_locked(void)
+{
+    ia_state.syscall_blocked = false;
+    ia_state.syscall_blocked_nr = 0;
+    ia_state.syscall_blocked_name[0] = '\0';
 }
 
 static void ia_enter_terminal_pause_locked(void)
@@ -1019,6 +1030,9 @@ static void ia_trace_append_status_locked(QDict *dict)
 
 static const char *ia_status_string_locked(void)
 {
+    if (ia_state.exec_state == IA_EXEC_RUNNING && ia_state.syscall_blocked) {
+        return "blocked";
+    }
     switch (ia_state.exec_state) {
     case IA_EXEC_IDLE:
         return "idle";
@@ -1031,6 +1045,11 @@ static const char *ia_status_string_locked(void)
     default:
         return "idle";
     }
+}
+
+static bool ia_inspection_available_locked(void)
+{
+    return ia_state.exec_state != IA_EXEC_RUNNING || ia_state.syscall_blocked;
 }
 
 static void ia_write_response(FILE *out, QDict *resp)
@@ -1436,6 +1455,13 @@ static QDict *ia_handle_query_status(int64_t id)
     qdict_put_int(result, "pending_stdin_bytes", ia_state.pending_stdin_bytes);
     qdict_put_int(result, "pending_symbolic_stdin_bytes",
                   ia_state.pending_symbolic_stdin_bytes);
+    if (ia_state.exec_state == IA_EXEC_RUNNING && ia_state.syscall_blocked) {
+        qdict_put_str(result, "stop_reason", "syscall_block");
+        qdict_put_int(result, "syscall_number", ia_state.syscall_blocked_nr);
+        if (ia_state.syscall_blocked_name[0] != '\0') {
+            qdict_put_str(result, "syscall", ia_state.syscall_blocked_name);
+        }
+    }
     if (ia_state.write_watchpoint_matched) {
         QDict *watchpoint = qdict_new();
         g_autofree char *address_hex = g_strdup_printf(
@@ -1986,7 +2012,7 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
         return ia_make_error_response(id, "invalid_params", "addresses must not be empty");
     }
 
-    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+    if (!ia_inspection_available_locked()) {
         bool armed = false;
         size_t i;
 
@@ -2252,7 +2278,7 @@ static QDict *ia_handle_get_registers(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+    if (!ia_inspection_available_locked()) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(regs);
         qobject_unref(symbolic_regs);
@@ -2324,7 +2350,7 @@ static QDict *ia_handle_read_memory(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+    if (!ia_inspection_available_locked()) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(result);
         return ia_make_error_response(id, "invalid_state", "memory reads are only available while paused");
@@ -2402,7 +2428,7 @@ static QDict *ia_handle_read_symbolic_memory(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+    if (!ia_inspection_available_locked()) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(bytes);
         qobject_unref(result);
@@ -2465,7 +2491,7 @@ static QDict *ia_handle_symbolize_memory(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+    if (!ia_inspection_available_locked()) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(bytes);
         qobject_unref(result);
@@ -2531,7 +2557,7 @@ static QDict *ia_handle_symbolize_register(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+    if (!ia_inspection_available_locked()) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(result);
         return ia_make_error_response(id, "invalid_state", "symbolization is only available while paused");
@@ -2729,7 +2755,7 @@ static QDict *ia_handle_disassemble(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
-    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+    if (!ia_inspection_available_locked()) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(instructions);
         qobject_unref(result);
@@ -3053,6 +3079,7 @@ void ia_rpc_init(CPUState *cpu)
     ia_state.write_watchpoint_count = 0;
     ia_clear_watchpoint_match_locked();
     ia_clear_watchpoint_skip_locked();
+    ia_clear_blocked_syscall_locked();
     ia_state.last_block_pc = 0;
     ia_state.last_insn_pc = 0;
     ia_state.last_matched_pc = 0;
@@ -3086,6 +3113,7 @@ void ia_rpc_shutdown(void)
     ia_state.write_watchpoint_count = 0;
     ia_clear_watchpoint_match_locked();
     ia_clear_watchpoint_skip_locked();
+    ia_clear_blocked_syscall_locked();
     ia_state.exec_state = IA_EXEC_EXITED;
     qemu_cond_broadcast(&ia_state.cond);
     if (ia_state.listen_fd >= 0) {
@@ -3223,12 +3251,45 @@ void ia_rpc_set_exec_state(IAExecState state)
     }
     qemu_mutex_lock(&ia_state.lock);
     ia_state.exec_state = state;
+    if (state != IA_EXEC_RUNNING) {
+        ia_clear_blocked_syscall_locked();
+    }
     if (state == IA_EXEC_PAUSED) {
         ia_state.pause_pending = false;
         qemu_cond_broadcast(&ia_state.cond);
     } else if (state == IA_EXEC_EXITED) {
         qemu_cond_broadcast(&ia_state.cond);
     }
+    qemu_mutex_unlock(&ia_state.lock);
+}
+
+void ia_rpc_enter_blocking_syscall(int syscall_nr, const char *name)
+{
+    if (!ia_state.enabled) {
+        return;
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (ia_state.exec_state == IA_EXEC_RUNNING) {
+        ia_state.syscall_blocked = true;
+        ia_state.syscall_blocked_nr = syscall_nr;
+        g_strlcpy(ia_state.syscall_blocked_name,
+                  name ? name : "",
+                  sizeof(ia_state.syscall_blocked_name));
+        qemu_cond_broadcast(&ia_state.cond);
+    }
+    qemu_mutex_unlock(&ia_state.lock);
+}
+
+void ia_rpc_leave_blocking_syscall(void)
+{
+    if (!ia_state.enabled) {
+        return;
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    ia_clear_blocked_syscall_locked();
+    qemu_cond_broadcast(&ia_state.cond);
     qemu_mutex_unlock(&ia_state.lock);
 }
 

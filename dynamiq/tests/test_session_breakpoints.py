@@ -368,6 +368,30 @@ class FakeBackendContinueWatchpoint(FakeBackend):
         return {"session_status": "paused", "pc": "0x401117", "capabilities": self.capabilities()}
 
 
+class FakeBackendContinueBlocked(FakeBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.running = False
+
+    def resume(self, timeout):  # noqa: ANN001
+        del timeout
+        self.running = True
+        return {"state": {"session_status": "running"}, "result": {}}
+
+    def get_state(self):
+        if self.running:
+            self.running = False
+            return {
+                "session_status": "blocked",
+                "stop_reason": "syscall_block",
+                "syscall": "read",
+                "syscall_number": 0,
+                "pc": self.pc_seq[self.idx],
+                "capabilities": self.capabilities(),
+            }
+        return {"session_status": "blocked", "pc": self.pc_seq[self.idx], "capabilities": self.capabilities()}
+
+
 def test_session_bp_run_multiple_breakpoints_selects_nearest_forward() -> None:
     session = AnalysisSession(backend=FakeBackend())
     session.state.session_status = "paused"
@@ -772,6 +796,20 @@ def test_session_advance_continue_watchpoint_hit_reports_watchpoint() -> None:
         "pc": "0x401117",
     }
     assert session.watchpoints == [{"address": "0x41651d47a0", "size": 8, "mode": "write"}]
+
+
+def test_session_advance_continue_reports_blocked_syscall() -> None:
+    backend = FakeBackendContinueBlocked()
+    session = AnalysisSession(backend=backend)
+    session.state.session_status = "paused"
+
+    result = session.advance(mode="continue", timeout=1.0)
+
+    assert result["result"]["mode"] == "continue"
+    assert result["result"]["stop_reason"] == "syscall_block"
+    assert result["result"]["syscall"] == "read"
+    assert result["result"]["syscall_number"] == 0
+    assert result["state"]["session_status"] == "blocked"
 
 
 def test_session_advance_continue_reports_terminal_pause_before_exit() -> None:

@@ -106,6 +106,28 @@ with ScriptSession(target="/bin/ls") as session:
     pass
 ```
 
+### 5. Blocked Syscalls Are Inspectable
+
+When `advance(mode="continue")` returns `session_status == "blocked"` and
+`stop_reason == "syscall_block"`, the guest is sleeping in a host syscall such
+as `read`, `poll`, `recv`, `futex`, or `wait`. Treat that like an inspectable
+stop:
+
+```python
+with ScriptSession(target="/bin/myapp", auto_start=True) as session:
+    stopped = session.advance(mode="continue", timeout=5.0)
+    if stopped["state"]["session_status"] == "blocked":
+        regs = session.get_registers(["rip", "rsp"])
+        maps = session.list_memory_maps()
+        buf = session.symbols(name_filter="input_buf")["result"]["symbols"][0]["loaded_address"]
+        before = session.read_memory(buf, 16)
+        session.symbolize_memory(buf, 16, name="blocked_input")
+```
+
+This is the right time to inspect or symbolize known buffers before sending
+more stdin or calling `close_stdin()`. Do not set blind breakpoints just to make
+the target inspectable.
+
 ## Helper Utilities
 
 Import from `dynamiq.script_helpers`:

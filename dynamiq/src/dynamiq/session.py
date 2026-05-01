@@ -310,7 +310,7 @@ class AnalysisSession:
             state_payload = self.backend.get_state()
             self._merge_state(state_payload)
 
-            if self.state.session_status in {"paused", "idle", "exited", "closed"}:
+            if self.state.session_status in {"paused", "idle", "blocked", "exited", "closed"}:
                 current_pc = self._parse_optional_address(self.state.pc)
                 stop_reason = self._infer_stop_reason(state_payload, current_pc, completed=False)
                 result = {
@@ -318,6 +318,11 @@ class AnalysisSession:
                     "completed": False,
                     "stop_reason": stop_reason,
                 }
+                if self.state.session_status == "blocked":
+                    if isinstance(self.state.syscall, str):
+                        result["syscall"] = self.state.syscall
+                    if isinstance(self.state.syscall_number, int):
+                        result["syscall_number"] = self.state.syscall_number
                 if stop_reason == "paused" and self.state.session_status in {"paused", "idle"}:
                     if self.state.pending_termination:
                         result["stop_reason"] = "termination_pending"
@@ -1136,6 +1141,8 @@ class AnalysisSession:
         ):
             self.state.stop_reason = None
             self.state.watchpoint = None
+            self.state.syscall = None
+            self.state.syscall_number = None
         for key, value in payload.items():
             if hasattr(self.state, key):
                 setattr(self.state, key, value)

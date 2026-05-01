@@ -395,6 +395,18 @@ class BadProtocolInstrumentationRpcClient(FakeInstrumentationRpcClient):
         return super().request(method, params)
 
 
+class BlockedInstrumentationRpcClient(FakeInstrumentationRpcClient):
+    def request(self, method: str, params: dict | None = None, timeout: float | None = None) -> dict:
+        if method == "query_status":
+            return {
+                "status": "blocked",
+                "stop_reason": "syscall_block",
+                "syscall": "read",
+                "syscall_number": 0,
+            }
+        return super().request(method, params, timeout)
+
+
 def test_backend_start_allows_rpc_only_mode() -> None:
     rpc = FakeInstrumentationRpcClient()
     backend = QemuUserInstrumentedBackend(
@@ -1261,6 +1273,24 @@ def test_backend_get_registers_uses_rpc_channel() -> None:
     assert rpc.requests[0] == ("get_registers", {"names": ["rax"]})
     assert result["state"]["registers"]["rip"] == "0x401000"
     assert result["state"]["pc"] == "0x401000"
+
+
+def test_backend_inspection_preserves_blocked_syscall_state() -> None:
+    rpc = BlockedInstrumentationRpcClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {})
+
+    result = backend.get_registers(["rip"])
+
+    assert result["state"]["session_status"] == "blocked"
+    assert result["state"]["stop_reason"] == "syscall_block"
+    assert result["state"]["syscall"] == "read"
+    assert result["state"]["syscall_number"] == 0
+    assert rpc.requests[0] == ("get_registers", {"names": ["rip"]})
 
 
 def test_backend_get_symbolic_expression_uses_rpc_channel() -> None:

@@ -24,6 +24,7 @@ Use this skill when operating the `dynamiq` MCP tools for live binary analysis.
 4. Always inspect after a stop.
 - Common follow-up loop: `state` -> `stdout` -> `stderr`.
 - Then use `regs`, `bt`, `disasm`, `mem`, `expr`, or path-constraint tools as needed.
+- `status: "blocked"` with `stop_reason: "syscall_block"` is inspectable; treat it like a useful stop, not like an error.
 
 5. Close the session when done.
 - Use `close` at the end of a workflow.
@@ -95,6 +96,20 @@ Typical loop:
 3. `stdout`
 4. `stderr`
 5. `state`
+
+If `advance` reports `status: "blocked"` / `stop_reason: "syscall_block"`,
+the guest is sleeping in a host syscall such as `read`, `poll`, `recv`, `futex`,
+or `wait`. Inspection tools still work there:
+- `regs`
+- `mem`
+- `disasm`
+- `maps`
+- `syms`
+- `symbolize_mem`
+
+Use this to inspect parser buffers or symbolize data before sending more input
+or calling `close_stdin`. Avoid setting blind breakpoints just to get an
+inspectable state.
 
 ### Memory search workflow
 

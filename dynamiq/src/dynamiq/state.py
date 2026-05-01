@@ -16,6 +16,8 @@ class ExecutionState:
     args: list[str] = field(default_factory=list)
     cwd: str | None = None
     stop_reason: str | None = None
+    syscall: str | None = None
+    syscall_number: int | None = None
     watchpoint: dict[str, Any] | None = None
     pending_termination: bool = False
     termination_kind: str | None = None
@@ -59,6 +61,8 @@ class ExecutionState:
             "args": list(self.args),
             "cwd": self.cwd,
             "stop_reason": self.stop_reason,
+            "syscall": self.syscall,
+            "syscall_number": self.syscall_number,
             "watchpoint": dict(self.watchpoint) if isinstance(self.watchpoint, dict) else self.watchpoint,
             "pending_termination": self.pending_termination,
             "termination_kind": self.termination_kind,
