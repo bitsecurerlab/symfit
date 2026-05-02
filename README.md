@@ -111,6 +111,10 @@ This checks the x86_64 and AArch64 system-mode binaries by default. It verifies
 and boots generated tiny guest images: an x86 boot sector and an AArch64 raw
 kernel image. The same generated guests are also started paused under QMP and
 resumed with `cont`, which verifies that run control reaches guest execution.
+The smoke test also launches the generated guests with `IA_RPC_SOCKET` and
+checks the direct system-mode IA/RPC surface for capabilities, paused status,
+register reads, memory reads, symbolic-register expression lookup, and recent
+path-constraint retrieval.
 
 ## Using SymFit
 

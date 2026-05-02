@@ -25,8 +25,11 @@
 #include "internals.h"
 #include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
-#ifdef CONFIG_USER_ONLY
+#if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
 #include "linux-user/ia-rpc.h"
+#endif
+#ifdef CONFIG_SOFTMMU
+#include "sysemu/sysemu.h"
 #endif
 
 #define SIGNBIT (uint32_t)0x80000000
@@ -72,7 +75,7 @@ void raise_exception_ra(CPUARMState *env, uint32_t excp, uint32_t syndrome,
     cpu_loop_exit_restore(cs, ra);
 }
 
-#ifdef CONFIG_USER_ONLY
+#if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
 void HELPER(ia_tb_start)(CPUARMState *env, target_ulong pc)
 {
     CPUState *cs = env_cpu(env);
@@ -85,8 +88,13 @@ void HELPER(ia_insn_start)(CPUARMState *env, target_ulong pc)
     CPUState *cs = env_cpu(env);
 
     if (ia_should_stop_before_instruction(cs, pc)) {
+#ifdef CONFIG_USER_ONLY
         cs->exception_index = EXCP_SWITCH;
         cpu_loop_exit_restore(cs, GETPC());
+#else
+        vm_stop(RUN_STATE_PAUSED);
+        cpu_loop_exit_restore(cs, GETPC());
+#endif
     }
 }
 #endif

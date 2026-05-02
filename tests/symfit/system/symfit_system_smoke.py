@@ -305,6 +305,53 @@ def send_qmp_nowait(sock: socket.socket, payload: dict[str, Any]) -> None:
     sock.sendall(json.dumps(payload).encode("utf-8") + b"\n")
 
 
+def read_line_json(sock: socket.socket, protocol: str) -> dict[str, Any]:
+    chunks: list[bytes] = []
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise SmokeFailure(f"{protocol} socket closed before a complete JSON message")
+        chunks.append(chunk)
+        data = b"".join(chunks)
+        if b"\n" in data:
+            line = data.split(b"\n", 1)[0]
+            try:
+                decoded = json.loads(line.decode("utf-8"))
+            except json.JSONDecodeError as exc:
+                raise SmokeFailure(f"invalid {protocol} JSON: {line!r}") from exc
+            if not isinstance(decoded, dict):
+                raise SmokeFailure(f"{protocol} message was not an object: {decoded!r}")
+            return decoded
+
+
+def ia_rpc_connect(rpc_socket: pathlib.Path, process: subprocess.Popen[str], timeout: float) -> socket.socket:
+    wait_for_socket(rpc_socket, process, timeout=timeout)
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.settimeout(timeout)
+        client.connect(str(rpc_socket))
+        return client
+    except Exception:
+        client.close()
+        raise
+
+
+def send_ia_rpc(sock: socket.socket, req_id: int, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"id": req_id, "method": method}
+    if params is not None:
+        payload["params"] = params
+    sock.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+    response = read_line_json(sock, "IA/RPC")
+    if response.get("id") != req_id:
+        raise SmokeFailure(f"IA/RPC response id mismatch: request={req_id}, response={response!r}")
+    if response.get("ok") is not True:
+        raise SmokeFailure(f"IA/RPC {method} failed: {response!r}")
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise SmokeFailure(f"IA/RPC {method} returned malformed result: {response!r}")
+    return result
+
+
 def qmp_connect(qmp_socket: pathlib.Path, process: subprocess.Popen[str], timeout: float) -> socket.socket:
     wait_for_socket(qmp_socket, process, timeout=timeout)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -684,6 +731,199 @@ def check_aarch64_qmp_boot_image(binary: pathlib.Path, marker: str, timeout: flo
             terminate_process(process)
 
 
+def check_x86_ia_rpc_boot_image(binary: pathlib.Path, marker: str, timeout: float) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="symfit-x86-ia-vm-") as tmpdir:
+        tmp = pathlib.Path(tmpdir)
+        image = tmp / "boot.img"
+        serial = tmp / "serial.log"
+        rpc_socket = tmp / "ia.sock"
+        write_x86_boot_sector(image, marker)
+        command = x86_boot_command(binary, image, serial)
+        env = os.environ.copy()
+        env["IA_RPC_SOCKET"] = str(rpc_socket)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            with ia_rpc_connect(rpc_socket, process, timeout=timeout) as client:
+                req_id = 1
+                capabilities = send_ia_rpc(client, req_id, "capabilities")
+                req_id += 1
+                caps = capabilities.get("capabilities")
+                if not isinstance(caps, dict):
+                    raise SmokeFailure(f"IA/RPC capabilities malformed: {capabilities!r}")
+                for key in (
+                    "pause_resume",
+                    "read_registers",
+                    "read_memory",
+                    "read_symbolic_expression",
+                    "read_path_constraints",
+                    "read_recent_path_constraints",
+                    "symbolize_register",
+                ):
+                    if caps.get(key) is not True:
+                        raise SmokeFailure(f"IA/RPC missing expected capability {key!r}: {caps!r}")
+
+                status = send_ia_rpc(client, req_id, "query_status")
+                req_id += 1
+                if status.get("status") != "paused":
+                    raise SmokeFailure(f"IA/RPC did not start paused: {status!r}")
+                if marker in read_file(serial):
+                    raise SmokeFailure(f"{binary.name} x86 guest ran before IA/RPC resume")
+
+                registers = send_ia_rpc(
+                    client,
+                    req_id,
+                    "get_registers",
+                    {"names": ["rip", "rsp", "rax"]},
+                )
+                req_id += 1
+                if "registers" not in registers:
+                    raise SmokeFailure(f"IA/RPC get_registers malformed: {registers!r}")
+
+                symbolic_register = send_ia_rpc(
+                    client,
+                    req_id,
+                    "symbolize_register",
+                    {"register": "rax"},
+                )
+                req_id += 1
+                label = symbolic_register.get("label")
+                if not isinstance(label, str) or not label.startswith("0x"):
+                    raise SmokeFailure(f"IA/RPC symbolize_register malformed: {symbolic_register!r}")
+                expression = send_ia_rpc(client, req_id, "get_symbolic_expression", {"label": label})
+                req_id += 1
+                if expression.get("label") != label:
+                    raise SmokeFailure(f"IA/RPC symbolic expression mismatch: {expression!r}")
+
+                memory = send_ia_rpc(
+                    client,
+                    req_id,
+                    "read_memory",
+                    {"address": "0x7c00", "size": 4, "address_space": "physical"},
+                )
+                req_id += 1
+                if not isinstance(memory.get("bytes"), str) or len(memory["bytes"]) != 8:
+                    raise SmokeFailure(f"IA/RPC physical read malformed: {memory!r}")
+
+                recent = send_ia_rpc(client, req_id, "get_recent_path_constraints", {"limit": 4})
+                req_id += 1
+                if not isinstance(recent.get("constraints"), list):
+                    raise SmokeFailure(f"IA/RPC recent path constraints malformed: {recent!r}")
+
+                send_ia_rpc(client, req_id, "close")
+            returncode = process.wait(timeout=timeout)
+            return {
+                "image": "x86_boot_sector",
+                "status": status["status"],
+                "memory_bytes": memory["bytes"],
+                "returncode": returncode,
+            }
+        finally:
+            terminate_process(process)
+
+
+def check_aarch64_ia_rpc_boot_image(binary: pathlib.Path, marker: str, timeout: float) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="symfit-aarch64-ia-vm-") as tmpdir:
+        tmp = pathlib.Path(tmpdir)
+        image = tmp / "kernel.img"
+        serial = tmp / "serial.log"
+        rpc_socket = tmp / "ia.sock"
+        write_aarch64_kernel(image, marker)
+        image_prefix = image.read_bytes()[:4].hex()
+        command = aarch64_boot_command(binary, image, serial)
+        env = os.environ.copy()
+        env["IA_RPC_SOCKET"] = str(rpc_socket)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            with ia_rpc_connect(rpc_socket, process, timeout=timeout) as client:
+                req_id = 1
+                capabilities = send_ia_rpc(client, req_id, "capabilities")
+                req_id += 1
+                caps = capabilities.get("capabilities")
+                if not isinstance(caps, dict):
+                    raise SmokeFailure(f"IA/RPC capabilities malformed: {capabilities!r}")
+                for key in (
+                    "pause_resume",
+                    "read_registers",
+                    "read_memory",
+                    "read_symbolic_expression",
+                    "read_path_constraints",
+                    "read_recent_path_constraints",
+                    "symbolize_register",
+                ):
+                    if caps.get(key) is not True:
+                        raise SmokeFailure(f"IA/RPC missing expected capability {key!r}: {caps!r}")
+
+                status = send_ia_rpc(client, req_id, "query_status")
+                req_id += 1
+                if status.get("status") != "paused":
+                    raise SmokeFailure(f"IA/RPC did not start paused: {status!r}")
+                if marker in read_file(serial):
+                    raise SmokeFailure(f"{binary.name} AArch64 guest ran before IA/RPC resume")
+
+                registers = send_ia_rpc(
+                    client,
+                    req_id,
+                    "get_registers",
+                    {"names": ["pc", "sp", "x0"]},
+                )
+                req_id += 1
+                if "registers" not in registers:
+                    raise SmokeFailure(f"IA/RPC get_registers malformed: {registers!r}")
+
+                symbolic_register = send_ia_rpc(
+                    client,
+                    req_id,
+                    "symbolize_register",
+                    {"register": "x0"},
+                )
+                req_id += 1
+                label = symbolic_register.get("label")
+                if not isinstance(label, str) or not label.startswith("0x"):
+                    raise SmokeFailure(f"IA/RPC symbolize_register malformed: {symbolic_register!r}")
+                expression = send_ia_rpc(client, req_id, "get_symbolic_expression", {"label": label})
+                req_id += 1
+                if expression.get("label") != label:
+                    raise SmokeFailure(f"IA/RPC symbolic expression mismatch: {expression!r}")
+
+                memory = send_ia_rpc(
+                    client,
+                    req_id,
+                    "read_memory",
+                    {"address": "0x40080000", "size": 4, "address_space": "physical"},
+                )
+                req_id += 1
+                if memory.get("bytes") != image_prefix:
+                    raise SmokeFailure(f"IA/RPC physical read mismatch: expected {image_prefix}, got {memory!r}")
+
+                recent = send_ia_rpc(client, req_id, "get_recent_path_constraints", {"limit": 4})
+                req_id += 1
+                if not isinstance(recent.get("constraints"), list):
+                    raise SmokeFailure(f"IA/RPC recent path constraints malformed: {recent!r}")
+
+                send_ia_rpc(client, req_id, "close")
+            returncode = process.wait(timeout=timeout)
+            return {
+                "image": "aarch64_raw_kernel",
+                "status": status["status"],
+                "memory_prefix": image_prefix,
+                "returncode": returncode,
+            }
+        finally:
+            terminate_process(process)
+
+
 def check_boot_image(arch: str, binary: pathlib.Path, marker: str, timeout: float) -> dict[str, Any]:
     if arch == "x86_64":
         return check_x86_boot_image(binary, marker=marker, timeout=timeout)
@@ -698,6 +938,14 @@ def check_qmp_boot_image(arch: str, binary: pathlib.Path, marker: str, timeout: 
     if arch == "aarch64":
         return check_aarch64_qmp_boot_image(binary, marker=marker, timeout=timeout)
     raise SmokeFailure(f"unsupported system QMP boot-image arch: {arch}")
+
+
+def check_ia_rpc_boot_image(arch: str, binary: pathlib.Path, marker: str, timeout: float) -> dict[str, Any]:
+    if arch == "x86_64":
+        return check_x86_ia_rpc_boot_image(binary, marker=marker, timeout=timeout)
+    if arch == "aarch64":
+        return check_aarch64_ia_rpc_boot_image(binary, marker=marker, timeout=timeout)
+    raise SmokeFailure(f"unsupported system IA/RPC boot-image arch: {arch}")
 
 
 def run_target(arch: str, build_dir: pathlib.Path, timeout: float) -> dict[str, Any]:
@@ -725,6 +973,10 @@ def run_target(arch: str, build_dir: pathlib.Path, timeout: float) -> dict[str, 
         "qmp_boot_image": run_step(
             f"{arch} QMP boot image",
             lambda: check_qmp_boot_image(arch, binary, marker=boot_marker, timeout=timeout),
+        ),
+        "ia_rpc_boot_image": run_step(
+            f"{arch} IA/RPC boot image",
+            lambda: check_ia_rpc_boot_image(arch, binary, marker=boot_marker, timeout=timeout),
         ),
     }
 
@@ -762,9 +1014,10 @@ def main() -> int:
             status = summary["qmp_launch"]["qmp_status"]["status"]
             image = summary["boot_image"]["image"]
             qmp_image = summary["qmp_boot_image"]["image"]
+            ia_image = summary["ia_rpc_boot_image"]["image"]
             print(
                 f"{summary['arch']}: {pathlib.Path(summary['binary']).name} ok "
-                f"(QMP status={status}, boot={image}, qmp_boot={qmp_image})"
+                f"(QMP status={status}, boot={image}, qmp_boot={qmp_image}, ia_rpc={ia_image})"
             )
         print("SymFit system-mode smoke test passed")
     return 0

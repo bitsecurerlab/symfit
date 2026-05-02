@@ -153,6 +153,7 @@ endif #CONFIG_BSD_USER
 # System emulator target
 ifdef CONFIG_SOFTMMU
 obj-y += arch_init.o cpus.o gdbstub.o balloon.o ioport.o
+obj-y += ia-rpc-softmmu.o
 obj-y += qtest.o
 obj-y += dump/
 obj-y += hw/

@@ -131,6 +131,9 @@ int main(int argc, char **argv)
 #include "sysemu/iothread.h"
 #include "qemu/guest-random.h"
 
+void ia_rpc_init(CPUState *cpu);
+void ia_rpc_shutdown(void);
+
 #define MAX_VIRTIO_CONSOLES 1
 
 static const char *data_dir[16];
@@ -4465,6 +4468,15 @@ int main(int argc, char **argv, char **envp)
         replay_vmstate_init();
     }
 
+    if (getenv("IA_RPC_SOCKET")) {
+        if (first_cpu) {
+            autostart = 0;
+            ia_rpc_init(first_cpu);
+        } else {
+            error_report("ia-rpc: IA_RPC_SOCKET requested but no CPU exists");
+        }
+    }
+
     qdev_prop_check_globals();
     if (vmstate_dump_file) {
         /* dump and exit */
@@ -4492,6 +4504,7 @@ int main(int argc, char **argv, char **envp)
     if (telemetry_enabled) {
         telemetry_shutdown();
     }
+    ia_rpc_shutdown();
 
     /*
      * cleaning up the migration object cancels any existing migration

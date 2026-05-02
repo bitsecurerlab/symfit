@@ -10,7 +10,12 @@ The design goal is one backend surface that supports:
 
 ## Scope
 
-This contract targets Linux user-mode (`x86_64-linux-user`) first.
+This contract targets the same direct IA/RPC surface in Linux user-mode
+(`*-linux-user`) and system-mode (`*-softmmu`) SymFit binaries. System-mode
+launches may still use QMP for VM lifecycle control, but interactive
+inspection methods such as register reads, memory reads, symbolization, and
+path-constraint retrieval are exposed through `IA_RPC_SOCKET`, not tunneled
+through QMP.
 
 Transports:
 

@@ -8556,7 +8556,7 @@ static void i386_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
 
 static void i386_tr_tb_start(DisasContextBase *db, CPUState *cpu)
 {
-#ifdef CONFIG_USER_ONLY
+#if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
     gen_helper_ia_tb_start(cpu_env, tcg_const_tl(db->pc_first));
 #endif
 }
@@ -8566,7 +8566,7 @@ static void i386_tr_insn_start(DisasContextBase *dcbase, CPUState *cpu)
     DisasContext *dc = container_of(dcbase, DisasContext, base);
 
     tcg_gen_insn_start(dc->base.pc_next, dc->cc_op);
-#ifdef CONFIG_USER_ONLY
+#if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
     gen_helper_ia_insn_start(cpu_env, tcg_const_tl(dc->base.pc_next));
 #endif
 }

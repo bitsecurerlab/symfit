@@ -14210,7 +14210,7 @@ static void aarch64_tr_init_disas_context(DisasContextBase *dcbase,
 
 static void aarch64_tr_tb_start(DisasContextBase *db, CPUState *cpu)
 {
-#ifdef CONFIG_USER_ONLY
+#if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
     gen_helper_ia_tb_start(cpu_env, tcg_const_tl(db->pc_first));
 #endif
 }
@@ -14221,7 +14221,7 @@ static void aarch64_tr_insn_start(DisasContextBase *dcbase, CPUState *cpu)
 
     tcg_gen_insn_start(dc->pc, 0, 0);
     dc->insn_start = tcg_last_op();
-#ifdef CONFIG_USER_ONLY
+#if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
     gen_helper_ia_insn_start(cpu_env, tcg_const_tl(dc->pc));
 #endif
 }

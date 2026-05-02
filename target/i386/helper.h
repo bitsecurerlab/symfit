@@ -81,7 +81,7 @@ DEF_HELPER_2(cmpxchg16b, void, env, tl)
 DEF_HELPER_1(single_step, void, env)
 DEF_HELPER_1(rechecking_single_step, void, env)
 DEF_HELPER_1(cpuid, void, env)
-#ifdef CONFIG_USER_ONLY
+#if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
 DEF_HELPER_2(ia_tb_start, void, env, tl)
 DEF_HELPER_2(ia_insn_start, void, env, tl)
 #endif
