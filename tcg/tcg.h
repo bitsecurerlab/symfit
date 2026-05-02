@@ -270,7 +270,12 @@ typedef struct TCGPool {
 
 #define TCG_POOL_CHUNK_SIZE 32768
 
+// New additions to tcg-op.c are using more temps, so this was raised
+#ifdef CONFIG_2nd_CCACHE
+#define TCG_MAX_TEMPS 1024
+#else
 #define TCG_MAX_TEMPS 512
+#endif
 #define TCG_MAX_INSNS 512
 
 /* when the size of the arguments of a called function is smaller than

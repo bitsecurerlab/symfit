@@ -1270,6 +1270,7 @@ void HELPER(symsan_store_guest_i64)(CPUArchState *env, uint64_t value_label,
     symsan_store_guest_internal(env, value_label, addr, addr_label, length, mmu_idx);
 }
 
+#ifdef CONFIG_USER_ONLY
 void HELPER(symsan_watch_store_guest)(CPUArchState *env, target_ulong addr,
                                       uint64_t length)
 {
@@ -1277,6 +1278,7 @@ void HELPER(symsan_watch_store_guest)(CPUArchState *env, target_ulong addr,
         symsan_stop_for_write_watchpoint(env);
     }
 }
+#endif
 
 void HELPER(symsan_store_host_i32)(uint64_t value_label,
                                 void *addr,

@@ -3518,6 +3518,9 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 
     if ((orig_memop ^ memop) & MO_BSWAP) {
         switch (orig_memop & MO_SIZE) {
+        case MO_8:
+            /* Single byte - bswap is a no-op */
+        break;
         case MO_16:
             tcg_gen_bswap16_i32(val, val);
             if (orig_memop & MO_SIGN) {
@@ -3563,7 +3566,9 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     TCGv_i64 mmu_idx = tcg_const_i64(idx); // TO DO: Should we be using the 32-bit equivalent for this op?
     store_size = tcg_const_i64(1 << (memop & MO_SIZE));
 
+    #ifdef CONFIG_USER_ONLY
     gen_helper_symsan_watch_store_guest(cpu_env, addr, store_size);
+    #endif
     gen_ldst_i32(INDEX_op_qemu_st_i32, val, addr, memop, idx);
 
     /* Perform the symbolic memory access. Doing so _after_ the concrete
@@ -3660,6 +3665,9 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 
     if ((orig_memop ^ memop) & MO_BSWAP) {
         switch (orig_memop & MO_SIZE) {
+        case MO_8:
+            /* Single byte - bswap is a no-op */
+        break;
         case MO_16:
             tcg_gen_bswap16_i64(val, val);
             if (orig_memop & MO_SIGN) {
@@ -3719,7 +3727,9 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     
     TCGv_i64 mmu_idx = tcg_const_i64(idx);
     store_size = tcg_const_i64(1 << (memop & MO_SIZE));
+    #ifdef CONFIG_USER_ONLY
     gen_helper_symsan_watch_store_guest(cpu_env, addr, store_size);
+    #endif
     gen_ldst_i64(INDEX_op_qemu_st_i64, val, addr, memop, idx);
     /* Perform the symbolic memory access. Doing so _after_ the concrete
      * operation ensures that the target address is in the TLB. */

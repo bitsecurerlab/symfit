@@ -1366,13 +1366,13 @@ TCGTemp *tcg_temp_new_internal(TCGType type, bool temp_local)
         tcg_debug_assert(ts->base_type == type);
         tcg_debug_assert(ts->temp_local == temp_local);
 #ifdef CONFIG_2nd_CCACHE
-        if (second_ccache_flag) {
+        //if (second_ccache_flag) {
         ts_expr = &s->temps[idx+1];
         ts_expr->temp_allocated = 1;
         ts_expr->symbolic_expression = 1;
         tcg_debug_assert(ts_expr->base_type == TCG_TYPE_PTR);
         tcg_debug_assert(ts_expr->temp_local == temp_local);
-        }
+        //}
 #else
         ts_expr = &s->temps[idx+1];
         ts_expr->temp_allocated = 1;
@@ -1402,14 +1402,14 @@ TCGTemp *tcg_temp_new_internal(TCGType type, bool temp_local)
             ts->temp_local = temp_local;
         }
 #ifdef CONFIG_2nd_CCACHE
-        if (second_ccache_flag) {
+        //if (second_ccache_flag) {
         ts_expr = tcg_temp_alloc(s);
         ts_expr->base_type = TCG_TYPE_PTR;
         ts_expr->type = TCG_TYPE_PTR;
         ts_expr->temp_allocated = 1;
         ts_expr->temp_local = temp_local;
         ts_expr->symbolic_expression = 1;
-        }
+        //}
 #else
         ts_expr = tcg_temp_alloc(s);
         ts_expr->base_type = TCG_TYPE_PTR;
@@ -1478,12 +1478,12 @@ void tcg_temp_free_internal(TCGTemp *ts)
     tcg_debug_assert(ts->temp_allocated != 0);
     ts->temp_allocated = 0;
 #ifdef CONFIG_2nd_CCACHE
-    if (second_ccache_flag) {
+    //if (second_ccache_flag) {
     TCGTemp *ts_expr = temp_expr(ts);
     tcg_debug_assert(ts_expr->temp_global == 0);
     tcg_debug_assert(ts_expr->temp_allocated != 0);
     ts_expr->temp_allocated = 0;
-    }
+    //}
 #else
     TCGTemp *ts_expr = temp_expr(ts);
     tcg_debug_assert(ts_expr->temp_global == 0);
