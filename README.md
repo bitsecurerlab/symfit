@@ -14,7 +14,7 @@ SymFit now carries its companion projects in this repository:
 - `symsan/` - Symsan compiler, runtime, and solver sources
 - `dynamiq/` - Python control and analysis tooling for live SymFit sessions
 - `mcp-server/` - Node.js MCP server for campaign-style automation
-- `tests/symfit/` - concolic and IA/RPC smoke tests
+- `tests/symfit/` - concolic, IA/RPC, and system-mode smoke tests
 - `docs/interactive_scripting_contract.md` - IA/RPC contract for interactive analysis
 
 Generated Symsan installs and libc++ build outputs are intentionally not tracked.
@@ -97,6 +97,20 @@ For AArch64 user-mode only:
 ```bash
 SYMFIT_TARGET_LIST=aarch64-linux-user ./build.sh
 ```
+
+### System-Mode Smoke Test
+
+To validate the `symfit-system-*` binaries from a local build:
+
+```bash
+tests/symfit/system/run_symfit_system_smoke.sh
+```
+
+This checks the x86_64 and AArch64 system-mode binaries by default. It verifies
+`--version`, machine discovery, a paused `-machine none` QMP launch/quit cycle,
+and boots generated tiny guest images: an x86 boot sector and an AArch64 raw
+kernel image. The same generated guests are also started paused under QMP and
+resumed with `cont`, which verifies that run control reaches guest execution.
 
 ## Using SymFit
 
