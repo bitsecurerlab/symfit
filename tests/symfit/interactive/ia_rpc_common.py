@@ -48,6 +48,21 @@ def rpc_call(stream, req_id: int, method: str, params=None):
     return response["result"]
 
 
+def is_terminal_pause(status) -> bool:
+    return (
+        isinstance(status, dict)
+        and status.get("status") == "paused"
+        and status.get("pending_termination") is True
+    )
+
+
+def finalize_terminal_pause(stream, req_id: int, status):
+    if not is_terminal_pause(status):
+        return None, req_id
+    result = rpc_call(stream, req_id, "close")
+    return result, req_id + 1
+
+
 def make_fgtest_env(base_env):
     env = dict(base_env)
     tmpdir = tempfile.TemporaryDirectory(prefix="symfit-ia-")

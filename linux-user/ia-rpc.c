@@ -98,6 +98,7 @@ typedef struct IAState {
     IAExecState exec_state;
     bool syscall_blocked;
     int syscall_blocked_nr;
+    int syscall_blocked_fd;
     char syscall_blocked_name[32];
     int exit_code;
     bool has_exit_code;
@@ -268,6 +269,7 @@ static void ia_clear_blocked_syscall_locked(void)
 {
     ia_state.syscall_blocked = false;
     ia_state.syscall_blocked_nr = 0;
+    ia_state.syscall_blocked_fd = -1;
     ia_state.syscall_blocked_name[0] = '\0';
 }
 
@@ -1609,6 +1611,9 @@ static QDict *ia_handle_query_status(int64_t id)
     if (ia_state.exec_state == IA_EXEC_RUNNING && ia_state.syscall_blocked) {
         qdict_put_str(result, "stop_reason", "syscall_block");
         qdict_put_int(result, "syscall_number", ia_state.syscall_blocked_nr);
+        if (ia_state.syscall_blocked_fd >= 0) {
+            qdict_put_int(result, "syscall_fd", ia_state.syscall_blocked_fd);
+        }
         if (ia_state.syscall_blocked_name[0] != '\0') {
             qdict_put_str(result, "syscall", ia_state.syscall_blocked_name);
         }
@@ -1751,7 +1756,9 @@ static QDict *ia_handle_resume(int64_t id)
     qemu_mutex_lock(&ia_state.lock);
     ia_clear_watchpoint_match_locked();
     ia_state.run_requested = true;
-    if (!ia_state.pending_termination) {
+    if (ia_state.pending_termination) {
+        ia_state.start_paused = false;
+    } else {
         ia_state.exec_state = IA_EXEC_RUNNING;
     }
     qemu_cond_signal(&ia_state.cond);
@@ -3344,8 +3351,6 @@ bool ia_rpc_finalize_pending_termination(CPUArchState *env)
     IATerminationKind kind;
     int code;
     int sig;
-    int si_code;
-    uint64_t fault_addr;
 
     if (!ia_state.enabled) {
         return false;
@@ -3360,8 +3365,6 @@ bool ia_rpc_finalize_pending_termination(CPUArchState *env)
     kind = ia_state.termination_kind;
     code = ia_state.exit_code;
     sig = ia_state.termination_signal;
-    si_code = ia_state.termination_si_code;
-    fault_addr = ia_state.termination_fault_addr;
     ia_state.pending_termination = false;
     ia_state.termination_kind = IA_TERM_NONE;
     ia_state.termination_signal = 0;
@@ -3381,15 +3384,10 @@ bool ia_rpc_finalize_pending_termination(CPUArchState *env)
         _exit(code);
         break;
     case IA_TERM_SIGNAL: {
-        target_siginfo_t info;
-        memset(&info, 0, sizeof(info));
-        info.si_signo = sig;
-        info.si_errno = 0;
-        info.si_code = si_code;
-        info._sifields._sigfault._addr = (abi_ulong)fault_addr;
-        queue_signal(env, sig, QEMU_SI_FAULT, &info);
-        process_pending_signals(env);
-        return true;
+        int exit_status = 128 + sig;
+        preexit_cleanup(env, exit_status);
+        _exit(exit_status);
+        break;
     }
     case IA_TERM_NONE:
     default:
@@ -3418,7 +3416,7 @@ void ia_rpc_set_exec_state(IAExecState state)
     qemu_mutex_unlock(&ia_state.lock);
 }
 
-void ia_rpc_enter_blocking_syscall(int syscall_nr, const char *name)
+void ia_rpc_enter_blocking_syscall_fd(int syscall_nr, const char *name, int fd)
 {
     if (!ia_state.enabled) {
         return;
@@ -3428,12 +3426,18 @@ void ia_rpc_enter_blocking_syscall(int syscall_nr, const char *name)
     if (ia_state.exec_state == IA_EXEC_RUNNING) {
         ia_state.syscall_blocked = true;
         ia_state.syscall_blocked_nr = syscall_nr;
+        ia_state.syscall_blocked_fd = fd;
         g_strlcpy(ia_state.syscall_blocked_name,
                   name ? name : "",
                   sizeof(ia_state.syscall_blocked_name));
         qemu_cond_broadcast(&ia_state.cond);
     }
     qemu_mutex_unlock(&ia_state.lock);
+}
+
+void ia_rpc_enter_blocking_syscall(int syscall_nr, const char *name)
+{
+    ia_rpc_enter_blocking_syscall_fd(syscall_nr, name, -1);
 }
 
 void ia_rpc_leave_blocking_syscall(void)

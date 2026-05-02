@@ -20,7 +20,7 @@ if [[ "$RUNNER" == "fgtest" && ! -x "$FGTEST" ]]; then
   exit 1
 fi
 
-exec "$SCRIPT_DIR/ia_rpc_expr_smoke.py" \
+exec python3 "$SCRIPT_DIR/ia_rpc_expr_smoke.py" \
   --runner "$RUNNER" \
   --symfit "$SYMFIT" \
   --fgtest "$FGTEST" \

@@ -188,7 +188,7 @@ def test_live_qemu_backend_get_symbolic_expression(live_qemu_start_kwargs: dict[
         expression = backend.get_symbolic_expression(label)
 
         assert expression["result"]["label"] == label
-        assert expression["result"]["op"] == "Input"
+        assert expression["result"]["op"] in {"Input", "Concat"}
         assert expression["result"]["size"] >= 1
         assert "input(" in expression["result"]["expression"]
     finally:

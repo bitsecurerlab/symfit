@@ -8,7 +8,15 @@ import subprocess
 import sys
 import time
 
-from ia_rpc_common import connect_rpc_socket, launch_backend, read_process_logs, rpc_call, wait_for_socket
+from ia_rpc_common import (
+    connect_rpc_socket,
+    finalize_terminal_pause,
+    is_terminal_pause,
+    launch_backend,
+    read_process_logs,
+    rpc_call,
+    wait_for_socket,
+)
 
 
 def ensure_expr_target(script_dir: pathlib.Path) -> str:
@@ -136,6 +144,10 @@ def main():
             time.sleep(0.05)
         summary["query_status_final"] = final_status
 
+        finalized, req_id = finalize_terminal_pause(stream, req_id, final_status)
+        if finalized is not None:
+            summary["finalize_terminal_pause"] = finalized
+
         print("IA/RPC expression smoke test passed")
         print(json.dumps(summary, indent=2))
 
@@ -152,7 +164,7 @@ def main():
             return 1
 
         expression = summary["get_symbolic_expression"]["expression"]
-        if "Add:" not in expression or "Xor:" not in expression:
+        if summary["get_symbolic_expression"].get("op") != "Xor" or "+" not in expression:
             print(f"Expected a derived expression, got: {expression}", file=sys.stderr)
             return 1
         if "input(" not in expression:
@@ -167,7 +179,10 @@ def main():
         if summary["registers_after"]["symbolic_registers"]["rbx"]["symbolic"] is not True:
             print("Expected rbx to become symbolic after derived arithmetic", file=sys.stderr)
             return 1
-        if summary["query_status_final"].get("status") != "exited":
+        if (
+            summary["query_status_final"].get("status") != "exited"
+            and not is_terminal_pause(summary["query_status_final"])
+        ):
             print("Expected helper target to exit after resume", file=sys.stderr)
             return 1
 

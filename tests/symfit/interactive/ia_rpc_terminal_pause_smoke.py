@@ -96,8 +96,8 @@ def run_case(args, target_path: str, mode: str, final_method: str):
                 raise RuntimeError(f"crash: expected SIGSEGV(11), got {terminal_status}")
             if terminal_status.get("termination_fault_address") != "0x0":
                 raise RuntimeError(f"crash: expected fault addr 0x0, got {terminal_status}")
-            if rc >= 0:
-                raise RuntimeError(f"crash: expected signal termination, got returncode {rc}")
+            if rc not in {-11, 128 + 11}:
+                raise RuntimeError(f"crash: expected SIGSEGV termination, got returncode {rc}")
 
         return summary
 

@@ -79,6 +79,7 @@ class QemuUserInstrumentedBackend:
             "stop_reason": None,
             "syscall": None,
             "syscall_number": None,
+            "syscall_fd": None,
             "watchpoint": None,
             "last_rpc_method": None,
             "last_rpc_timeout": None,
@@ -231,6 +232,7 @@ class QemuUserInstrumentedBackend:
                     "stop_reason": None,
                     "syscall": None,
                     "syscall_number": None,
+                    "syscall_fd": None,
                     "watchpoint": None,
                     "exit_code": None,
                     "exit_signal": None,
@@ -779,6 +781,7 @@ class QemuUserInstrumentedBackend:
         self._state["stop_reason"] = None
         self._state["syscall"] = None
         self._state["syscall_number"] = None
+        self._state["syscall_fd"] = None
         self._state["watchpoint"] = None
         self._state["exit_code"] = None
         self._state["exit_signal"] = None
@@ -1061,6 +1064,7 @@ class QemuUserInstrumentedBackend:
             self._state["stop_reason"] = None
             self._state["syscall"] = None
             self._state["syscall_number"] = None
+            self._state["syscall_fd"] = None
             self._state["watchpoint"] = None
         if "syscall" in payload:
             syscall = payload.get("syscall")
@@ -1072,6 +1076,11 @@ class QemuUserInstrumentedBackend:
             self._state["syscall_number"] = syscall_number if isinstance(syscall_number, int) else None
         elif payload.get("status") != "blocked":
             self._state["syscall_number"] = None
+        if "syscall_fd" in payload:
+            syscall_fd = payload.get("syscall_fd")
+            self._state["syscall_fd"] = syscall_fd if isinstance(syscall_fd, int) else None
+        elif payload.get("status") != "blocked":
+            self._state["syscall_fd"] = None
         if "watchpoint" in payload:
             watchpoint = payload.get("watchpoint")
             self._state["watchpoint"] = dict(watchpoint) if isinstance(watchpoint, dict) else None

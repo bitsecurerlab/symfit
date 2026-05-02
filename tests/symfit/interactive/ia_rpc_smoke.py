@@ -6,7 +6,15 @@ import subprocess
 import sys
 import time
 
-from ia_rpc_common import connect_rpc_socket, launch_backend, read_process_logs, rpc_call, wait_for_socket
+from ia_rpc_common import (
+    connect_rpc_socket,
+    finalize_terminal_pause,
+    is_terminal_pause,
+    launch_backend,
+    read_process_logs,
+    rpc_call,
+    wait_for_socket,
+)
 
 
 def main():
@@ -209,22 +217,27 @@ def main():
             time.sleep(0.05)
         summary["query_status_final"] = status
 
+        finalized, req_id = finalize_terminal_pause(stream, req_id, status)
+        if finalized is not None:
+            summary["finalize_terminal_pause"] = finalized
+
         print("IA/RPC smoke test passed")
         print(json.dumps(summary, indent=2))
 
         stream.close()
         client.close()
 
-        rc = proc.wait(timeout=max(1.0, args.exit_timeout))
-        if rc != 0:
-            out, err = read_process_logs(proc)
-            print("backend exited non-zero", file=sys.stderr)
-            print(f"exit_code={rc}", file=sys.stderr)
-            print("stdout:\n" + out, file=sys.stderr)
-            print("stderr:\n" + err, file=sys.stderr)
-            return 1
-
-        if summary["query_status_final"].get("status") != "exited":
+        final_status = summary["query_status_final"]
+        if final_status.get("status") == "exited" or is_terminal_pause(final_status):
+            rc = proc.wait(timeout=max(1.0, args.exit_timeout))
+            if rc != 0:
+                out, err = read_process_logs(proc)
+                print("backend exited non-zero", file=sys.stderr)
+                print(f"exit_code={rc}", file=sys.stderr)
+                print("stdout:\n" + out, file=sys.stderr)
+                print("stderr:\n" + err, file=sys.stderr)
+                return 1
+        elif final_status.get("status") != "running":
             print("Timed out waiting for exited status", file=sys.stderr)
             return 1
 

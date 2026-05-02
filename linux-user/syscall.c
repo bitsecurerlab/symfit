@@ -7360,7 +7360,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                 return -TARGET_EFAULT;
             //ret = get_errno(read_symbolized(arg1, p, arg3));
             //ret = get_errno(read_flag_symbolized(arg1, p, arg3, &isSymbolicPage));
-            ia_rpc_enter_blocking_syscall(__NR_read, "read");
+            ia_rpc_enter_blocking_syscall_fd(__NR_read, "read", arg1);
             ret = get_errno(__dfsan_read(arg1, p, arg3, &isSymbolicPage));
             ia_rpc_leave_blocking_syscall();
             /*zx012 if symbolic, clear the corresponding entry in user tlb*/

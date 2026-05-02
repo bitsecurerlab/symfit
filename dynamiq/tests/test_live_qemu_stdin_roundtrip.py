@@ -121,7 +121,7 @@ def test_live_session_advance_continue_stops_on_io_and_exit(tmp_path: Path) -> N
         second = session.advance(mode="continue", timeout=3.0)
         assert second["result"]["mode"] == "continue"
         assert second["result"]["completed"] is False
-        assert second["result"]["stop_reason"] == "exited"
+        assert second["result"]["stop_reason"] in {"exited", "termination_pending"}
 
         stdout = session.read_stdout(max_chars=4096)["result"]["data"]
         assert "ECHO:ping" in stdout
@@ -132,6 +132,8 @@ def test_live_session_advance_continue_stops_on_io_and_exit(tmp_path: Path) -> N
             final_state = session.get_state()["state"]
             if final_state.get("session_status") == "exited":
                 break
+            if final_state.get("session_status") == "paused" and final_state.get("pending_termination"):
+                session.resume(timeout=3.0)
             time.sleep(0.05)
 
         assert isinstance(final_state, dict)

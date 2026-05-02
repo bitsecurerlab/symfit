@@ -39,6 +39,7 @@ bool ia_rpc_queue_stdin_chunk(uint64_t size, bool symbolic,
                               uint64_t *stream_offset, Error **errp);
 void ia_rpc_consume_stdin_read(int fd, void *host_buf, size_t size);
 void ia_rpc_enter_blocking_syscall(int syscall_nr, const char *name);
+void ia_rpc_enter_blocking_syscall_fd(int syscall_nr, const char *name, int fd);
 void ia_rpc_leave_blocking_syscall(void);
 
 #endif

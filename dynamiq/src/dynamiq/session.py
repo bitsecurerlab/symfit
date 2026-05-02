@@ -318,11 +318,21 @@ class AnalysisSession:
                     "completed": False,
                     "stop_reason": stop_reason,
                 }
+                if self._is_stdin_io_block():
+                    result["stop_reason"] = "io"
+                    result["stdout_ready"] = False
+                    result["stderr_ready"] = False
+                    self.state.session_status = "paused"
+                    if isinstance(self.state.pc, str):
+                        result["pc"] = self.state.pc
+                    return self._response("advance", result)
                 if self.state.session_status == "blocked":
                     if isinstance(self.state.syscall, str):
                         result["syscall"] = self.state.syscall
                     if isinstance(self.state.syscall_number, int):
                         result["syscall_number"] = self.state.syscall_number
+                    if isinstance(self.state.syscall_fd, int):
+                        result["syscall_fd"] = self.state.syscall_fd
                 if stop_reason == "paused" and self.state.session_status in {"paused", "idle"}:
                     if self.state.pending_termination:
                         result["stop_reason"] = "termination_pending"
@@ -378,10 +388,20 @@ class AnalysisSession:
             "stop_reason": stop_reason,
         }
         if self.state.session_status == "blocked":
+            if self._is_stdin_io_block():
+                self.state.session_status = "paused"
+                result["stop_reason"] = "io"
+                result["stdout_ready"] = False
+                result["stderr_ready"] = False
+                if isinstance(self.state.pc, str):
+                    result["pc"] = self.state.pc
+                return result
             if isinstance(self.state.syscall, str):
                 result["syscall"] = self.state.syscall
             if isinstance(self.state.syscall_number, int):
                 result["syscall_number"] = self.state.syscall_number
+            if isinstance(self.state.syscall_fd, int):
+                result["syscall_fd"] = self.state.syscall_fd
         if stop_reason == "paused" and self.state.session_status in {"paused", "idle"}:
             if self.state.pending_termination:
                 result["stop_reason"] = "termination_pending"
@@ -534,6 +554,14 @@ class AnalysisSession:
         if completed:
             return "target_reached"
         return "paused"
+
+    def _is_stdin_io_block(self) -> bool:
+        return (
+            self.state.session_status == "blocked"
+            and self.state.stop_reason == "syscall_block"
+            and self.state.syscall == "read"
+            and self.state.syscall_fd == 0
+        )
 
     def _stream_cursor(self, stream_name: str) -> int:
         backend_method = getattr(self.backend, f"read_{stream_name}", None)
@@ -1222,6 +1250,7 @@ class AnalysisSession:
             self.state.watchpoint = None
             self.state.syscall = None
             self.state.syscall_number = None
+            self.state.syscall_fd = None
         for key, value in payload.items():
             if hasattr(self.state, key):
                 setattr(self.state, key, value)

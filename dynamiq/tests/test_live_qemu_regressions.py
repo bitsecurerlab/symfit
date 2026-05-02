@@ -241,6 +241,8 @@ def test_live_breakpoint_rehit_stability(tmp_path: Path) -> None:
             final_state = state
             if state.get("session_status") == "exited":
                 break
+            if state.get("session_status") == "paused" and state.get("pending_termination"):
+                session.resume(timeout=5.0)
             time.sleep(0.05)
 
         assert isinstance(final_state, dict)
