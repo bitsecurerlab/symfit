@@ -41,6 +41,25 @@ with ScriptSession(target="/path/to/binary", args=["arg1"]) as session:
     trace = session.trace_get(limit=100)      # Get execution trace
 ```
 
+### System-mode VM quick start
+
+Use `ScriptSession.system(...)` for instrumented `qemu-system` sessions:
+
+```python
+from dynamiq.script_api import ScriptSession
+
+with ScriptSession.system(
+    qemu_args=["-machine", "pc", "-display", "none", "-S"],
+    arch="x86_64",
+) as session:
+    regs = session.get_registers(["rip", "rsp"])
+    boot = session.read_memory("0x7c00", 4, address_space="physical")
+```
+
+System-mode sessions use QMP plus the instrumentation RPC socket. They can read
+guest physical memory with `address_space="physical"` and do not expose stdin as
+a target process stream.
+
 ## Core Concepts
 
 ### 1. Session Lifecycle (context manager)

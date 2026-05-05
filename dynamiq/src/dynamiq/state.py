@@ -8,7 +8,10 @@ from typing import Any
 class ExecutionState:
     session_status: str = "not_started"
     backend: str | None = None
+    qemu_mode: str = "user"
+    launched_qemu_path: str | None = None
     launched_qemu_user_path: str | None = None
+    launched_qemu_system_path: str | None = None
     instrumentation_rpc_socket_path: str | None = None
     rpc_protocol_version: int | None = None
     rpc_capabilities: dict[str, bool] = field(default_factory=dict)
@@ -54,7 +57,10 @@ class ExecutionState:
         return {
             "session_status": self.session_status,
             "backend": self.backend,
+            "qemu_mode": self.qemu_mode,
+            "launched_qemu_path": self.launched_qemu_path,
             "launched_qemu_user_path": self.launched_qemu_user_path,
+            "launched_qemu_system_path": self.launched_qemu_system_path,
             "instrumentation_rpc_socket_path": self.instrumentation_rpc_socket_path,
             "rpc_protocol_version": self.rpc_protocol_version,
             "rpc_capabilities": dict(self.rpc_capabilities),

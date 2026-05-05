@@ -65,7 +65,13 @@ class ToolSpec:
 
 class InteractiveAnalysisMcpServer:
     def __init__(self, session_factory: Callable[[], AnalysisSession] | None = None) -> None:
-        self._session_factory = session_factory or (lambda: AnalysisSession(backend=QemuUserInstrumentedBackend()))
+        # If a custom session_factory is provided, use it; otherwise create lazy factory
+        if session_factory is not None:
+            self._session_factory = session_factory
+            self._lazy_factory = False
+        else:
+            self._session_factory = None  # Will be created on demand based on mode
+            self._lazy_factory = True
         self._session: AnalysisSession | None = None
         self._stdout_cursor = 0
         self._stderr_cursor = 0
@@ -127,9 +133,25 @@ class InteractiveAnalysisMcpServer:
             return None
         return self._error(request_id, -32601, f"method not found: {method}")
 
-    def _ensure_session(self) -> AnalysisSession:
+    def _ensure_session(self, qemu_config: dict | None = None) -> AnalysisSession:
         if self._session is None:
-            self._session = self._session_factory()
+            if self._lazy_factory:
+                # Create session with appropriate backend based on mode
+                from dynamiq.script_api import ScriptSession
+                mode = (qemu_config or {}).get("mode", "user")
+                if mode == "system":
+                    self._session = ScriptSession(
+                        target="qemu-system",
+                        args=[],
+                        qemu_config=qemu_config or {"mode": "system"},
+                        auto_start=False,
+                    )._session
+                else:
+                    from dynamiq.backends.qemu_user_instrumented import QemuUserInstrumentedBackend
+                    from dynamiq.session import AnalysisSession, SessionConfig
+                    self._session = AnalysisSession(backend=QemuUserInstrumentedBackend(), config=SessionConfig())
+            else:
+                self._session = self._session_factory()
         return self._session
 
     def _call_tool(self, name: str, arguments: JSON) -> JSON:
@@ -183,6 +205,41 @@ class InteractiveAnalysisMcpServer:
                     result = session.start(
                         target=target,
                         args=args,
+                        cwd=cwd,
+                        qemu_config=qemu_config,
+                    )
+                self._reset_stream_cursors()
+                return self._tool_ok(result)
+
+            if name == "start_system":
+                qemu_config = {"launch": True, "mode": "system"}
+                session = self._ensure_session(qemu_config=qemu_config)
+                arch = self._parse_optional_string(arguments, "arch", default=None)
+                if isinstance(arch, str) and arch.strip():
+                    qemu_config["arch"] = arch.strip()
+                qemu_system_path = self._parse_optional_string(arguments, "qemu_system_path", default=None)
+                if isinstance(qemu_system_path, str) and qemu_system_path.strip():
+                    qemu_config["qemu_system_path"] = qemu_system_path.strip()
+                qemu_args = self._parse_string_list(arguments, "qemu_args", default=[])
+                qemu_config["qemu_args"] = qemu_args
+                env = self._parse_string_map(arguments, "env", default={})
+                if env:
+                    qemu_config["env"] = env
+                cwd = self._parse_optional_string(arguments, "cwd", default=None)
+                try:
+                    result = session.start(
+                        target="qemu-system",
+                        args=[],
+                        cwd=cwd,
+                        qemu_config=qemu_config,
+                    )
+                except InvalidStateError as exc:
+                    if "session already started" not in str(exc):
+                        raise
+                    session.close()
+                    result = session.start(
+                        target="qemu-system",
+                        args=[],
                         cwd=cwd,
                         qemu_config=qemu_config,
                     )
@@ -257,10 +314,12 @@ class InteractiveAnalysisMcpServer:
             if name == "mem":
                 address = self._parse_nonempty_string(arguments, "address")
                 size = self._parse_int(arguments, "size", required=True, minimum=0)
+                address_space = self._parse_optional_string(arguments, "address_space", default=None)
                 return self._tool_ok(
                     self._ensure_session().read_memory(
                         address=address,
                         size=size,
+                        address_space=address_space,
                     )
                 )
             if name == "mem_search":
@@ -863,6 +922,47 @@ class InteractiveAnalysisMcpServer:
                 },
             ),
             ToolSpec(
+                name="start_system",
+                description=(
+                    "Start an analysis session by launching an instrumented qemu-system VM. "
+                    "Pass the full VM command line in qemu_args; Dynamiq creates IA/RPC sockets automatically."
+                ),
+                input_schema={
+                    "type": "object",
+                    "description": "System-mode VM launch options.",
+                    "properties": {
+                        "arch": {
+                            "type": ["string", "null"],
+                            "description": "System architecture used for auto-detecting the SymFit binary, for example x86_64 or aarch64.",
+                            "default": "x86_64",
+                        },
+                        "qemu_system_path": {
+                            "type": ["string", "null"],
+                            "description": "Optional explicit SymFit qemu-system binary path.",
+                            "default": None,
+                        },
+                        "qemu_args": {
+                            "type": "array",
+                            "description": "Full qemu-system VM arguments, for example ['-machine', 'pc', '-display', 'none'].",
+                            "items": {"type": "string"},
+                            "default": [],
+                        },
+                        "cwd": {
+                            "type": ["string", "null"],
+                            "description": "Working directory for qemu-system launch.",
+                            "default": None,
+                        },
+                        "env": {
+                            "type": "object",
+                            "description": "Extra environment variables for qemu-system.",
+                            "additionalProperties": {"type": "string"},
+                            "default": {},
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            ),
+            ToolSpec(
                 name="close",
                 description="Close the active analysis session.",
                 input_schema={"type": "object", "properties": {}, "additionalProperties": False},
@@ -1028,6 +1128,11 @@ class InteractiveAnalysisMcpServer:
                             "type": "integer",
                             "minimum": 0,
                             "description": "Number of bytes to read.",
+                        },
+                        "address_space": {
+                            "type": ["string", "null"],
+                            "description": "Optional address space, for example physical in system-mode sessions.",
+                            "default": None,
                         },
                     },
                     "required": ["address", "size"],

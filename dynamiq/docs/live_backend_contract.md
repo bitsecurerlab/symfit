@@ -1,26 +1,31 @@
 # Live Backend Contract
 
-This document defines the minimum phase-1 contract for a real `qemu-user` backend integration.
+This document defines the minimum phase-1 contract for real `qemu-user` and
+`qemu-system` backend integrations.
 
 ## Overview
 
-The runtime expects three moving parts:
+The runtime expects:
 
-1. A target binary
+1. A target binary for `qemu-user`, or a VM command line for `qemu-system`
 2. An RPC endpoint
+3. For system mode, a QMP endpoint for VM-level monitor control
 
 The runtime may either:
 
 - attach to an already-running RPC endpoint
-- or launch `qemu-user` itself and then attach to the RPC endpoint
+- or launch QEMU itself and then attach to the RPC endpoint
 
 ## Environment
 
-When the runtime launches `qemu-user`, it will set:
+When the runtime launches QEMU, it will set:
 
 - `IA_RPC_SOCKET`
 
 Your instrumentation side should use that value to know where to serve RPC.
+For `qemu-system`, the runtime also creates a QMP Unix socket and passes it to
+QEMU with `-qmp unix:...,server,nowait` when the caller has not already supplied
+a QMP argument.
 
 ## Transport
 
@@ -108,6 +113,12 @@ Request:
 {"id":1,"method":"read_memory","params":{"address":"0x401000","size":16}}
 ```
 
+System-mode physical memory reads use `address_space`:
+
+```json
+{"id":1,"method":"read_memory","params":{"address":"0x7c00","size":4,"address_space":"physical"}}
+```
+
 Response:
 
 ```json
@@ -155,9 +166,10 @@ Current v1 scope for SymFit is basic-block tracing.
 
 If the runtime is in launch mode:
 
-1. it starts `qemu-user`
+1. it starts `qemu-user` or `qemu-system`
 2. it expects the instrumentation side to create the RPC socket
 3. it then connects an RPC client to that socket
+4. for system mode, it also waits for QMP and negotiates QMP capabilities
 
 If the runtime is in attach mode:
 

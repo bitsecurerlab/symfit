@@ -907,6 +907,41 @@ def test_backend_start_can_launch_qemu_user_process() -> None:
     assert backend.get_state()["launched_qemu_user_path"] == "/usr/bin/qemu-x86_64"
 
 
+def test_backend_start_can_launch_qemu_system_process() -> None:
+    runner = FakeProcessRunner()
+    instrumentation = FakeInstrumentationClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=FakeInstrumentationRpcClient(instrumentation),
+        process_runner=runner,
+    )
+
+    backend.start(
+        "qemu-system",
+        [],
+        "/tmp/vm",
+        {
+            "mode": "system",
+            "launch": True,
+            "qemu_system_path": "/usr/bin/qemu-system-x86_64",
+            "qemu_args": ["-machine", "pc", "-display", "none"],
+            "instrumentation_socket_path": "/tmp/events.sock",
+            "instrumentation_rpc_socket_path": "/tmp/rpc.sock",
+        },
+    )
+
+    assert runner.started is True
+    assert runner.config.qemu_system_path == "/usr/bin/qemu-system-x86_64"
+    assert runner.config.args == ["-machine", "pc", "-display", "none"]
+    assert runner.config.cwd == "/tmp/vm"
+    state = backend.get_state()
+    assert state["qemu_mode"] == "system"
+    assert state["launched_qemu_path"] == "/usr/bin/qemu-system-x86_64"
+    assert state["launched_qemu_system_path"] == "/usr/bin/qemu-system-x86_64"
+    assert state["launched_qemu_user_path"] is None
+
+
 def test_backend_start_launch_auto_configures_rpc_socket_path() -> None:
     runner = FakeProcessRunner()
     instrumentation = FakeInstrumentationClient()
@@ -1392,6 +1427,25 @@ def test_backend_read_memory_uses_rpc_channel() -> None:
         ],
     }
     assert rpc.requests[0] == ("read_memory", {"address": "0x401000", "size": 2})
+
+
+def test_backend_read_memory_passes_address_space_to_rpc() -> None:
+    instrumentation = FakeInstrumentationClient()
+    rpc = FakeInstrumentationRpcClient(instrumentation)
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=FakeQmpClient(),
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {})
+
+    result = backend.read_memory("0x7c00", 2, address_space="physical")
+
+    assert result["result"]["bytes"] == "0102"
+    assert rpc.requests[0] == (
+        "read_memory",
+        {"address": "0x7c00", "size": 2, "address_space": "physical"},
+    )
 
 
 def test_backend_list_memory_maps_uses_rpc_channel() -> None:

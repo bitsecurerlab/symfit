@@ -74,7 +74,7 @@ PYTHONPATH=src .venv/bin/pytest -q
 
 Live tests are marked `live_qemu` and require a real backend/instrumentation environment.
 
-Set:
+For `qemu-user` live tests, set:
 
 - `RUN_LIVE_QEMU=1`
 - `IA_LIVE_EVENT_SOCKET`
@@ -97,6 +97,36 @@ PYTHONPATH=src .venv/bin/pytest -q -m live_qemu
 ```
 
 `IA_LIVE_LAUNCH=1` tells the backend to launch `qemu-user` using the runtime launch contract. If unset, tests assume endpoints already exist.
+
+System-mode live tests launch an instrumented `qemu-system` VM through
+`ScriptSession.system(...)` and use QMP plus `IA_RPC_SOCKET` for control.
+Set `RUN_LIVE_QEMU=1` and, if auto-discovery cannot find the binary, set:
+
+- `IA_LIVE_QEMU_SYSTEM_X86_64_PATH=/path/to/symfit-system-x86_64`
+- or `DYNAMIQ_SYMFIT_SYSTEM_PATH=/path/to/symfit-system-x86_64`
+
+The Alpine Linux boot test uses the pinned Alpine virt ISO
+`alpine-virt-3.19.0-x86_64.iso`. If the ISO is not present, the test downloads
+it from Alpine's v3.19 release CDN and verifies the sibling `.sha256` file.
+Downloaded images are cached under `dynamiq/tests/fixtures/` and ignored by git.
+
+Optional Alpine test overrides:
+
+- `DYNAMIQ_ALPINE_ISO=/path/to/alpine.iso`
+- `DYNAMIQ_TEST_FIXTURE_DIR=/path/to/cache`
+- `DYNAMIQ_ALPINE_ISO_URL=https://.../alpine-virt-3.19.0-x86_64.iso`
+- `DYNAMIQ_ALPINE_ISO_SHA256_URL=https://.../alpine-virt-3.19.0-x86_64.iso.sha256`
+
+System-mode sessions can read guest physical memory by passing
+`address_space="physical"` to `read_memory`, for example:
+
+```python
+with ScriptSession.system(
+    qemu_args=["-machine", "pc", "-display", "none", "-S"],
+    arch="x86_64",
+) as session:
+    boot = session.read_memory("0x7c00", 4, address_space="physical")
+```
 
 ## Demos
 

@@ -802,10 +802,12 @@ class AnalysisSession:
             },
         )
 
-    def read_memory(self, address: str, size: int) -> dict[str, Any]:
+    def read_memory(self, address: str, size: int, address_space: str | None = None) -> dict[str, Any]:
         if size > self.config.max_memory_read:
             raise InvalidStateError(f"memory read exceeds max of {self.config.max_memory_read} bytes")
-        return self._forward("read_memory", self.backend.read_memory(address, size))
+        if address_space is None:
+            return self._forward("read_memory", self.backend.read_memory(address, size))
+        return self._forward("read_memory", self.backend.read_memory(address, size, address_space=address_space))
 
     def mem_search(
         self,

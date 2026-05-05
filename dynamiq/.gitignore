@@ -5,3 +5,7 @@ __pycache__/
 log
 tools/qemu/qemu-*-instrumented
 examples/sample_target
+tests/fixtures/*.iso
+tests/fixtures/*.iso.sha256
+tests/fixtures/*.cpio.gz
+tests/fixtures/*.tmp

@@ -19,6 +19,7 @@ from typing import Any
 
 from .backends.base import BackendAdapter
 from .backends.qemu_user_instrumented import QemuUserInstrumentedBackend
+from .backends.qemu_system_instrumented import QemuSystemInstrumentedBackend
 from .errors import InvalidStateError
 from .session import AnalysisSession, SessionConfig
 
@@ -102,12 +103,48 @@ class ScriptSession:
         self.qemu_config = {**default_qemu_config, **(qemu_config or {})}
 
         # Initialize backend and config
-        self._backend = backend or QemuUserInstrumentedBackend()
+        if backend is None:
+            # Auto-detect backend based on qemu_config
+            qemu_mode = (qemu_config or {}).get("mode", "user")
+            if qemu_mode == "system":
+                self._backend = QemuSystemInstrumentedBackend()
+            else:
+                self._backend = QemuUserInstrumentedBackend()
+        else:
+            self._backend = backend
         self._config = config or SessionConfig()
         self._session = AnalysisSession(backend=self._backend, config=self._config)
 
         if auto_start:
             self.start()
+
+    @classmethod
+    def system(
+        cls,
+        *,
+        qemu_args: list[str],
+        qemu_system_path: str | None = None,
+        arch: str = "x86_64",
+        cwd: str | None = None,
+        qemu_config: dict[str, Any] | None = None,
+        auto_start: bool = False,
+    ) -> ScriptSession:
+        """Create a session that launches an instrumented qemu-system VM."""
+        config = {
+            "mode": "system",
+            "arch": arch,
+            "qemu_args": list(qemu_args),
+            **(qemu_config or {}),
+        }
+        if qemu_system_path:
+            config["qemu_system_path"] = qemu_system_path
+        return cls(
+            target="qemu-system",
+            args=[],
+            cwd=cwd,
+            qemu_config=config,
+            auto_start=auto_start,
+        )
 
     # Context Manager Support
     # =======================
@@ -439,13 +476,14 @@ class ScriptSession:
         """
         return self._session.get_registers(names=names)
 
-    def read_memory(self, address: str, size: int) -> dict[str, Any]:
+    def read_memory(self, address: str, size: int, address_space: str | None = None) -> dict[str, Any]:
         """
         Read memory from target.
 
         Args:
             address: Memory address (hex or decimal string)
             size: Number of bytes to read
+            address_space: Optional address space, for example "physical" in system mode
 
         Returns:
             Response dict with memory bytes.
@@ -453,7 +491,7 @@ class ScriptSession:
         Raises:
             InvalidStateError: If size exceeds max or address invalid
         """
-        return self._session.read_memory(address=address, size=size)
+        return self._session.read_memory(address=address, size=size, address_space=address_space)
 
     def mem_search(
         self,

@@ -38,14 +38,28 @@ class QmpClient:
         else:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.settimeout(self.timeout)
-            sock.connect(self.socket_path)
-        reader = sock.makefile("r", encoding="utf-8")
-        greeting = self._read_message(reader)
-        self._socket = sock
-        self._reader = reader
-        self._greeting = greeting
-        self.execute("qmp_capabilities")
-        return greeting
+            try:
+                sock.connect(self.socket_path)
+            except Exception:
+                sock.close()
+                raise
+        reader = None
+        try:
+            reader = sock.makefile("r", encoding="utf-8")
+            greeting = self._read_message(reader)
+            self._socket = sock
+            self._reader = reader
+            self._greeting = greeting
+            self.execute("qmp_capabilities")
+            return greeting
+        except Exception:
+            if reader is not None:
+                reader.close()
+            sock.close()
+            self._socket = None
+            self._reader = None
+            self._greeting = None
+            raise
 
     def execute(self, command: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         if self._socket is None or self._reader is None:

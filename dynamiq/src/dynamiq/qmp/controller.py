@@ -21,6 +21,9 @@ class QmpController:
     def query_status(self) -> dict[str, Any]:
         return self.client.execute("query-status")
 
+    def execute(self, command: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.client.execute(command, arguments)
+
     def save_snapshot(self, name: str) -> dict[str, Any]:
         return self.client.execute("savevm", {"name": name})
 

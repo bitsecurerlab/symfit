@@ -92,13 +92,14 @@ class FakeSession:
     def disassemble(self, address, count=16):  # noqa: ANN001
         return {"ok": True, "command": "disassemble", "result": {"instructions": [{"address": address, "size": count}]}}
 
-    def read_memory(self, address, size):  # noqa: ANN001
+    def read_memory(self, address, size, address_space=None):  # noqa: ANN001
         return {
             "ok": True,
             "command": "read_memory",
             "result": {
                 "address": address,
                 "size": size,
+                "address_space": address_space,
                 "bytes": "00",
                 "symbolic_bytes": [{"offset": 0, "label": "0x0", "symbolic": False}],
             },
@@ -623,6 +624,42 @@ def test_mcp_tool_call_start_accepts_qemu_launch_config() -> None:
             "QEMU_LD_PREFIX": ".",
             "LD_LIBRARY_PATH": "./lib64",
         },
+    }
+
+
+def test_mcp_tool_call_start_system_accepts_vm_launch_config() -> None:
+    fake = FakeSession()
+    server = InteractiveAnalysisMcpServer(session_factory=lambda: fake)
+    response = server.handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 34,
+            "method": "tools/call",
+            "params": {
+                "name": "start_system",
+                "arguments": {
+                    "arch": "aarch64",
+                    "cwd": "/tmp/vm",
+                    "qemu_system_path": "/opt/symfit/symfit-system-aarch64",
+                    "qemu_args": ["-machine", "virt", "-display", "none"],
+                    "env": {"VM": "1"},
+                },
+            },
+        }
+    )
+
+    assert response is not None
+    assert response["result"]["isError"] is False
+    assert fake.last_target == "qemu-system"
+    assert fake.last_args == []
+    assert fake.last_cwd == "/tmp/vm"
+    assert fake.last_qemu_config == {
+        "launch": True,
+        "mode": "system",
+        "arch": "aarch64",
+        "qemu_system_path": "/opt/symfit/symfit-system-aarch64",
+        "qemu_args": ["-machine", "virt", "-display", "none"],
+        "env": {"VM": "1"},
     }
 
 

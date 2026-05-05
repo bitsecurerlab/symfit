@@ -14,8 +14,9 @@ Use this skill when operating the `dynamiq` MCP tools for live binary analysis.
 - Use `loaded_address` for `bp_add`.
 - Treat `regs`, `mem`, `maps`, `bt`, and `state` as the source of truth.
 
-2. Do not choose the runtime binary.
+2. Do not choose the runtime binary unless the user explicitly provides one.
 - The MCP server launcher controls which `qemu-user` / SymFit binary is used.
+- For VM analysis, use `start_system` with explicit `qemu_args` rather than `start`.
 
 3. `advance {"mode":"continue"}` should drive execution.
 - It should stop on meaningful execution boundaries such as input wait, breakpoint-like stops, terminal pending-exit, or timeout.
@@ -48,6 +49,20 @@ Use this skill when operating the `dynamiq` MCP tools for live binary analysis.
 3. `stdout`
 4. `stderr`
 5. `state`
+
+### System-mode VM loop
+
+1. `start_system {"arch":"x86_64", "qemu_args":["-machine","pc","-display","none","-S"]}`
+2. `state`
+3. `regs`
+4. `mem {"address":"0x7c00", "size":4, "address_space":"physical"}`
+5. `advance {"mode":"continue"}`
+6. `stdout`
+7. `close`
+
+Use `address_space:"physical"` for guest physical memory. QEMU system-mode
+sessions do not support stdin writes through Dynamiq; interact through the VM's
+configured serial/devices instead.
 
 ### Breakpoint workflow
 
