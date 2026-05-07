@@ -1116,6 +1116,16 @@ void tcg_func_start(TCGContext *s)
     /* No temps have been previously allocated for size or locality.  */
     memset(s->free_temps, 0, sizeof(s->free_temps));
 
+#ifdef CONFIG_2nd_CCACHE
+    /* Clear shadow slot state from previous TB to prevent stale
+     * symbolic_expression flags causing temp_expr assertion failures */
+    for (int i = s->nb_globals; i < TCG_MAX_TEMPS; i++) {
+        s->temps[i].symbolic_expression = 0;
+        s->temps[i].temp_allocated = 0;
+    }
+#endif
+
+
     s->nb_ops = 0;
     s->nb_labels = 0;
     s->current_frame_offset = s->frame_start;
