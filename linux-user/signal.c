@@ -787,8 +787,21 @@ int do_sigaction(int sig, const struct target_sigaction *act,
     int host_sig;
     int ret = 0;
 
-    if (sig < 1 || sig > TARGET_NSIG || sig == TARGET_SIGKILL || sig == TARGET_SIGSTOP) {
+    if (sig < 1 || sig > TARGET_NSIG) {
         return -TARGET_EINVAL;
+    }
+
+    /* Allow reading the handler for SIGKILL/SIGSTOP (always SIG_DFL),
+       but reject attempts to change it — matches real kernel behavior. */
+    if (sig == TARGET_SIGKILL || sig == TARGET_SIGSTOP) {
+        if (act) {
+            return -TARGET_EINVAL;
+        }
+        if (oact) {
+            memset(oact, 0, sizeof(*oact));
+            __put_user(TARGET_SIG_DFL, &oact->_sa_handler);
+        }
+        return 0;
     }
 
     if (block_signals()) {
