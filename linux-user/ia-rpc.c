@@ -134,6 +134,23 @@ typedef struct IAState {
     uint64_t write_watchpoint_skip_address;
     uint64_t write_watchpoint_skip_size;
     uint64_t write_watchpoint_skip_pc;
+
+    struct {
+        uint64_t address;
+        uint64_t size;
+    } read_watchpoints[64];
+    size_t read_watchpoint_count;
+    bool read_watchpoint_matched;
+    uint64_t read_watchpoint_address;
+    uint64_t read_watchpoint_size;
+    uint64_t read_watchpoint_hit_address;
+    uint64_t read_watchpoint_hit_size;
+    uint64_t read_watchpoint_hit_pc;
+    bool read_watchpoint_skip_once;
+    uint64_t read_watchpoint_skip_address;
+    uint64_t read_watchpoint_skip_size;
+    uint64_t read_watchpoint_skip_pc;
+
     uint64_t last_block_pc;
     uint64_t last_insn_pc;
     uint64_t last_matched_pc;
@@ -245,6 +262,24 @@ static void ia_clear_run_control_locked(void)
     ia_state.last_matched_pc = 0;
     ia_state.pause_pending = false;
     ia_clear_watchpoint_match_locked();
+}
+
+static void ia_clear_read_watchpoint_match_locked(void)
+{
+    ia_state.read_watchpoint_matched = false;
+    ia_state.read_watchpoint_address = 0;
+    ia_state.read_watchpoint_size = 0;
+    ia_state.read_watchpoint_hit_address = 0;
+    ia_state.read_watchpoint_hit_size = 0;
+    ia_state.read_watchpoint_hit_pc = 0;
+}
+
+static void ia_clear_read_watchpoint_skip_locked(void)
+{
+    ia_state.read_watchpoint_skip_once = false;
+    ia_state.read_watchpoint_skip_address = 0;
+    ia_state.read_watchpoint_skip_size = 0;
+    ia_state.read_watchpoint_skip_pc = 0;
 }
 
 static void ia_clear_watchpoint_match_locked(void)
@@ -1636,6 +1671,26 @@ static QDict *ia_handle_query_status(int64_t id)
         qdict_put_str(watchpoint, "pc", hit_pc_hex);
         qdict_put(result, "watchpoint", watchpoint);
     }
+    
+    if (ia_state.read_watchpoint_matched) {
+        QDict *watchpoint = qdict_new();
+        g_autofree char *address_hex = g_strdup_printf(
+            "0x%" PRIx64, ia_state.read_watchpoint_address);
+        g_autofree char *hit_address_hex = g_strdup_printf(
+            "0x%" PRIx64, ia_state.read_watchpoint_hit_address);
+        g_autofree char *hit_pc_hex = g_strdup_printf(
+            "0x%" PRIx64, ia_state.read_watchpoint_hit_pc);
+
+        qdict_put_str(result, "stop_reason", "watchpoint");
+        qdict_put_str(watchpoint, "mode", "read");
+        qdict_put_str(watchpoint, "address", address_hex);
+        qdict_put_int(watchpoint, "size", ia_state.read_watchpoint_size);
+        qdict_put_str(watchpoint, "hit_address", hit_address_hex);
+        qdict_put_int(watchpoint, "hit_size", ia_state.read_watchpoint_hit_size);
+        qdict_put_str(watchpoint, "pc", hit_pc_hex);
+        qdict_put(result, "watchpoint", watchpoint);
+    }
+    
     if (ia_state.has_exit_code) {
         qdict_put_int(result, "exit_code", ia_state.exit_code);
     }
@@ -1924,9 +1979,11 @@ static QDict *ia_handle_set_watchpoints(int64_t id, QDict *params)
 {
     QList *watchpoints;
     const QListEntry *entry;
-    size_t count = 0;
+    size_t write_count = 0;
+    size_t read_count = 0;
     QDict *result = qdict_new();
     QList *installed = qlist_new();
+    bool is_read = false;
 
     if (!params) {
         qobject_unref(installed);
@@ -1963,23 +2020,44 @@ static QDict *ia_handle_set_watchpoints(int64_t id, QDict *params)
         QDict *installed_item;
         g_autofree char *address_hex = NULL;
 
-        if (!item || count >= G_N_ELEMENTS(ia_state.write_watchpoints)) {
+        if (!item) {
             qemu_mutex_unlock(&ia_state.lock);
             qobject_unref(installed);
             qobject_unref(result);
             return ia_make_error_response(
                 id,
                 "invalid_params",
-                "watchpoints must contain 0-64 objects"
+                "watchpoints must contain objects"
             );
         }
         mode = qdict_get_try_str(item, "mode");
-        if (mode && strcmp(mode, "write") != 0) {
+        
+        if (mode && strcmp(mode, "read") == 0) {
+            is_read = true;
+        } else if (!mode || strcmp(mode, "write") == 0) {
+            is_read = false;
+        } else {
             qemu_mutex_unlock(&ia_state.lock);
             qobject_unref(installed);
             qobject_unref(result);
-            return ia_make_error_response(id, "invalid_params", "only write watchpoints are supported");
+            return ia_make_error_response(id, "invalid_params", "watchpoint mode must be \"read\" or \"write\"");            
         }
+        
+        if (is_read && read_count >= G_N_ELEMENTS(ia_state.read_watchpoints)) {
+            qemu_mutex_unlock(&ia_state.lock);
+            qobject_unref(installed);
+            qobject_unref(result);
+            return ia_make_error_response(id, "invalid_params",
+                                          "too many read watchpoints (max 64)");
+        }
+        if (!is_read && write_count >= G_N_ELEMENTS(ia_state.write_watchpoints)) {
+            qemu_mutex_unlock(&ia_state.lock);
+            qobject_unref(installed);
+            qobject_unref(result);
+            return ia_make_error_response(id, "invalid_params",
+                                          "too many write watchpoints (max 64)");
+        }
+        
         address_str = qdict_get_try_str(item, "address");
         size = qdict_get_try_int(item, "size", -1);
         if (!address_str || qemu_strtou64(address_str, NULL, 0, &address) != 0 ||
@@ -1994,23 +2072,32 @@ static QDict *ia_handle_set_watchpoints(int64_t id, QDict *params)
             );
         }
 
-        ia_state.write_watchpoints[count].address = address;
-        ia_state.write_watchpoints[count].size = (uint64_t)size;
-        count++;
+        if (is_read) {
+            ia_state.read_watchpoints[read_count].address = address;
+            ia_state.read_watchpoints[read_count].size = (uint64_t)size;
+            read_count++;
+        } else {
+            ia_state.write_watchpoints[write_count].address = address;
+            ia_state.write_watchpoints[write_count].size = (uint64_t)size;
+            write_count++;
+        }
 
         installed_item = qdict_new();
         address_hex = g_strdup_printf("0x%" PRIx64, address);
-        qdict_put_str(installed_item, "mode", "write");
+        qdict_put_str(installed_item, "mode", is_read ? "read" : "write");
         qdict_put_str(installed_item, "address", address_hex);
         qdict_put_int(installed_item, "size", size);
         qlist_append(installed, installed_item);
     }
 
-    ia_state.write_watchpoint_count = count;
+    ia_state.write_watchpoint_count = write_count;
+    ia_state.read_watchpoint_count = read_count;
     ia_clear_watchpoint_match_locked();
     ia_clear_watchpoint_skip_locked();
+    ia_clear_read_watchpoint_match_locked();
+    ia_clear_read_watchpoint_skip_locked();
     qdict_put_str(result, "status", ia_status_string_locked());
-    qdict_put_bool(result, "armed", count > 0);
+    qdict_put_bool(result, "armed", (write_count > 0 || read_count > 0));
     qdict_put(result, "watchpoints", installed);
     qemu_mutex_unlock(&ia_state.lock);
 
@@ -3568,6 +3655,68 @@ bool ia_rpc_check_write_watchpoint(CPUState *cpu, uint64_t address,
     }
     qemu_mutex_unlock(&ia_state.lock);
 
+    return matched;
+}
+
+bool ia_rpc_check_read_watchpoint(CPUState *cpu, uint64_t address,
+                                  uint64_t size, uint64_t pc)
+{
+    bool matched = false;
+    uint64_t current_pc;
+
+    if (!ia_state.enabled || size == 0) {
+        return false;
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    ia_state.current_cpu = cpu;
+    current_pc = ia_state.last_insn_pc != 0 ? ia_state.last_insn_pc : pc;
+    if (ia_state.exec_state == IA_EXEC_RUNNING &&
+        ia_state.read_watchpoint_count > 0) {
+        size_t i;
+
+        if (ia_state.read_watchpoint_skip_once &&
+            ia_state.read_watchpoint_skip_address == address &&
+            ia_state.read_watchpoint_skip_size == size &&
+            (ia_state.read_watchpoint_skip_pc == 0 ||
+             ia_state.read_watchpoint_skip_pc == current_pc)) {
+            ia_clear_read_watchpoint_skip_locked();
+            qemu_mutex_unlock(&ia_state.lock);
+            return false;
+        }
+
+        for (i = 0; i < ia_state.read_watchpoint_count; i++) {
+            uint64_t watch_address = ia_state.read_watchpoints[i].address;
+            uint64_t watch_size = ia_state.read_watchpoints[i].size;
+
+            if (!ia_ranges_overlap(address, size, watch_address, watch_size)) {
+                continue;
+            }
+
+            ia_state.read_watchpoint_matched = true;
+            ia_state.read_watchpoint_address = watch_address;
+            ia_state.read_watchpoint_size = watch_size;
+            ia_state.read_watchpoint_hit_address = address;
+            ia_state.read_watchpoint_hit_size = size;
+            ia_state.read_watchpoint_hit_pc = current_pc;
+            ia_state.read_watchpoint_skip_once = true;
+            ia_state.read_watchpoint_skip_address = address;
+            ia_state.read_watchpoint_skip_size = size;
+            ia_state.read_watchpoint_skip_pc = current_pc;
+            ia_state.block_budget = 0;
+            ia_state.instruction_budget = 0;
+            ia_state.stop_address_enabled = false;
+            ia_state.stop_address_set_enabled = false;
+            ia_state.stop_address_count = 0;
+            ia_state.stop_address_matched = false;
+            ia_state.start_paused = true;
+            ia_state.run_requested = false;
+            ia_state.pause_pending = true;
+            matched = true;
+            break;
+        }
+    }
+    qemu_mutex_unlock(&ia_state.lock);
     return matched;
 }
 

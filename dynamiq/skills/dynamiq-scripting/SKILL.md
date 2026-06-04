@@ -1,6 +1,6 @@
 ---
 name: dynamiq-scripting
-description: Use when implementing autonomous program analysis, testing, or security scanning workflows. For persistent session control with Python, including stepping, breakpoints, write watchpoints, memory inspection/search, symbolic stdin, path-constraint solving, and event tracing—without JSON-RPC round-trips.
+description: Use when implementing autonomous program analysis, testing, or security scanning workflows. For persistent session control with Python, including stepping, breakpoints, read and write watchpoints, memory inspection/search, symbolic stdin, path-constraint solving, and event tracing—without JSON-RPC round-trips.
 ---
 
 # Dynamiq Scripting API Skill
@@ -338,12 +338,13 @@ def test_function():
 ```
 
 ### Workflow 5: Memory Watching
-Use runtime write watchpoints when you need to stop at the exact instruction
+Use runtime read/write watchpoints when you need to stop at the exact instruction
 that writes a watched guest address range:
 
 ```python
 with ScriptSession(target="/bin/myapp", auto_start=True) as session:
     session.watch(address="0x41651d47a0", size=8, mode="write")
+    # mode="read" is also acceptable in a watch() call
 
     hit = session.advance(mode="continue", timeout=5.0)
     assert hit["result"]["stop_reason"] == "watchpoint"

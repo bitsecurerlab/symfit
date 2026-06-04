@@ -417,8 +417,8 @@ class QemuUserInstrumentedBackend:
             size = item.get("size")
             if not address:
                 raise InvalidStateError("watchpoint address must be non-empty")
-            if mode != "write":
-                raise InvalidStateError("only write watchpoints are supported")
+            if mode != "write" and mode != "read":
+                raise InvalidStateError("only read/write watchpoints are supported")
             if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
                 raise InvalidStateError("watchpoint size must be a positive integer")
             normalized.append({"address": address, "size": size, "mode": mode})

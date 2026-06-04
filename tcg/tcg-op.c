@@ -3475,6 +3475,11 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
                                            mmu_idx);
     }
+
+    #ifdef CONFIG_USER_ONLY
+    gen_helper_symsan_watch_read_guest(cpu_env, addr, load_size);
+    #endif
+
     gen_ldst_i32(INDEX_op_qemu_ld_i32, val, addr, memop, idx);
     if (second_ccache_flag) {
         gen_helper_symsan_load_guest_i32(shadow_i32(val), cpu_env,
@@ -3616,6 +3621,10 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
                                            mmu_idx);
     }
+
+    #ifdef CONFIG_USER_ONLY
+    gen_helper_symsan_watch_read_guest(cpu_env, addr, load_size);
+    #endif
 
     gen_ldst_i64(INDEX_op_qemu_ld_i64, val, addr, memop, idx);
 

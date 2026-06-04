@@ -90,6 +90,9 @@ DEF_HELPER_FLAGS_6(symsan_store_guest_i64, TCG_CALL_NO_RWG, void,
 #ifdef CONFIG_USER_ONLY
 DEF_HELPER_FLAGS_3(symsan_watch_store_guest, TCG_CALL_NO_RWG, void,
                     env, dh_alias_tl, i64)
+DEF_HELPER_FLAGS_3(symsan_watch_read_guest, TCG_CALL_NO_RWG, void,
+                    env, dh_alias_tl, i64)
+
 #endif
 
 DEF_HELPER_FLAGS_4(symsan_check_load_guest, TCG_CALL_NO_RWG, void,

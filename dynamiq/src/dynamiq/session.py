@@ -184,8 +184,8 @@ class AnalysisSession:
     def watch(self, address: int | str, size: int, mode: str = "write") -> dict[str, Any]:
         value = self._parse_address(address)
         normalized_mode = str(mode).strip().lower()
-        if normalized_mode != "write":
-            raise InvalidStateError("only write watchpoints are supported")
+        if normalized_mode != "write" and normalized_mode != "read":
+            raise InvalidStateError("only read/write watchpoints are supported")
         if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
             raise InvalidStateError("watchpoint size must be a positive integer")
         entry = {"address": hex(value), "size": size, "mode": normalized_mode}

@@ -51,14 +51,15 @@ void raise_exception_ra(CPUARMState *env, uint32_t excp, uint32_t syndrome,
                         uint32_t target_el, uintptr_t ra);
 #endif
 
-static void symsan_stop_for_write_watchpoint(CPUArchState *env)
+
+static void symsan_stop_for_watchpoint(CPUArchState *env)
 {
 #ifdef TARGET_I386
     raise_exception_err_ra(env, EXCP_SWITCH, 0, GETPC());
 #elif defined(TARGET_ARM)
     raise_exception_ra(env, EXCP_SWITCH, 0, 1, GETPC());
 #else
-#error "Unsupported architecture for write watchpoints"
+#error "Unsupported architecture for watchpoints"
 #endif
 }
 
@@ -1275,9 +1276,19 @@ void HELPER(symsan_watch_store_guest)(CPUArchState *env, target_ulong addr,
                                       uint64_t length)
 {
     if (ia_rpc_check_write_watchpoint(env_cpu(env), addr, length, get_pc(env))) {
-        symsan_stop_for_write_watchpoint(env);
+        symsan_stop_for_watchpoint(env);
     }
 }
+
+void HELPER(symsan_watch_read_guest)(CPUArchState *env, target_ulong addr,
+                                      uint64_t length)
+{
+    if (ia_rpc_check_read_watchpoint(env_cpu(env), addr, length, get_pc(env))) {
+        symsan_stop_for_watchpoint(env);
+    }
+}
+
+
 #endif
 
 void HELPER(symsan_store_host_i32)(uint64_t value_label,

@@ -1,6 +1,6 @@
 ---
 name: dynamiq-mcp
-description: Use when driving the Dynamiq MCP server (`dynamiq`) for live binary sessions: start/advance loops, stdin delivery/EOF, breakpoints, write watchpoints, memory inspection/search, symbolic input, symbolic expressions, path-constraint discovery, and path-constraint solving.
+description: Use when driving the Dynamiq MCP server (`dynamiq`) for live binary sessions: start/advance loops, stdin delivery/EOF, breakpoints, write and read watchpoints, memory inspection/search, symbolic input, symbolic expressions, path-constraint discovery, and path-constraint solving.
 ---
 
 # Dynamiq MCP Skill
@@ -148,11 +148,11 @@ Examples:
 If `start` and `end` are omitted, Dynamiq searches readable mapped regions from
 `maps`. Prefer `pattern_hex` for binary signatures with NUL bytes.
 
-### Write watchpoint workflow
+### Watchpoint workflow
 
 Use `watch` when you need the exact write that corrupts a watched guest address
 range. This is better than breaking every loop iteration and manually checking
-the destination pointer.
+the destination pointer. "mode" may be specified as "read" or "write".
 
 Example:
 - `watch {"address":"0x41651d47a0", "size":8, "mode":"write"}`
@@ -304,7 +304,7 @@ Goal: send symbolic stdin, inspect a symbolic branch, then inspect its expressio
 - `pause`: force a pause while running
 - `syms`: resolve runtime symbols for this session
 - `bp_add` / `bp_del` / `bp_clear` / `bp_list`: breakpoint management
-- `watch` / `watch_clear`: persistent write watchpoints for guest memory ranges
+- `watch` / `watch_clear`: persistent read/write watchpoints for guest memory ranges
 - `stdout` / `stderr`: incremental stream reads
 - `send_line` / `send_bytes` / `send_file`: stdin delivery
 - `send_line_advance` / `send_bytes_advance`: atomic stdin delivery plus continue-stop wait
