@@ -30,6 +30,24 @@ Use this skill when operating the `dynamiq` MCP tools for live binary analysis.
 5. Close the session when done.
 - Use `close` at the end of a workflow.
 
+## When to Use Symbolic Execution
+
+Use symbolic execution when your question is about inputs causing something to happen, not about what is happening in a specific execution.
+
+Appropriate uses:
+
+- Constraint verification
+- Reachability questions
+- Arithmetic relationship recovery
+- Differential path analysis
+
+Inappropriate uses (concrete tools are better):
+
+- Reading a register value at a known program counter value - just use get_registers
+- Checking what's in a specific memory region - just use read_memory
+- Confirming a function was called - a breakpoint is sufficient
+- Any question with a concrete, already-known answer
+
 ## Minimal Loop
 
 1. `start`
