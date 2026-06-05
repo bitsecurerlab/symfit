@@ -149,6 +149,43 @@ For deeper exploration, the adapter's replay verdict may return additional
 `candidates`. `solve_for` queues those candidates breadth-first and keeps
 replaying them up to `max_replays`, which is useful when SymFit reruns are cheap.
 
+Symfit constraints are presented in the form of SMT logic formulas. When presented
+with a situation where grep or any other means are necessary to identify constraint
+outputs, it's worth having examples of what the output will look like. The output of
+get_expr can be expected to look like this:
+
+(0xff <= concat(((((0x80 + concat(input(3), input(2)))) >> 8) & 0xffffff), (-128 + input(0))))
+
+Similarly, other fields within the path constraint object, such as the associated program
+counter value, the instruction (conveyed as extended LLVM; includes instructions such as
+Mul and ICmp), and other details such as whether or not the conditional branch being
+evaluated has been taken may be present. Cumulatively, the output can be expected to look
+like this:
+
+PC 0x42153529b8  ICmp  taken=True
+  (((int32_t) 0) <= ((int32_t) concat(((((0x80 + concat(input(3), input(2)))) >> 8) & 0xffffff), ((((-128 + input(0))) >> 7) & 0x1))))
+
+Being derived from this code:
+
+```python
+try:
+    constraints = sess.recent_path_constraints(
+        limit=8)["result"].get("constraints", [])
+    p(f"  {len(constraints)} constraints recorded during this execution path:\n")
+    for c in constraints:
+        lbl   = c.get("label", "?")
+        taken = c.get("taken")
+        expr_c = get_expr(sess, lbl)
+        if "unavailable" in expr_c:
+            continue
+        p(f"  PC 0x{int(c['pc'],16):x}  {c['op']}"
+          f"  taken={taken}")
+        p(f"    {expr_c}")
+except Exception as e:
+    p(f"  (constraints unavailable: {e})")
+```
+
+
 ```python
 from dynamiq.script_helpers import BytesReplayAdapter, solve_for
 

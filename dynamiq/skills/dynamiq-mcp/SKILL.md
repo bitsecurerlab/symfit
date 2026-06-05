@@ -280,6 +280,22 @@ Read the results like this:
 Treat the output as a candidate, not proof of reachability. For a target PC,
 rerun with the returned assignments and verify the PC is actually reached.
 
+Symfit constraints are presented in the form of SMT logic formulas. When presented
+with a situation where grep or any other means are necessary to identify constraint
+outputs, it's worth having examples of what the output will look like. The output of
+get_expr can be expected to look like this:
+
+(0xff <= concat(((((0x80 + concat(input(3), input(2)))) >> 8) & 0xffffff), (-128 + input(0))))
+
+Similarly, other fields within the path constraint object, such as the associated program
+counter value, the instruction (conveyed as extended LLVM; includes instructions such as
+Mul and ICmp), and other details such as whether or not the conditional branch being
+evaluated has been taken may be present. Cumulatively, the output can be expected to look
+like this:
+
+PC 0x42153529b8  ICmp  taken=True
+  (((int32_t) 0) <= ((int32_t) concat(((((0x80 + concat(input(3), input(2)))) >> 8) & 0xffffff), ((((-128 + input(0))) >> 7) & 0x1))))
+
 For complex harnesses such as FFmpeg, do not expect the MCP solver tool to
 perform the rerun by itself. Use the scripting helper `solve_for` with a replay
 adapter, or manually apply assignments in the harness script and verify a
