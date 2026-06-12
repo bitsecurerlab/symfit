@@ -3471,21 +3471,22 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     tcg_gen_mov_tl(saved_addr, addr);
     TCGv_i64 mmu_idx = tcg_const_i64(idx);
     load_size = tcg_const_i64(1 << (memop & MO_SIZE));
-    if (!second_ccache_flag) {
-        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
-                                           mmu_idx);
-    }
-
-    #ifdef CONFIG_USER_ONLY
-    gen_helper_symsan_watch_read_guest(cpu_env, addr, load_size);
-    #endif
-
     gen_ldst_i32(INDEX_op_qemu_ld_i32, val, addr, memop, idx);
     if (second_ccache_flag) {
         gen_helper_symsan_load_guest_i32(shadow_i32(val), cpu_env,
                                          saved_addr,
                                          tcgv_i64_expr_num(saved_addr),
                                          load_size, mmu_idx);
+    } else {
+        /*
+         * Probe AFTER the concrete load so the target page is already in the
+         * TLB, mirroring the store path above. Probing before the load made
+         * i386's x86_cpu_tlb_fill() abort (g_assert(!probe)) on demand-paged
+         * addresses during boot. saved_addr still holds the pre-load address,
+         * so a later switch-to-symbolic replay uses the correct address.
+         */
+        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
+                                           mmu_idx);
     }
     tcg_temp_free_i64(load_size);
     tcg_temp_free_i64(mmu_idx);
@@ -3611,20 +3612,6 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 
     load_size = tcg_const_i64(1 << (memop & MO_SIZE));
     TCGv_i64 mmu_idx = tcg_const_i64(idx);
-    // Doing this check before concrete loads CAUSES FIRES!! ICKY ICKY ICKY!!
-    if (!second_ccache_flag) {
-        /*
-         * Check before the concrete load so a switch to symbolic mode
-         * replays the instruction with pre-load architectural state. This is
-         * required when the load destination overlaps the address register.
-         */
-        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
-                                           mmu_idx);
-    }
-
-    #ifdef CONFIG_USER_ONLY
-    gen_helper_symsan_watch_read_guest(cpu_env, addr, load_size);
-    #endif
 
     gen_ldst_i64(INDEX_op_qemu_ld_i64, val, addr, memop, idx);
 
@@ -3632,12 +3619,16 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val), cpu_env,
                                          saved_addr, tcgv_i64_expr_num(saved_addr),
                                          load_size, mmu_idx);
-    }
-    /*
-    else {
+    } else {
+        /*
+         * Probe AFTER the concrete load so the target page is already in the
+         * TLB, mirroring the store path. Probing before the load made i386's
+         * x86_cpu_tlb_fill() abort (g_assert(!probe)) on demand-paged addresses
+         * during boot. saved_addr still holds the pre-load address, so a later
+         * switch-to-symbolic replay uses the correct address.
+         */
         gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size, mmu_idx);
     }
-    */
     tcg_temp_free_i64(load_size);
     tcg_temp_free_i64(mmu_idx);
     /*
