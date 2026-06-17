@@ -58,6 +58,8 @@ Inappropriate uses (concrete tools are better):
 6. Repeat until you hit the point you care about
 7. `close`
 
+## Limitations
+
 ## Common Tool Patterns
 
 ### Basic interactive loop
@@ -95,6 +97,14 @@ configured serial/devices instead.
 6. `regs`
 7. `bt`
 8. `disasm`
+
+### Racing multiple target addresses
+
+Use `advance {"mode":"continue", "until_any_address": [...]}` (backed by the
+`resume_until_any_address` RPC method) when you want to stop at whichever of
+several candidate addresses is hit first, rather than setting and clearing
+breakpoints one at a time. Takes 1 to 64 hex addresses. Returns `matched`,
+`matched_pc`, and `last_insn_pc` so you can tell which candidate fired.
 
 ### Library-relative breakpoints
 
@@ -259,7 +269,7 @@ Use this after symbolic data has influenced control flow.
 
 Tools:
 - `recent_path_constraints`
-- `path_constraint_closure`
+- `path_constraints`
 - `solve_path_constraint`
 
 Typical flow:
@@ -267,8 +277,12 @@ Typical flow:
 2. `advance {"mode":"continue"}` until the program reaches a branch, failure, success path, or terminal pending-exit
 3. call `recent_path_constraints {"limit": 5}`
 4. pick the newest label from `constraints[0].label`
-5. call `path_constraint_closure {"label":"<newest>"}`
+5. call `path_constraints {"label":"<newest>"}` to get the nested constraint closure for that root label
 6. call `solve_path_constraint {"label":"<label>", "negate":true}` when you want byte assignments for the opposite branch
+
+Note: `path_constraints` returns `root` (the label you asked about) and
+`constraints` (the nested closure). `constraints` excludes the root label
+itself — don't assume the root is included when walking the chain.
 
 Read the results like this:
 - `expression`: the branch condition
@@ -324,7 +338,7 @@ Goal: send symbolic stdin, inspect a symbolic branch, then inspect its expressio
 5. `state`
 6. `recent_path_constraints {"limit": 5}`
 7. take `constraints[0].label`
-8. `path_constraint_closure {"label":"<that label>"}`
+8. `path_constraints {"label":"<that label>"}`
 9. `solve_path_constraint {"label":"<that label>", "negate":true}`
 10. if needed, use `regs` or `mem` to find a specific symbolic label
 11. `expr {"label":"0x..."}`
@@ -352,7 +366,7 @@ Goal: send symbolic stdin, inspect a symbolic branch, then inspect its expressio
 - `symbolize_mem` / `symbolize_reg`: explicit symbolic injection
 - `expr`: symbolic expression for one label
 - `recent_path_constraints`: newest observed path conditions
-- `path_constraint_closure`: nested constraint closure for one label
+- `path_constraints`: nested constraint closure for one label (excludes the root label itself)
 - `solve_path_constraint`: solve a path-condition label for its current or opposite direction
 - `trace_start` / `trace_stop` / `trace_status` / `trace_get`: trace capture workflow
 
@@ -373,3 +387,10 @@ If the session looks stale or inconsistent:
 - For stack inspection, get `rsp` from `regs` first.
 - For stdin-driven symbolic analysis, prefer `send_line` / `send_bytes` / `send_file` with `symbolic: true` over manual post-read buffer symbolization.
 - Query path constraints only after the symbolic bytes have actually affected control flow.
+- `mem` reads are capped at 256 bytes per call (backed by `read_memory`); chunk larger reads across multiple calls.
+- Likewise, `symbolize_memory` is capped at 256 bytes per call; please bear in mind that similar restrictions will apply to function calls.
+- Currently, there is a maximum of 1024 read and 1024 write watchpoints that may be set at any given time. At this time, watchpoints cannot be cleared on an individual basis. A call to clear watchpoints will result in all being lost.
+- Beware that Dynamiq will need RPC calls to be functioning correctly to communicate with the Symfit backend. If sandboxing is being employed, this may prevent API calls from functioning properly. It may help to review an environmental constraints should this issue arise.
+- `send_line` / `send_bytes` are layered on top of the lower-level `queue_stdin_chunk` RPC method, which only records chunk metadata (size, symbolic flag) and reserves a symbolic stream offset — it does not itself push bytes into the target's stdin. You shouldn't need to call it directly; it's noted here so blocked-on-read states make sense when inspecting `state.pending_stdin_bytes` / `state.pending_symbolic_stdin_bytes`.
+
+

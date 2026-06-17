@@ -91,7 +91,7 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
 
 ### 2. All AnalysisSession Methods Available
 - **Lifecycle**: `start()`, `close()`, `capabilities()`
-- **Execution**: `step()`, `run()`, `pause()`, `advance_basic_blocks()`, `run_until_address()`
+- **Execution**: `step()`, `run()`, `pause()`, `advance_basic_blocks()`, `run_until_address()`, `run_until_any_address()`
 - **Breakpoints/watchpoints**: `bp_add()`, `bp_del()`, `bp_list()`, `bp_clear()`, `bp_run()`, `watch()`, `watch_clear()`
 - **Inspection**: `get_registers()`, `read_memory()`, `mem_search()`, `backtrace()`, `disassemble()`, `symbols()`, `list_memory_maps()`, `get_state()`
 - **I/O**: `write_stdin()`, `write_stdin_and_advance()`, `read_stdout()`, `read_stderr()`
@@ -106,14 +106,15 @@ The scripting API now exposes symbolic-execution helpers through `AnalysisSessio
 - `symbolize_register(register, name=None)`
 - `get_symbolic_expression(label)`
 - `recent_path_constraints(limit=16)`
-- `path_constraint_closure(label)`
+- `path_constraint_closure(label)` — nested constraint closure for a branch-condition label; the returned constraint list excludes the root label itself
 - `solve_path_constraint(label, negate=True)`
 - `dynamiq.script_helpers.solve_for(session, target_pc, replay, ...)` for verified rerun through a harness-specific replay adapter
 
 Important:
 - Dynamiq does not symbolize argv, stack buffers, heap buffers, or derived parser buffers automatically.
-- For stdin-driven input, prefer `write_stdin(..., symbolic=True)`. When the runtime supports `queue_stdin_chunk`, dynamiq records each stdin write as an ordered concrete or symbolic chunk, and the consumed stdin bytes become symbolic automatically at the syscall boundary.
+- For stdin-driven input, prefer `write_stdin(..., symbolic=True)`. When the runtime supports `queue_stdin_chunk`, dynamiq records each stdin write as an ordered concrete or symbolic chunk, and the consumed stdin bytes become symbolic automatically at the syscall boundary. `queue_stdin_chunk` itself only records chunk metadata (`size`, `symbolic`) and reserves a `stream_offset` for symbolic chunks — it does not push bytes into the target's stdin pipe; `write_stdin` handles both the queuing and the actual write. You generally won't call `queue_stdin_chunk` directly, but its bookkeeping is what `get_state()["pending_stdin_bytes"]` / `pending_symbolic_stdin_bytes` reflect.
 - Use explicit `symbolize_memory(...)` or `symbolize_register(...)` for non-stdin sources or when you want to symbolize a later derived buffer instead of the original stdin stream.
+- Snapshot API calls can be performed with a call such as scriptsesion_name.take_snapshot(name=snapshot_name). However, do be aware that QEMU Machine Protocol emulation will need to be enabled for this to work.
 
 Typical symbolic stdin workflow:
 ```python
@@ -135,7 +136,7 @@ with ScriptSession(target="/path/to/target", auto_start=True) as session:
     label = recent["result"]["constraints"][0]["label"]
     closure = session.path_constraint_closure(label)
     model = session.solve_path_constraint(label, negate=True)
-    assert closure["result"]["root"]["taken"] is True
+    assert closure["result"]["root"]["label"] == label
 ```
 
 Use `solve_for` when you need to prove a target PC is reachable. It negates
@@ -521,6 +522,22 @@ except InvalidStateError as e:
     print(f"Error: {e}")
     # Handle gracefully in autonomous context
 ```
+
+`read_memory` is capped at 256 bytes per call (the backend's `read_memory` RPC
+rejects sizes outside 0–256). Chunk larger reads across multiple calls rather
+than requesting one large read.
+
+Likewise, `symbolize_memory` is capped at 256 bytes per call; please bear in
+mind that similar restrictions will apply to function calls.
+
+Currently, there is a maximum of 1024 read and 1024 write watchpoints that may
+be set at any given time. At this time, watchpoints cannot be cleared on an
+individual basis. A call to clear watchpoints will result in all being lost.
+
+Beware that Dynamiq will need RPC calls to be functioning correctly to
+communicate with the Symfit backend. If sandboxing is being employed, this may
+prevent API calls from functioning properly. It may help to review any
+environmental constraints should this issue arise.
 
 ## Integration with Autonomous Systems
 

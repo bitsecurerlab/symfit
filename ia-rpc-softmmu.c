@@ -985,8 +985,8 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_bool(caps, "symbolize_register", register_access);
     qdict_put_bool(caps, "disassemble", false);
     qdict_put_bool(caps, "list_memory_maps", false);
-    qdict_put_bool(caps, "take_snapshot", false);
-    qdict_put_bool(caps, "restore_snapshot", false);
+    qdict_put_bool(caps, "take_snapshot", true);
+    qdict_put_bool(caps, "restore_snapshot", true);
     qdict_put_bool(caps, "trace_basic_block", true);
     qdict_put_bool(caps, "trace_branch", false);
     qdict_put_bool(caps, "trace_memory", false);

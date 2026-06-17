@@ -117,12 +117,12 @@ typedef struct IAState {
     bool stop_address_set_enabled;
     bool stop_address_matched;
     uint64_t stop_address;
-    uint64_t stop_addresses[64];
+    uint64_t stop_addresses[128];
     size_t stop_address_count;
     struct {
         uint64_t address;
         uint64_t size;
-    } write_watchpoints[64];
+    } write_watchpoints[1024];
     size_t write_watchpoint_count;
     bool write_watchpoint_matched;
     uint64_t write_watchpoint_address;
@@ -138,7 +138,7 @@ typedef struct IAState {
     struct {
         uint64_t address;
         uint64_t size;
-    } read_watchpoints[64];
+    } read_watchpoints[1024];
     size_t read_watchpoint_count;
     bool read_watchpoint_matched;
     uint64_t read_watchpoint_address;
@@ -1742,7 +1742,7 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_bool(caps, "take_snapshot", false);
     qdict_put_bool(caps, "restore_snapshot", false);
     qdict_put_bool(caps, "trace_basic_block", true);
-    qdict_put_bool(caps, "trace_branch", false);
+    qdict_put_bool(caps, "trace_branch", true);
     qdict_put_bool(caps, "trace_memory", false);
     qdict_put_bool(caps, "trace_syscall", false);
     qdict_put_bool(caps, "run_until_address", true);
@@ -2048,14 +2048,14 @@ static QDict *ia_handle_set_watchpoints(int64_t id, QDict *params)
             qobject_unref(installed);
             qobject_unref(result);
             return ia_make_error_response(id, "invalid_params",
-                                          "too many read watchpoints (max 64)");
+                                          "too many read watchpoints (max 1024)");
         }
         if (!is_read && write_count >= G_N_ELEMENTS(ia_state.write_watchpoints)) {
             qemu_mutex_unlock(&ia_state.lock);
             qobject_unref(installed);
             qobject_unref(result);
             return ia_make_error_response(id, "invalid_params",
-                                          "too many write watchpoints (max 64)");
+                                          "too many write watchpoints (max 1024)");
         }
         
         address_str = qdict_get_try_str(item, "address");
