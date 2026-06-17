@@ -1,6 +1,6 @@
 ---
 name: dynamiq-mcp
-description: Use when driving the Dynamiq MCP server (`dynamiq`) for live binary sessions: start/advance loops, stdin delivery/EOF, breakpoints, write and read watchpoints, memory inspection/search, symbolic input, symbolic expressions, path-constraint discovery, and path-constraint solving.
+description: 'Use when driving the Dynamiq MCP server (`dynamiq`) for live binary sessions: start/advance loops, stdin delivery/EOF, breakpoints, write and read watchpoints, memory inspection/search, symbolic input, symbolic expressions, path-constraint discovery, and path-constraint solving.'
 ---
 
 # Dynamiq MCP Skill

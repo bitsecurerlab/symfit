@@ -544,7 +544,7 @@ environmental constraints should this issue arise.
 The Scripting API is designed for **non-interactive automation**:
 
 - **No human intervention needed**: QEMU auto-detected, sockets auto-created
-- **Deterministic execution**: Checkpoint/restore for repeatable test scenarios
+- **Deterministic execution**: 'Checkpoint/restore for repeatable test scenarios
 - **Full state access**: Get complete ExecutionState dict, not just formatted JSON
 - **Long-running safe**: Context managers and assertions prevent resource leaks
 
