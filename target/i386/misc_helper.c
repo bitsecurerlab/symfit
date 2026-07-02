@@ -222,6 +222,7 @@ void helper_ia_tb_start(CPUX86State *env, target_ulong pc)
 
 void helper_ia_insn_start(CPUX86State *env, target_ulong pc)
 {
+
     CPUState *cs = env_cpu(env);
 
     if (ia_should_stop_before_instruction(cs, pc)) {

@@ -59,6 +59,8 @@ enum a64_shift_type {
     A64_SHIFT_TYPE_ROR = 3
 };
 
+extern bool ia_instrumentation_active; // To prevent performance penalty
+
 /* Table based decoder typedefs - used when the relevant bits for decode
  * are too awkwardly scattered across the instruction (eg SIMD).
  */
@@ -14224,9 +14226,15 @@ static void aarch64_tr_insn_start(DisasContextBase *dcbase, CPUState *cpu)
     tcg_gen_insn_start(dc->pc, 0, 0);
     dc->insn_start = tcg_last_op();
 #if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
-    TCGv pc_temp = tcg_const_tl(dc->pc);
-    gen_helper_ia_insn_start(cpu_env, pc_temp);
-    tcg_temp_free(pc_temp);
+    #if defined(CONFIG_SOFTMMU)
+    if (atomic_read(&ia_instrumentation_active)) {
+    #endif
+        TCGv pc_temp = tcg_const_tl(dc->pc);
+        gen_helper_ia_insn_start(cpu_env, pc_temp);
+        tcg_temp_free(pc_temp);
+    #if defined(CONFIG_SOFTMMU)
+    }
+    #endif
 #endif
 }
 

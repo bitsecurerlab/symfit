@@ -126,6 +126,9 @@ static IAState ia_state = {
     .listen_fd = -1,
 };
 
+bool ia_instrumentation_active = false; // To prevent performance penalty
+static void ia_update_active_flag_locked(void); // Function declaration for active flag updater
+
 static QDict *ia_make_error_response(int64_t id, const char *code,
                                      const char *message);
 static QDict *ia_make_ok_response(int64_t id, QDict *result);
@@ -229,6 +232,7 @@ static void ia_set_paused_locked(void)
     ia_state.stop_address_set_enabled = false;
     ia_state.stop_address_count = 0;
     ia_state.exec_state = IA_EXEC_PAUSED;
+    ia_update_active_flag_locked(); // For performance issue fix
     qemu_cond_broadcast(&ia_state.cond);
 }
 
@@ -881,6 +885,13 @@ static bool ia_lookup_register_shadow(CPUARMState *env, const char *name,
     } else if (ia_parse_aarch64_xreg(name, &index)) {
         *out_value = env->xregs[index];
         *out_label = env->shadow_xregs[index];
+    } else if (strcmp(name, "cpsr") == 0 || strcmp(name, "pstate") == 0) {
+        *out_value = pstate_read(env);
+        *out_label = 0;
+        if (out_width_bits) {
+            *out_width_bits = 32;
+        }
+        return true;
     } else {
         return false;
     }
@@ -1015,6 +1026,7 @@ static QDict *ia_handle_resume(int64_t id)
     ia_state.stop_address_set_enabled = false;
     ia_state.stop_address_count = 0;
     ia_state.exec_state = IA_EXEC_RUNNING;
+    ia_update_active_flag_locked(); // For performance issue fix
     qemu_mutex_unlock(&ia_state.lock);
 
     ia_softmmu_vm_start();
@@ -1051,6 +1063,7 @@ static QDict *ia_handle_close(int64_t id)
 
     qemu_mutex_lock(&ia_state.lock);
     ia_state.exec_state = IA_EXEC_EXITED;
+    ia_update_active_flag_locked(); // For performance issue fix
     qemu_cond_broadcast(&ia_state.cond);
     qemu_mutex_unlock(&ia_state.lock);
 
@@ -1114,6 +1127,7 @@ static QDict *ia_handle_resume_until_basic_block(int64_t id, QDict *params)
     ia_state.stop_address_set_enabled = false;
     ia_state.stop_address_count = 0;
     ia_state.exec_state = IA_EXEC_RUNNING;
+    ia_update_active_flag_locked(); // For performance issue fix
     qemu_mutex_unlock(&ia_state.lock);
 
     ia_softmmu_vm_start();
@@ -1183,6 +1197,7 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
     ia_state.last_matched_pc = 0;
     ia_state.instruction_budget = (uint64_t)count + 1;
     ia_state.exec_state = IA_EXEC_RUNNING;
+    ia_update_active_flag_locked(); // For performance issue fix
     qemu_mutex_unlock(&ia_state.lock);
 
     ia_softmmu_vm_start();
@@ -1266,6 +1281,7 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
         ia_state.instruction_budget = 0;
         ia_state.last_matched_pc = 0;
         ia_state.exec_state = IA_EXEC_RUNNING;
+        ia_update_active_flag_locked(); // For performance issue fix
         qemu_mutex_unlock(&ia_state.lock);
         ia_softmmu_vm_start();
         qemu_mutex_lock(&ia_state.lock);
@@ -1365,6 +1381,7 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
     ia_state.instruction_budget = 0;
     ia_state.last_matched_pc = 0;
     ia_state.exec_state = IA_EXEC_RUNNING;
+    ia_update_active_flag_locked(); // For performance issue fix
     qemu_mutex_unlock(&ia_state.lock);
 
     ia_softmmu_vm_start();
@@ -1407,7 +1424,7 @@ static QDict *ia_handle_get_registers(int64_t id, QDict *params)
 #else
 #if defined(TARGET_AARCH64)
     static const char *default_names[] = {
-        "pc", "sp",
+        "pc", "sp", "cpsr",
         "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
         "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
         "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
@@ -2659,6 +2676,7 @@ bool ia_should_stop_before_instruction(CPUState *cpu, vaddr pc)
                 should_stop = true;
             }
         }
+        ia_update_active_flag_locked(); // For performance issue fix
     }
     qemu_mutex_unlock(&ia_state.lock);
 
@@ -2690,4 +2708,16 @@ void ia_on_basic_block_executed(CPUState *cpu, vaddr pc)
     if (request_stop) {
         ia_softmmu_vm_stop();
     }
+}
+
+// To fix performance issues
+static void ia_update_active_flag_locked(void)
+{
+    bool active = ia_state.enabled && (
+        ia_state.exec_state == IA_EXEC_RUNNING &&
+        (ia_state.stop_address_enabled ||
+         ia_state.stop_address_set_enabled ||
+         ia_state.instruction_budget > 0)
+    );
+    atomic_set(&ia_instrumentation_active, active);
 }

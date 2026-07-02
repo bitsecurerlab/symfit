@@ -183,12 +183,32 @@ static IAState ia_state = {
     .listen_fd = -1,
 };
 
+bool ia_instrumentation_active = false;
+
 static QDict *ia_make_error_response(int64_t id, const char *code,
                                      const char *message);
 static QDict *ia_make_ok_response(int64_t id, QDict *result);
 static void ia_clear_watchpoint_match_locked(void);
 static void ia_clear_watchpoint_skip_locked(void);
 static bool ia_inspection_available_locked(void);
+
+static void ia_update_active_flag_locked(void)
+{
+    bool active = ia_state.enabled &&
+                  ia_state.exec_state == IA_EXEC_RUNNING &&
+                  (ia_state.stop_address_enabled ||
+                   ia_state.stop_address_set_enabled ||
+                   ia_state.instruction_budget > 0);
+    // Debug print
+    /*
+    fprintf(stderr, "[ia-flag] active=%d enabled=%d exec_state=%d "
+            "stop_addr=%d stop_set=%d budget=%lu\n",
+            active, ia_state.enabled, ia_state.exec_state,
+            ia_state.stop_address_enabled, ia_state.stop_address_set_enabled,
+            ia_state.instruction_budget);
+    */
+    atomic_set(&ia_instrumentation_active, active);
+}
 
 static target_ulong get_pc(CPUArchState *env)
 {
@@ -315,6 +335,7 @@ static void ia_enter_terminal_pause_locked(void)
     ia_state.run_requested = false;
     ia_state.close_requested = false;
     ia_state.exec_state = IA_EXEC_PAUSED;
+    ia_update_active_flag_locked();
     qemu_cond_broadcast(&ia_state.cond);
 }
 
@@ -2162,7 +2183,16 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
         ia_state.start_paused = false;
         ia_state.run_requested = true;
         ia_state.exec_state = IA_EXEC_RUNNING;
-        qemu_cond_signal(&ia_state.cond);
+        ia_update_active_flag_locked();
+        if (atomic_read(&ia_instrumentation_active)) {
+            CPUState *flush_cpu = ia_state.current_cpu;
+            if (flush_cpu) {
+                qemu_mutex_unlock(&ia_state.lock);
+                tb_flush(flush_cpu);
+                qemu_mutex_lock(&ia_state.lock);
+            }
+        }
+                qemu_cond_signal(&ia_state.cond);
     }
 
     while (((ia_state.stop_address_enabled || ia_state.stop_address_set_enabled) || ia_state.pause_pending) &&

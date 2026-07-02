@@ -44,4 +44,6 @@ void ia_rpc_enter_blocking_syscall(int syscall_nr, const char *name);
 void ia_rpc_enter_blocking_syscall_fd(int syscall_nr, const char *name, int fd);
 void ia_rpc_leave_blocking_syscall(void);
 
+extern bool ia_instrumentation_active; // To prevent performance penalty
+
 #endif

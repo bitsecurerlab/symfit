@@ -86,7 +86,6 @@ void HELPER(ia_tb_start)(CPUARMState *env, target_ulong pc)
 void HELPER(ia_insn_start)(CPUARMState *env, target_ulong pc)
 {
     CPUState *cs = env_cpu(env);
-
     if (ia_should_stop_before_instruction(cs, pc)) {
 #ifdef CONFIG_USER_ONLY
         cs->exception_index = EXCP_SWITCH;

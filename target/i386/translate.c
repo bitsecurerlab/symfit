@@ -17,7 +17,6 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 #include "qemu/osdep.h"
-
 #include "qemu/host-utils.h"
 #include "cpu.h"
 #include "disas/disas.h"
@@ -150,6 +149,8 @@ static void gen_jr(DisasContext *s, TCGv dest);
 static void gen_jmp(DisasContext *s, target_ulong eip);
 static void gen_jmp_tb(DisasContext *s, target_ulong eip, int tb_num);
 static void gen_op(DisasContext *s1, int op, TCGMemOp ot, int d);
+
+extern bool ia_instrumentation_active; // To prevent performance penalty
 
 /* i386 arith/logic operations */
 enum {
@@ -8567,7 +8568,13 @@ static void i386_tr_insn_start(DisasContextBase *dcbase, CPUState *cpu)
 
     tcg_gen_insn_start(dc->base.pc_next, dc->cc_op);
 #if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
-    gen_helper_ia_insn_start(cpu_env, tcg_const_tl(dc->base.pc_next));
+    #if defined(CONFIG_SOFTMMU)
+    if (atomic_read(&ia_instrumentation_active)) {
+    #endif
+        gen_helper_ia_insn_start(cpu_env, tcg_const_tl(dc->base.pc_next));
+    #if defined(CONFIG_SOFTMMU)
+    }
+    #endif
 #endif
 }
 
