@@ -20,7 +20,7 @@ RUN apt-get update && \
       # build utils
       autoconf automake libtool flex bison ragel gdb \
       # libs for qemu/symfit build
-      libpixman-1-dev libglib2.0-dev zlib1g-dev libreadline-dev \
+      libpixman-1-dev libglib2.0-dev zlib1g-dev libreadline-dev libunwind-dev \
       # media/image/audio libs (as in original)
       libopenjp2-7-dev libpng-dev libcairo2-dev libtiff-dev liblcms2-dev \
       libjpeg-dev libjpeg-turbo8-dev libflac-dev libogg-dev libvorbis-dev \
