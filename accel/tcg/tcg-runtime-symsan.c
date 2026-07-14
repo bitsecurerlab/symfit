@@ -1352,7 +1352,7 @@ void HELPER(symsan_check_load_guest)(CPUArchState *env, target_ulong addr, uint6
     }
 }
 void HELPER(symsan_check_store_guest)(CPUArchState *env, target_ulong addr, uint64_t length, uint64_t mmu_idx){
-    assert(second_ccache_flag != 1);
+    if (second_ccache_flag == 1) return;
     uint32_t value_label = 0;
     //void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
     void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
