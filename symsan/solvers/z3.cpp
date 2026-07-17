@@ -658,15 +658,21 @@ static z3::expr serialize(dfsan_label label, std::unordered_set<u32> &deps,
     tsize_cache[label] = tsize_cache[info->l1]; // lazy init
     return cache_expr(label, base.extract((info->op2.i + info->size) - 1, info->op2.i), deps, mode);
   } else if (info->op == Not) {
-    if (info->l2 == 0 || info->size != 1) {
+    if (info->l2 == 0) {
       throw z3::exception("invalid Not operation");
     }
     z3::expr e = serialize(info->l2, deps, mode);
     tsize_cache[label] = tsize_cache[info->l2]; // lazy init
-    if (!e.is_bool()) {
-      throw z3::exception("Only LNot should be recorded");
+    if (info->size == 1) {
+      if (!e.is_bool()) {
+        throw z3::exception("logical Not operand is not Boolean");
+      }
+      return cache_expr(label, !e, deps, mode);
     }
-    return cache_expr(label, !e, deps, mode);
+    if (!e.is_bv() || e.get_sort().bv_size() != info->size) {
+      throw z3::exception("bitwise Not operand has invalid sort or width");
+    }
+    return cache_expr(label, ~e, deps, mode);
   } else if (info->op == Neg) {
     if (info->l2 == 0) {
       throw z3::exception("invalid Neg predicate");
