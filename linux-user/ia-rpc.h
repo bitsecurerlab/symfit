@@ -31,6 +31,7 @@ bool ia_rpc_pause_on_signal(int sig, int si_code, uint64_t fault_addr);
 bool ia_rpc_finalize_pending_termination(CPUArchState *env);
 void ia_wait_if_paused(void);
 bool ia_should_stop_before_instruction(CPUState *cpu, vaddr pc);
+uint64_t ia_get_current_insn_pc(uint64_t fallback_pc);
 void ia_on_basic_block_executed(CPUState *cpu, vaddr pc);
 bool ia_rpc_check_write_watchpoint(CPUState *cpu, uint64_t address,
                                    uint64_t size, uint64_t pc);

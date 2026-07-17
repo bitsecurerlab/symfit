@@ -20,7 +20,11 @@ static target_ulong get_pc(CPUArchState *env)
 
     cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
 
+#ifdef CONFIG_USER_ONLY
+    return ia_get_current_insn_pc(pc);
+#else
     return pc;
+#endif
 }
 
 // For LLM stack monitoring functions:

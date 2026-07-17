@@ -183,6 +183,9 @@ static IAState ia_state = {
     .listen_fd = -1,
 };
 
+/* Updated by the per-instruction helper before symbolic helpers execute. */
+static __thread uint64_t ia_current_insn_pc;
+
 bool ia_instrumentation_active = false;
 
 static QDict *ia_make_error_response(int64_t id, const char *code,
@@ -3785,9 +3788,16 @@ void symsan_record_path_constraint(uint64_t pc, dfsan_label label, bool taken)
     }
 }
 
+uint64_t ia_get_current_insn_pc(uint64_t fallback_pc)
+{
+    return ia_current_insn_pc != 0 ? ia_current_insn_pc : fallback_pc;
+}
+
 bool ia_should_stop_before_instruction(CPUState *cpu, vaddr pc)
 {
     bool should_stop = false;
+
+    ia_current_insn_pc = pc;
 
     if (!ia_state.enabled) {
         return false;
