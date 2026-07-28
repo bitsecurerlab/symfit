@@ -61,3 +61,21 @@ def test_qmp_client_connects_and_executes(monkeypatch) -> None:
     assert result == {"status": "running"}
     assert fake_socket.sent[0]["execute"] == "qmp_capabilities"
     assert fake_socket.sent[1]["execute"] == "query-status"
+
+
+def test_qmp_client_preserves_list_return(monkeypatch) -> None:
+    fake_socket = FakeSocket(
+        [
+            '{"QMP":{"version":{"qemu":{"major":8}}}}\n',
+            '{"return":{}}\n',
+            '{"return":[{"cpu-index":0,"qom-path":"/machine/unattached/device[0]"}]}\n',
+        ]
+    )
+    monkeypatch.setattr("socket.socket", lambda *args, **kwargs: fake_socket)
+
+    client = QmpClient("/tmp/qmp.sock")
+    client.connect()
+    result = client.execute("query-cpus-fast")
+    client.close()
+
+    assert result == [{"cpu-index": 0, "qom-path": "/machine/unattached/device[0]"}]

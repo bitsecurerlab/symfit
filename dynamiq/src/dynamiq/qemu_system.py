@@ -11,8 +11,15 @@ from typing import Any
 
 
 _QEMU_SYSTEM_TO_SYMFIT = {
+    "i386": ("i386-softmmu", "symfit-system-i386"),
     "x86_64": ("x86_64-softmmu", "symfit-system-x86_64"),
     "aarch64": ("aarch64-softmmu", "symfit-system-aarch64"),
+}
+
+_ARCH_ALIASES = {
+    "amd64": "x86_64",
+    "x86": "i386",
+    "arm64": "aarch64",
 }
 
 
@@ -25,11 +32,11 @@ def _candidate_roots(repo_root: Path) -> list[Path]:
 
 
 def resolve_qemu_system_path(qemu_config: dict[str, Any]) -> str:
-    configured = qemu_config.get("qemu_system_path")
+    configured = qemu_config.get("qemu_system_path") or qemu_config.get("qemu_path")
     if configured:
         return str(configured)
 
-    arch = str(qemu_config.get("arch") or qemu_config.get("system_arch") or "x86_64")
+    arch = _normalize_arch(str(qemu_config.get("arch") or qemu_config.get("system_arch") or "x86_64"))
     repo_root = Path(__file__).resolve().parents[2]
     target = _QEMU_SYSTEM_TO_SYMFIT.get(arch)
     if target is not None:
@@ -61,19 +68,46 @@ class QemuSystemLaunchConfig:
     instrumentation_event_socket: str | None = None
     instrumentation_rpc_socket: str | None = None
     instrumentation_trace_file: str | None = None
+    machine: str | None = None
+    cpu: str | None = None
+    memory: str | None = None
+    kernel: str | None = None
+    append: str | None = None
+    drive: str | None = None
+    drives: list[str] = field(default_factory=list)
+    display: str | None = "none"
+    monitor: str | None = "none"
+    serial: str | None = "mon:stdio"
+    nodefaults: bool = False
+    no_reboot: bool = True
+    qmp_socket: str | None = None
     inherit_stderr: bool = False
 
     @classmethod
     def from_config(
         cls,
+        target: str = "",
+        target_args: list[str] | None = None,
         cwd: str | None = None,
         qemu_config: dict[str, Any] | None = None,
     ) -> "QemuSystemLaunchConfig":
         qemu_config = dict(qemu_config or {})
-        args = [str(item) for item in list(qemu_config.get("qemu_args") or [])]
+        raw_args = qemu_config.get("qemu_args")
+        if raw_args is None:
+            raw_args = qemu_config.get("system_args")
+        args = [str(item) for item in list(raw_args or [])]
         qmp_socket_path = qemu_config.get("qmp_socket_path")
-        if qmp_socket_path and not _has_qmp_option(args):
+        if args and qmp_socket_path and not _has_qmp_option(args):
             args.extend(["-qmp", f"unix:{qmp_socket_path},server,nowait"])
+        kernel = qemu_config.get("kernel")
+        if not kernel and target:
+            kernel = target
+        append = qemu_config.get("append")
+        if append is None and target_args:
+            append = " ".join(str(item) for item in target_args)
+        drives = qemu_config.get("drives")
+        if drives is None:
+            drives = []
         return cls(
             qemu_system_path=resolve_qemu_system_path(qemu_config),
             args=args,
@@ -82,11 +116,52 @@ class QemuSystemLaunchConfig:
             instrumentation_event_socket=qemu_config.get("instrumentation_socket_path"),
             instrumentation_rpc_socket=qemu_config.get("instrumentation_rpc_socket_path"),
             instrumentation_trace_file=qemu_config.get("instrumentation_trace_file_path"),
+            machine=qemu_config.get("machine") or qemu_config.get("qemu_machine"),
+            cpu=qemu_config.get("cpu") or qemu_config.get("qemu_cpu"),
+            memory=qemu_config.get("memory") or qemu_config.get("qemu_memory"),
+            kernel=str(kernel) if kernel else None,
+            append=str(append) if append else None,
+            drive=str(qemu_config.get("drive") or qemu_config.get("disk_image") or "") or None,
+            drives=[str(item) for item in list(drives or [])],
+            display=qemu_config.get("display", "none"),
+            monitor=qemu_config.get("monitor", "none"),
+            serial=qemu_config.get("serial", "mon:stdio"),
+            nodefaults=bool(qemu_config.get("nodefaults", False)),
+            no_reboot=bool(qemu_config.get("no_reboot", True)),
+            qmp_socket=str(qmp_socket_path) if qmp_socket_path else None,
             inherit_stderr=bool(qemu_config.get("inherit_stderr", False)),
         )
 
     def command(self) -> list[str]:
-        return [self.qemu_system_path, *self.args]
+        command = [self.qemu_system_path]
+        if self.args:
+            command.extend(self.args)
+            return command
+        if self.machine:
+            command.extend(["-machine", self.machine])
+        if self.cpu:
+            command.extend(["-cpu", self.cpu])
+        if self.memory:
+            command.extend(["-m", self.memory])
+        if self.display:
+            command.extend(["-display", self.display])
+        if self.monitor:
+            command.extend(["-monitor", self.monitor])
+        if self.serial:
+            command.extend(["-serial", self.serial])
+        if self.nodefaults:
+            command.append("-nodefaults")
+        if self.no_reboot:
+            command.append("-no-reboot")
+        if self.qmp_socket:
+            command.extend(["-qmp", f"unix:{self.qmp_socket},server,nowait"])
+        if self.kernel:
+            command.extend(["-kernel", self.kernel])
+        if self.append:
+            command.extend(["-append", self.append])
+        for drive in self._normalized_drives():
+            command.extend(["-drive", drive])
+        return command
 
     def environment(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -108,13 +183,43 @@ class QemuSystemLaunchConfig:
             "instrumentation_rpc_socket_path": self.instrumentation_rpc_socket,
             "instrumentation_trace_file_path": self.instrumentation_trace_file,
             "qemu_args": list(self.args),
+            "machine": self.machine,
+            "cpu": self.cpu,
+            "memory": self.memory,
+            "kernel": self.kernel,
+            "append": self.append,
+            "drive": self.drive,
+            "drives": list(self.drives),
+            "display": self.display,
+            "monitor": self.monitor,
+            "serial": self.serial,
+            "nodefaults": self.nodefaults,
+            "no_reboot": self.no_reboot,
+            "qmp_socket_path": self.qmp_socket,
             "env": dict(self.env),
             "inherit_stderr": self.inherit_stderr,
         }
 
+    def _normalized_drives(self) -> list[str]:
+        raw_drives = list(self.drives)
+        if self.drive:
+            raw_drives.insert(0, self.drive)
+        normalized: list[str] = []
+        for drive in raw_drives:
+            if "=" in drive or "," in drive:
+                normalized.append(drive)
+            else:
+                normalized.append(f"file={drive},format=raw")
+        return normalized
+
 
 def _has_qmp_option(args: list[str]) -> bool:
     return any(arg == "-qmp" or arg == "-qmp-pretty" for arg in args)
+
+
+def _normalize_arch(arch: str) -> str:
+    normalized = arch.strip().lower()
+    return _ARCH_ALIASES.get(normalized, normalized)
 
 
 class QemuSystemProcessRunner:

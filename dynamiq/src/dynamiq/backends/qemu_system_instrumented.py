@@ -125,6 +125,8 @@ class QemuSystemInstrumentedBackend:
                 if self._process_runner is None:
                     self._process_runner = QemuSystemProcessRunner()
                 launch_config = QemuSystemLaunchConfig.from_config(
+                    target=target,
+                    target_args=args,
                     cwd=cwd,
                     qemu_config=qemu_config,
                 )
@@ -504,8 +506,11 @@ class QemuSystemInstrumentedBackend:
     def read_memory(self, address: str, size: int, address_space: str | None = None) -> dict[str, Any]:
         self._require_started()
         params: dict[str, Any] = {"address": address, "size": size}
-        if address_space:
-            params["address_space"] = address_space
+        normalized_space = str(address_space or "virtual").strip().lower()
+        if normalized_space not in {"virtual", "physical"}:
+            raise InvalidStateError("address_space must be either 'virtual' or 'physical'")
+        if normalized_space != "virtual":
+            params["address_space"] = normalized_space
         result = MemoryReadResult.from_rpc_result(self._rpc_request("read_memory", params))
         return self._response(result.to_dict())
 
@@ -870,7 +875,9 @@ class QemuSystemInstrumentedBackend:
         self._state["session_status"] = "closed"
         self._state["pending_termination"] = False
         self._state["termination_kind"] = None
+        self._state["launched_qemu_path"] = None
         self._state["launched_qemu_user_path"] = None
+        self._state["launched_qemu_system_path"] = None
         self._state["instrumentation_rpc_socket_path"] = None
         self._state["rpc_protocol_version"] = None
         self._state["rpc_capabilities"] = {}
