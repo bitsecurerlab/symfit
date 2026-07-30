@@ -108,6 +108,7 @@ Optional (recommended):
 - `get_symbolic_expression`
 - `get_path_constraints`
 - `get_recent_path_constraints`
+- `solve_path_constraint`
 - `queue_stdin_chunk`
 - `start_trace`
 - `stop_trace`
@@ -331,6 +332,44 @@ Returns:
 - `constraints`: array of symbolic-label objects for nested constraints
 - `count`: number of nested constraints returned
 
+### `solve_path_constraint`
+
+Behavior:
+
+- `label` must identify a branch-condition label, for example a root returned by
+  `get_recent_path_constraints`; any other label is rejected
+- `negate` selects the direction to solve for: with the default `true`, the solve
+  targets the opposite of the branch's recorded direction; with `false`, it solves
+  for the recorded direction
+- requires the `solve_path_constraints` capability, which is unavailable when the
+  active Symsan runtime does not provide path-constraint solving
+- returned assignments are solver candidates; replay them and verify the intended
+  path is reached before treating the result as a reachability proof
+- a `conditional` result depends on concretized symbolic-load assumptions that
+  must hold for the candidate to be valid
+
+Parameters:
+
+- `label`: branch-condition label encoded as a hex string
+- `negate`: optional boolean, default `true`; when `true`, solve for the opposite
+  of the recorded branch direction
+
+Returns:
+
+- `label`: normalized label hex string
+- `root_taken`: the direction the branch took on the recorded path
+- `desired_taken`: the direction solved for (`!root_taken` when `negate` is `true`)
+- `negate`: echoes the requested direction flag
+- `status`: `sat` when an assignment was found, otherwise `unsat`
+- `soundness`: `sound`, or `conditional` when the solve relied on concretized loads
+- `assignments`: array of the input-byte assignments that produce `desired_taken`,
+  each with `offset`, `value`, and `value_hex`
+- `assignment_count`: number of assignments returned
+- `assumptions`: array of concretized symbolic-load assumptions the result depends
+  on, each with `kind`, `load_label`, `addr_label`, `concrete_address`,
+  `concrete_value`, `pc`, and `size`
+- `assumption_count`: number of assumptions returned
+
 ### `get_recent_path_constraints`
 
 Behavior:
@@ -422,6 +461,7 @@ Current v1 capability flags:
 - `read_symbolic_expression`
 - `read_path_constraints`
 - `read_recent_path_constraints`
+- `solve_path_constraints`
 - `queue_stdin_chunk`
 - `symbolize_memory`
 - `symbolize_register`
@@ -562,6 +602,8 @@ Current stable error code strings:
 - `unsupported_arch`
 - `unsupported_feature`
 - `internal_error`
+- `solver_error`
+- `solver_unknown`
 
 ## Migration Notes
 
