@@ -22,6 +22,7 @@ _ARCH_ALIASES = {
     "arm64": "aarch64",
 }
 
+
 def _candidate_roots(repo_root: Path) -> list[Path]:
     roots = [repo_root]
     parent = repo_root.parent
@@ -91,8 +92,6 @@ class QemuSystemLaunchConfig:
         qemu_config: dict[str, Any] | None = None,
     ) -> "QemuSystemLaunchConfig":
         qemu_config = dict(qemu_config or {})
-        # Argument collection was reworked
-        #args = [str(item) for item in list(qemu_config.get("qemu_args") or [])]
         raw_args = qemu_config.get("qemu_args")
         if raw_args is None:
             raw_args = qemu_config.get("system_args")
@@ -134,7 +133,6 @@ class QemuSystemLaunchConfig:
         )
 
     def command(self) -> list[str]:
-        #return [self.qemu_system_path, *self.args]
         command = [self.qemu_system_path]
         if self.args:
             command.extend(self.args)
@@ -221,6 +219,11 @@ def _has_qmp_option(args: list[str]) -> bool:
 def _normalize_arch(arch: str) -> str:
     normalized = arch.strip().lower()
     return _ARCH_ALIASES.get(normalized, normalized)
+
+def _normalize_arch(arch: str) -> str:
+    normalized = arch.strip().lower()
+    return _ARCH_ALIASES.get(normalized, normalized)
+
 
 class QemuSystemProcessRunner:
     def __init__(self) -> None:

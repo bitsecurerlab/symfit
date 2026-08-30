@@ -62,6 +62,7 @@ def test_qmp_client_connects_and_executes(monkeypatch) -> None:
     assert fake_socket.sent[0]["execute"] == "qmp_capabilities"
     assert fake_socket.sent[1]["execute"] == "query-status"
 
+
 def test_qmp_client_preserves_list_return(monkeypatch) -> None:
     fake_socket = FakeSocket(
         [
