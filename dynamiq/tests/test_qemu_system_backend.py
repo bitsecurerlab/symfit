@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from dynamiq.backends.qemu_system_instrumented import QemuSystemInstrumentedBackend
-from dynamiq.errors import SessionTimeoutError
+from dynamiq.errors import InvalidStateError, SessionTimeoutError
 from dynamiq.qemu_system import QemuSystemLaunchConfig
 
 
@@ -67,6 +67,13 @@ def test_system_backend_close_stdin() -> None:
     result = backend.close_stdin()
     assert result["closed"] is True
     assert result["available"] is False
+
+def test_system_backend_read_memory_rejects_invalid_address_space() -> None:
+    backend = QemuSystemInstrumentedBackend()
+    backend._started = True
+
+    with pytest.raises(InvalidStateError, match="address_space must be either 'virtual' or 'physical'"):
+        backend.read_memory("0x7c00", 2, address_space="guest")
 
 
 def test_system_backend_system_reset_not_implemented_without_qmp() -> None:

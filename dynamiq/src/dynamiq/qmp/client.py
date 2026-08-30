@@ -61,7 +61,8 @@ class QmpClient:
             self._greeting = None
             raise
 
-    def execute(self, command: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    #def execute(self, command: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    def execute(self, command: str, arguments: dict[str, Any] | None = None) -> Any:
         if self._socket is None or self._reader is None:
             raise QmpError("QMP client is not connected")
         payload: dict[str, Any] = {"execute": command}
@@ -72,7 +73,7 @@ class QmpClient:
         while True:
             message = self._read_message(self._reader)
             if "return" in message:
-                return dict(message["return"])
+                return message["return"]
             if "error" in message:
                 raise QmpError(str(message["error"]))
 

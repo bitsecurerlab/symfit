@@ -1881,7 +1881,7 @@ static QDict *ia_handle_pause(int64_t id)
 
     qemu_mutex_lock(&ia_state.lock);
     while (ia_state.pause_pending &&
-           ia_state.exec_state != IA_EXEC_EXITED &&
+           ia_state.exec_state != IA_EXEC_EXITED && 
            !ia_state.shutting_down) {
         qemu_cond_wait(&ia_state.cond, &ia_state.lock);
     }
@@ -2199,7 +2199,7 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
     }
 
     while (((ia_state.stop_address_enabled || ia_state.stop_address_set_enabled) || ia_state.pause_pending) &&
-           ia_state.exec_state != IA_EXEC_EXITED &&
+           ia_state.exec_state != IA_EXEC_EXITED && ia_state.exec_state != IA_EXEC_PAUSED && 
            !ia_state.shutting_down) {
         qemu_cond_wait(&ia_state.cond, &ia_state.lock);
     }

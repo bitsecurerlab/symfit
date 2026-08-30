@@ -158,8 +158,7 @@ def test_system_reset(system_session: ScriptSession) -> None:
         pytest.skip("system_reset not available")
 
     result = backend.system_reset()
-    assert "qmp_result" in result or result.get("status") == "reset"
-
+    assert "qmp_result" in result["result"] or result["result"].get("status") == "reset"
 
 @pytest.mark.live_qemu
 def test_get_cpu_info(system_session: ScriptSession) -> None:
@@ -169,8 +168,7 @@ def test_get_cpu_info(system_session: ScriptSession) -> None:
         pytest.skip("get_cpu_info not available")
 
     result = backend.get_cpu_info()
-    assert "cpus" in result or "cpu_count" in result
-
+    assert "cpus" in result["result"] or "cpu_count" in result["result"]
 
 @pytest.mark.live_qemu
 def test_smp_support(system_session: ScriptSession) -> None:
@@ -181,14 +179,14 @@ def test_smp_support(system_session: ScriptSession) -> None:
 
     # Get CPU info to check CPU count
     result = backend.get_cpu_info()
-    cpu_count = result.get("cpu_count", 0)
-    
+    cpu_count = result["result"].get("cpu_count", 0)
+
     if cpu_count <= 1:
         pytest.skip(f"Single CPU system (count={cpu_count}), SMP test not applicable")
 
     # Test setting current CPU
     result = backend.set_current_cpu(0)
-    assert result["cpu_index"] == 0
+    assert result["result"]["cpu_index"] == 0
 
 
 @pytest.mark.live_qemu
@@ -218,7 +216,7 @@ def test_query_devices(system_session: ScriptSession) -> None:
         pytest.skip("query_devices not available")
 
     result = backend.query_devices()
-    assert "devices" in result or "qmp_result" in result
+    assert "devices" in result["result"] or "qmp_result" in result["result"]
 
 
 @pytest.mark.live_qemu

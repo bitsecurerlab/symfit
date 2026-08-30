@@ -38,6 +38,63 @@ def test_qemu_system_resolver_prefers_symfit_build(monkeypatch, tmp_path: Path) 
 
     assert resolve_qemu_system_path({"arch": "aarch64"}) == str(preferred)
 
+def test_qemu_system_resolver_accepts_aliases(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    preferred = repo_root / "build" / "symfit" / "x86_64-softmmu" / "symfit-system-x86_64"
+    preferred.parent.mkdir(parents=True)
+    preferred.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("dynamiq.qemu_system.Path.resolve", lambda self: repo_root / "src" / "dynamiq" / "qemu_system.py")
+    monkeypatch.setattr("dynamiq.qemu_system.shutil.which", lambda _name: None)
+
+    assert resolve_qemu_system_path({"arch": "amd64"}) == str(preferred)
+
+
+def test_qemu_system_resolver_accepts_generic_qemu_path() -> None:
+    assert resolve_qemu_system_path({"qemu_path": "/opt/qemu-system-x86_64"}) == "/opt/qemu-system-x86_64"
+
+
+def test_qemu_system_launch_config_builds_structured_command() -> None:
+    config = QemuSystemLaunchConfig.from_config(
+        target="/tmp/bzImage",
+        target_args=["console=ttyS0", "panic=1"],
+        qemu_config={
+            "qemu_system_path": "/usr/bin/qemu-system-x86_64",
+            "machine": "pc",
+            "cpu": "max",
+            "memory": "512M",
+            "drive": "/tmp/disk.img",
+            "drives": ["file=/tmp/data.img,if=virtio"],
+            "nodefaults": True,
+        },
+    )
+
+    assert config.command() == [
+        "/usr/bin/qemu-system-x86_64",
+        "-machine",
+        "pc",
+        "-cpu",
+        "max",
+        "-m",
+        "512M",
+        "-display",
+        "none",
+        "-monitor",
+        "none",
+        "-serial",
+        "mon:stdio",
+        "-nodefaults",
+        "-no-reboot",
+        "-kernel",
+        "/tmp/bzImage",
+        "-append",
+        "console=ttyS0 panic=1",
+        "-drive",
+        "file=/tmp/disk.img,format=raw",
+        "-drive",
+        "file=/tmp/data.img,if=virtio",
+    ]
+
 
 def test_qemu_system_launch_config_to_backend_config() -> None:
     config = QemuSystemLaunchConfig(

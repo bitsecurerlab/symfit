@@ -23,6 +23,8 @@
 #include "exec/helper-proto.h"
 #include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
+
+extern bool ia_instrumentation_active;
 #include "exec/address-spaces.h"
 #if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
 #include "linux-user/ia-rpc.h"
@@ -222,6 +224,9 @@ void helper_ia_tb_start(CPUX86State *env, target_ulong pc)
 
 void helper_ia_insn_start(CPUX86State *env, target_ulong pc)
 {
+    if (!atomic_read(&ia_instrumentation_active)) {
+        return;
+    }
 
     CPUState *cs = env_cpu(env);
 

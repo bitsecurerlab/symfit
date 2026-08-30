@@ -10,6 +10,7 @@
 #include "dfsan_interface.h"
 #include "linux-user/ia-rpc.h"
 #include "symfit-telemetry/symfit_telemetry.h"
+#include "sysemu/sysemu.h"
 extern CPUArchState *global_env;
 #define CONST_LABEL 0
 
@@ -1027,6 +1028,38 @@ static uint64_t symsan_setcond_internal(CPUArchState *env, uint64_t arg1, uint64
     return label;
 }
 
+static void symsan_trace_cond_internal(CPUArchState *env, uint64_t result,
+                                       dfsan_label label, uint8_t result_bits)
+{
+    SymsanRuntimeLabelInfo *info;
+    dfsan_label cmp_label;
+
+    if (label == 0) {
+        return;
+    }
+
+    info = dfsan_get_label_info(label);
+    if (!info || info->op != Ite || info->l1 == 0) {
+        return;
+    }
+
+    cmp_label = info->l1;
+    if (!dfsan_is_branch_condition_label(cmp_label)) {
+        return;
+    }
+
+    if (symsan_debug_path_constraints_enabled()) {
+        fprintf(stderr,
+                "[ia-pc] branch pc=0x%lx bits=%u cmp=0x%x ite=0x%x taken=%lu\n",
+                (unsigned long)get_pc(env), result_bits, cmp_label, label,
+                (unsigned long)(result != 0));
+    }
+
+    __taint_trace_cond(cmp_label, result != 0, get_pc(env));
+    symsan_record_path_constraint(get_pc(env), cmp_label, result != 0);
+}
+
+
 uint64_t HELPER(symsan_setcond_i32)(CPUArchState *env, uint32_t arg1, uint64_t arg1_label,
                               uint32_t arg2, uint64_t arg2_label,
                               int32_t cond, uint32_t result)
@@ -1040,6 +1073,19 @@ uint64_t HELPER(symsan_setcond_i64)(CPUArchState *env, uint64_t arg1, uint64_t a
 {
     return symsan_setcond_internal(env, arg1, arg1_label, arg2, arg2_label, cond, result, 64);
 }
+
+void HELPER(symsan_trace_cond_i32)(CPUArchState *env, uint32_t result,
+                                   uint64_t label)
+{
+    symsan_trace_cond_internal(env, result, label, 32);
+}
+
+void HELPER(symsan_trace_cond_i64)(CPUArchState *env, uint64_t result,
+                                   uint64_t label)
+{
+    symsan_trace_cond_internal(env, result, label, 64);
+}
+
 
 static inline bool is_stack_addr(target_ulong addr, CPUArchState *env) {
     target_ulong sp = get_stack_pointer(env);
@@ -1275,12 +1321,17 @@ void HELPER(symsan_store_guest_i64)(CPUArchState *env, uint64_t value_label,
     symsan_store_guest_internal(env, value_label, addr, addr_label, length, mmu_idx);
 }
 
-#ifdef CONFIG_USER_ONLY
+//#ifdef CONFIG_USER_ONLY // Removed for softmmu watchpoint test
 void HELPER(symsan_watch_store_guest)(CPUArchState *env, target_ulong addr,
                                       uint64_t length)
 {
     if (ia_rpc_check_write_watchpoint(env_cpu(env), addr, length, get_pc(env))) {
+    #ifdef CONFIG_USER_ONLY
         symsan_stop_for_watchpoint(env);
+    #else
+        vm_stop(RUN_STATE_PAUSED);
+        cpu_loop_exit_restore(env_cpu(env), GETPC());
+    #endif
     }
 }
 
@@ -1288,12 +1339,17 @@ void HELPER(symsan_watch_read_guest)(CPUArchState *env, target_ulong addr,
                                       uint64_t length)
 {
     if (ia_rpc_check_read_watchpoint(env_cpu(env), addr, length, get_pc(env))) {
+    #ifdef CONFIG_USER_ONLY
         symsan_stop_for_watchpoint(env);
+    #else
+        vm_stop(RUN_STATE_PAUSED);
+        cpu_loop_exit_restore(env_cpu(env), GETPC());
+    #endif
     }
 }
 
 
-#endif
+//#endif
 
 void HELPER(symsan_store_host_i32)(uint64_t value_label,
                                 void *addr,
