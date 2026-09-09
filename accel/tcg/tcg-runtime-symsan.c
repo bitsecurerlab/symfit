@@ -1627,17 +1627,6 @@ void HELPER(symsan_check_state_no_sse)(CPUArchState *env) {
     if (env->shadow_CF || env->shadow_NF || env->shadow_VF || env->shadow_ZF) {
         symbolic_flag = 1;
     }
-    /* AArch64 Qn is the low 128 bits of Zn. Keep using the symbolic code
-     * cache while any NEON register contains symbolic data. */
-    if (!symbolic_flag && env->aarch64) {
-        for (unsigned int i = 0; i < 32; i++) {
-            if (!dfsan_region_is_concrete(env->vfp.zregs[i].d,
-                                          2 * sizeof(env->vfp.zregs[i].d[0]))) {
-                symbolic_flag = 1;
-                break;
-            }
-        }
-    }
     #endif
     second_ccache_flag = symbolic_flag;
     // if (!noSymbolicData) fprintf(stderr, "block 0x%lx state %s\n", env->eip, second_ccache_flag?"symbolic":"concrete");
