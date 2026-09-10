@@ -1484,14 +1484,15 @@ static void do_tb_phys_invalidate(TranslationBlock *tb, bool rm_from_page_list)
     phys_pc = tb->page_addr[0] + (tb->pc & ~TARGET_PAGE_MASK);
     h = tb_hash_func(phys_pc, tb->pc, tb->flags, tb_cflags(tb) & CF_HASH_MASK,
                      tb->trace_vcpu_dstate);
-#ifdef CONFIG_2nd_CCACHE
     if (!(tb->cflags & CF_NOCACHE)) {
-        qht_remove(&tb_ctx.htable2, tb, h);
-    }
+#ifdef CONFIG_2nd_CCACHE
+        if (!qht_remove(&tb_ctx.htable2, tb, h) &&
+            !qht_remove(&tb_ctx.htable, tb, h)) {
+#else
+        if (!qht_remove(&tb_ctx.htable, tb, h)) {
 #endif
-    if (!(tb->cflags & CF_NOCACHE) &&
-        !qht_remove(&tb_ctx.htable, tb, h)) {
-        return;
+            return;
+        }
     }
 
     /* remove the TB from the page list */
