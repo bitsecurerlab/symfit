@@ -68,6 +68,13 @@ def test_system_backend_close_stdin() -> None:
     assert result["closed"] is True
     assert result["available"] is False
 
+def test_system_backend_read_memory_rejects_invalid_address_space() -> None:
+    backend = QemuSystemInstrumentedBackend()
+    backend._started = True
+
+    with pytest.raises(InvalidStateError, match="address_space must be either 'virtual' or 'physical'"):
+        backend.read_memory("0x7c00", 2, address_space="guest")
+
 
 def test_system_backend_read_memory_rejects_invalid_address_space() -> None:
     backend = QemuSystemInstrumentedBackend()

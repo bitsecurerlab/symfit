@@ -394,6 +394,10 @@ void tcg_gen_brcond_i32(TCGCond cond, TCGv_i32 arg1, TCGv_i32 arg2, TCGLabel *l)
         /* Generate a setcond for effects in the symbolic backend */
         TCGv_i32 cond_result_temp = tcg_temp_new_i32();
         tcg_gen_setcond_i32(cond, cond_result_temp, arg1, arg2);
+        if (second_ccache_flag) {
+            gen_helper_symsan_trace_cond_i32(cpu_env, cond_result_temp,
+                                             shadow_i32(cond_result_temp));
+        }
         tcg_temp_free_i32(cond_result_temp);
 
         l->refs++;
@@ -1856,6 +1860,10 @@ void tcg_gen_brcond_i64(TCGCond cond, TCGv_i64 arg1, TCGv_i64 arg2, TCGLabel *l)
         /* Generate a setcond for effects in the symbolic backend */
         TCGv_i64 cond_result_temp = tcg_temp_new_i64();
         tcg_gen_setcond_i64(cond, cond_result_temp, arg1, arg2);
+        if (second_ccache_flag) {
+            gen_helper_symsan_trace_cond_i64(cpu_env, cond_result_temp,
+                                             shadow_i64(cond_result_temp));
+        }
         tcg_temp_free_i64(cond_result_temp);
 
         l->refs++;
@@ -3471,23 +3479,44 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     tcg_gen_mov_tl(saved_addr, addr);
     TCGv_i64 mmu_idx = tcg_const_i64(idx);
     load_size = tcg_const_i64(1 << (memop & MO_SIZE));
+#ifdef CONFIG_USER_ONLY
+    /*
+     * User mode: probe BEFORE the concrete load.  If check_load_guest
+     * detects symbolic data it raises EXCP_SWITCH, which replays the
+     * instruction in symbolic mode.  Checking after the load would leave
+     * the destination register clobbered (e.g. ldr x0,[x0] overwrites x0
+     * with the loaded value before the replay can re-read the address).
+     * User mode has no hardware TLB, so probing before the load is safe.
+     */
+    if (!second_ccache_flag) {
+        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
+                                           mmu_idx);
+    }
     gen_ldst_i32(INDEX_op_qemu_ld_i32, val, addr, memop, idx);
     if (second_ccache_flag) {
         gen_helper_symsan_load_guest_i32(shadow_i32(val), cpu_env,
                                          saved_addr,
                                          tcgv_i64_expr_num(saved_addr),
                                          load_size, mmu_idx);
+    }
+#else
+    /*
+     * System mode: probe AFTER the concrete load so the TLB is already
+     * populated.  Probing before the load triggers x86_cpu_tlb_fill
+     * g_assert(!probe) on demand-paged addresses during boot.
+     */
+    gen_ldst_i32(INDEX_op_qemu_ld_i32, val, addr, memop, idx);
+    gen_helper_symsan_watch_read_guest(cpu_env, saved_addr, load_size);
+    if (second_ccache_flag) {
+        gen_helper_symsan_load_guest_i32(shadow_i32(val), cpu_env,
+                                         saved_addr,
+                                         tcgv_i64_expr_num(saved_addr),
+                                         load_size, mmu_idx);
     } else {
-        /*
-         * Probe AFTER the concrete load so the target page is already in the
-         * TLB, mirroring the store path above. Probing before the load made
-         * i386's x86_cpu_tlb_fill() abort (g_assert(!probe)) on demand-paged
-         * addresses during boot. saved_addr still holds the pre-load address,
-         * so a later switch-to-symbolic replay uses the correct address.
-         */
         gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
                                            mmu_idx);
     }
+#endif
     tcg_temp_free_i64(load_size);
     tcg_temp_free_i64(mmu_idx);
     tcg_temp_free(saved_addr);
@@ -3541,9 +3570,9 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     TCGv_i64 mmu_idx = tcg_const_i64(idx); // TO DO: Should we be using the 32-bit equivalent for this op?
     store_size = tcg_const_i64(1 << (memop & MO_SIZE));
 
-    #ifdef CONFIG_USER_ONLY
+    //#ifdef CONFIG_USER_ONLY // Test for softmmu watchpoints
     gen_helper_symsan_watch_store_guest(cpu_env, addr, store_size);
-    #endif
+    //#endif
     gen_ldst_i32(INDEX_op_qemu_st_i32, val, addr, memop, idx);
 
     /* Perform the symbolic memory access. Doing so _after_ the concrete
@@ -3613,22 +3642,31 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     load_size = tcg_const_i64(1 << (memop & MO_SIZE));
     TCGv_i64 mmu_idx = tcg_const_i64(idx);
 
+#ifdef CONFIG_USER_ONLY
+    /* User mode: probe before the load — same rationale as the i32 path. */
+    if (!second_ccache_flag) {
+        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
+                                           mmu_idx);
+    }
     gen_ldst_i64(INDEX_op_qemu_ld_i64, val, addr, memop, idx);
-
+    if (second_ccache_flag) {
+        gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val), cpu_env,
+                                         saved_addr, tcgv_i64_expr_num(saved_addr),
+                                         load_size, mmu_idx);
+    }
+#else
+    /* System mode: probe after the load for TLB population. */
+    gen_ldst_i64(INDEX_op_qemu_ld_i64, val, addr, memop, idx);
+    gen_helper_symsan_watch_read_guest(cpu_env, saved_addr, load_size);
     if (second_ccache_flag) {
         gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val), cpu_env,
                                          saved_addr, tcgv_i64_expr_num(saved_addr),
                                          load_size, mmu_idx);
     } else {
-        /*
-         * Probe AFTER the concrete load so the target page is already in the
-         * TLB, mirroring the store path. Probing before the load made i386's
-         * x86_cpu_tlb_fill() abort (g_assert(!probe)) on demand-paged addresses
-         * during boot. saved_addr still holds the pre-load address, so a later
-         * switch-to-symbolic replay uses the correct address.
-         */
-        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size, mmu_idx);
+        gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
+                                           mmu_idx);
     }
+#endif
     tcg_temp_free_i64(load_size);
     tcg_temp_free_i64(mmu_idx);
     /*
@@ -3702,9 +3740,9 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     
     TCGv_i64 mmu_idx = tcg_const_i64(idx);
     store_size = tcg_const_i64(1 << (memop & MO_SIZE));
-    #ifdef CONFIG_USER_ONLY
+    //#ifdef CONFIG_USER_ONLY // Test for softmmu watchpoints
     gen_helper_symsan_watch_store_guest(cpu_env, addr, store_size);
-    #endif
+    //#endif
     gen_ldst_i64(INDEX_op_qemu_st_i64, val, addr, memop, idx);
     /* Perform the symbolic memory access. Doing so _after_ the concrete
      * operation ensures that the target address is in the TLB. */

@@ -561,6 +561,64 @@ class QemuSystemInstrumentedBackend:
         self._require_started()
         return self._response(self._rpc_request("solve_path_constraint", {"label": label, "negate": negate}))
 
+    @staticmethod
+    def _u64(v: "int | str") -> str:
+        """Normalize a 64-bit value to a hex string so large kernel addresses
+        survive JSON (ints > 2**53 are not safe); the RPC side parses either."""
+        return v if isinstance(v, str) else hex(v)
+
+    def query_value_range(self, label: str, lo: "int | str" = 0, hi: "int | str" = 0,
+                          base: "int | str" = 0) -> dict[str, Any]:
+        """Min/max of a *value* label (an OOB off/len/val) under the path
+        constraints -- the capability reach query the branch-flipper cannot do.
+        lo/hi bound the search window (hi=0 -> the value's full bit-width max);
+        base is subtracted from min/max so you get reach directly.
+        Returns {min, max, min_hex, max_hex, soundness}."""
+        self._require_started()
+        return self._response(self._rpc_request("query_value_range", {
+            "label": label,
+            "lo": self._u64(lo),
+            "hi": self._u64(hi),
+            "base": self._u64(base),
+        }))
+
+    def query_value_eq(self, label: str, target: "int | str") -> dict[str, Any]:
+        """Targeting query: is there an input making the value label == target,
+        under the path constraints? Returns {status: 'sat'|'unsat', assignments,
+        soundness}; on sat the assignments are the input bytes for concrete replay."""
+        self._require_started()
+        return self._response(self._rpc_request("query_value_eq", {
+            "label": label,
+            "target": self._u64(target),
+        }))
+
+    def get_path_constraint_smt2(self, label: str, negate: bool = True) -> dict[str, Any]:
+        """Raw SMT2 text for the path constraint at `label` -- the same
+        constraint set solve_path_constraint() would solve (root direction
+        negated by default, plus every nested condition on the path), but
+        rendered as the solver's own SMT2 dump instead of byte assignments.
+        Valid whether the result is sat or unsat -- unsat is a normal,
+        non-error outcome here, same as elsewhere in this client.
+        Returns {status: 'sat'|'unsat', smt2, root_taken, desired_taken}."""
+        self._require_started()
+        return self._response(self._rpc_request("get_path_constraint_smt2", {
+            "label": label,
+            "negate": negate,
+        }))
+
+    def get_path_constraint_evaluated(self, label: str, negate: bool = True) -> dict[str, Any]:
+        """Same constraint set as get_path_constraint_smt2(), plus a second
+        rendering: each assertion alongside its value under the solved model
+        (`assertion evaluates to value`), one per line. On unsat there is no
+        model, so `evaluated` comes back as an empty string while `smt2` is
+        still populated and `status` is 'unsat' -- not an error.
+        Returns {status: 'sat'|'unsat', smt2, evaluated, root_taken, desired_taken}."""
+        self._require_started()
+        return self._response(self._rpc_request("get_path_constraint_evaluated", {
+            "label": label,
+            "negate": negate,
+        }))
+
     def disassemble(self, address: str, count: int) -> dict[str, Any]:
         self._require_started()
         if not self._capabilities.disassemble:
@@ -573,16 +631,24 @@ class QemuSystemInstrumentedBackend:
         self._state["memory_maps"] = maps.to_dict()["regions"]
         return self._response({"maps": maps.to_dict()})
 
+    def _hmp_snapshot(self, hmp_cmd: str, snapshot_name: str) -> None:
+        """Run savevm/loadvm via QMP human-monitor-command (main-loop context)."""
+        if self._controller is None:
+            raise UnsupportedOperationError(
+                "snapshot support requires a QMP control channel")
+        resp = self._controller.monitor_command(f"{hmp_cmd} {snapshot_name}")
+        if isinstance(resp, str) and resp.strip():
+            msg = resp.strip()
+            if "Error" in msg or "error" in msg or "does not" in msg:
+                raise RuntimeError(f"{hmp_cmd} failed: {msg}")
+
     def take_snapshot(self, name: str | None = None) -> dict[str, Any]:
         self._require_started()
         if not self._capabilities.take_snapshot:
             raise UnsupportedOperationError("backend does not support snapshots")
 
-        if self._controller is None:
-            raise UnsupportedOperationError("snapshot support requires a backend control channel")
-
         snapshot_id = name or f"s-{len(self._snapshots) + 1}"
-        self._controller.save_snapshot(snapshot_id)
+        self._hmp_snapshot("savevm", snapshot_id)
 
         snapshot = {
             "snapshot_id": snapshot_id,
@@ -602,10 +668,7 @@ class QemuSystemInstrumentedBackend:
         if not self._capabilities.restore_snapshot:
             raise UnsupportedOperationError("backend does not support snapshot restore")
 
-        if self._controller is None:
-            raise UnsupportedOperationError("snapshot restore requires a backend control channel")
-
-        self._controller.load_snapshot(snapshot_id)
+        self._hmp_snapshot("loadvm", snapshot_id)
         snapshot = self._snapshots.get(snapshot_id, {"snapshot_id": snapshot_id})
         self._state["last_snapshot_id"] = snapshot_id
         return self._response(snapshot)

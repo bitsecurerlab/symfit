@@ -1447,6 +1447,20 @@ def test_backend_read_memory_passes_address_space_to_rpc() -> None:
         {"address": "0x7c00", "size": 2, "address_space": "physical"},
     )
 
+def test_backend_read_memory_rejects_invalid_address_space() -> None:
+    instrumentation = FakeInstrumentationClient()
+    rpc = FakeInstrumentationRpcClient(instrumentation)
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=FakeQmpClient(),
+        instrumentation_client=instrumentation,
+        instrumentation_rpc_client=rpc,
+    )
+    backend.start("target.bin", [], None, {})
+
+    with pytest.raises(InvalidStateError, match="address_space must be either 'virtual' or 'physical'"):
+        backend.read_memory("0x7c00", 2, address_space="guest")
+
+    assert rpc.requests == []
 
 def test_backend_read_memory_rejects_invalid_address_space() -> None:
     instrumentation = FakeInstrumentationClient()

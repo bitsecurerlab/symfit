@@ -48,6 +48,10 @@ Inappropriate uses (concrete tools are better):
 - Confirming a function was called - a breakpoint is sufficient
 - Any question with a concrete, already-known answer
 
+Bear in mind that the concolic execution engine incorporated into Symfit is notably faster than classic symbolic execution tools such as Angr or Klee.
+There is likely to be significantly less speed penalty for any symbolic branches taken. If the situation calls for multiple points to be tainted, do
+not assume this will result in unmanageably slow execution speed.
+
 ## Minimal Loop
 
 1. `start`
