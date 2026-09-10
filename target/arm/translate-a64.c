@@ -5052,6 +5052,23 @@ static void handle_div(DisasContext *s, bool is_signed, unsigned int sf,
         gen_helper_udiv64(tcg_rd, tcg_n, tcg_m);
     }
 
+    /*
+     * The architectural division helpers bypass tcg_gen_div_i64() and
+     * tcg_gen_divu_i64(), so populate the parallel SymSan expression slot
+     * explicitly.
+     */
+    if (second_ccache_flag) {
+        if (is_signed) {
+            gen_helper_symsan_div_i64(shadow_i64(tcg_rd),
+                                      tcg_n, shadow_i64(tcg_n),
+                                      tcg_m, shadow_i64(tcg_m));
+        } else {
+            gen_helper_symsan_divu_i64(shadow_i64(tcg_rd),
+                                       tcg_n, shadow_i64(tcg_n),
+                                       tcg_m, shadow_i64(tcg_m));
+        }
+    }
+
     if (!sf) { /* zero extend final result */
         tcg_gen_ext32u_i64(tcg_rd, tcg_rd);
     }
