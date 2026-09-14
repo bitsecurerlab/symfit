@@ -183,6 +183,9 @@ static IAState ia_state = {
     .listen_fd = -1,
 };
 
+/* Updated by the per-instruction helper before symbolic helpers execute. */
+static __thread uint64_t ia_current_insn_pc;
+
 bool ia_instrumentation_active = false;
 
 static QDict *ia_make_error_response(int64_t id, const char *code,
@@ -1878,7 +1881,7 @@ static QDict *ia_handle_pause(int64_t id)
 
     qemu_mutex_lock(&ia_state.lock);
     while (ia_state.pause_pending &&
-           ia_state.exec_state != IA_EXEC_EXITED &&
+           ia_state.exec_state != IA_EXEC_EXITED && 
            !ia_state.shutting_down) {
         qemu_cond_wait(&ia_state.cond, &ia_state.lock);
     }
@@ -2196,7 +2199,7 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
     }
 
     while (((ia_state.stop_address_enabled || ia_state.stop_address_set_enabled) || ia_state.pause_pending) &&
-           ia_state.exec_state != IA_EXEC_EXITED &&
+           ia_state.exec_state != IA_EXEC_EXITED && ia_state.exec_state != IA_EXEC_PAUSED && 
            !ia_state.shutting_down) {
         qemu_cond_wait(&ia_state.cond, &ia_state.lock);
     }
@@ -3785,9 +3788,16 @@ void symsan_record_path_constraint(uint64_t pc, dfsan_label label, bool taken)
     }
 }
 
+uint64_t ia_get_current_insn_pc(uint64_t fallback_pc)
+{
+    return ia_current_insn_pc != 0 ? ia_current_insn_pc : fallback_pc;
+}
+
 bool ia_should_stop_before_instruction(CPUState *cpu, vaddr pc)
 {
     bool should_stop = false;
+
+    ia_current_insn_pc = pc;
 
     if (!ia_state.enabled) {
         return false;

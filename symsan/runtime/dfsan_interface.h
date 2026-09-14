@@ -158,6 +158,17 @@ int dfsan_solve_path_constraint(dfsan_label label, uint8_t desired_taken,
                                 size_t assumption_capacity,
                                 size_t *assumption_count,
                                 char *error, size_t error_capacity);
+int dfsan_query_value_range(dfsan_label label, uint64_t lo_bound, uint64_t hi_bound,
+                            uint64_t base, uint64_t *out_min, uint64_t *out_max,
+                            size_t *assumption_count,
+                            char *error, size_t error_capacity);
+
+int dfsan_query_value_eq(dfsan_label label, uint64_t target,
+                         dfsan_solve_assignment *assignments,
+                         size_t assignment_capacity, size_t *assignment_count,
+                         size_t *assumption_count,
+                         char *error, size_t error_capacity);
+
 
 void addContextRecording(u64 func_addr);
 

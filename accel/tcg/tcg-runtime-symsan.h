@@ -69,6 +69,8 @@ DEF_HELPER_FLAGS_6(symsan_deposit_i64, TCG_CALL_NO_RWG_SE, i64, i64, i64, i64, i
 /* Conditionals */
 DEF_HELPER_FLAGS_7(symsan_setcond_i32, TCG_CALL_NO_RWG, i64, env, i32, i64, i32, i64, s32, i32)
 DEF_HELPER_FLAGS_7(symsan_setcond_i64, TCG_CALL_NO_RWG, i64, env, i64, i64, i64, i64, s32, i64)
+DEF_HELPER_FLAGS_3(symsan_trace_cond_i32, TCG_CALL_NO_RWG, void, env, i32, i64)
+DEF_HELPER_FLAGS_3(symsan_trace_cond_i64, TCG_CALL_NO_RWG, void, env, i64, i64)
 
 /* Host memory */
 DEF_HELPER_FLAGS_3(symsan_load_host_i32, TCG_CALL_NO_RWG_SE, i64, ptr, i64, i64)
@@ -87,13 +89,13 @@ DEF_HELPER_FLAGS_6(symsan_store_guest_i32, TCG_CALL_NO_RWG, void,
 DEF_HELPER_FLAGS_6(symsan_store_guest_i64, TCG_CALL_NO_RWG, void,
                     env, i64, dh_alias_tl, i64, i64, i64)
 
-#ifdef CONFIG_USER_ONLY
+//#ifdef CONFIG_USER_ONLY
 DEF_HELPER_FLAGS_3(symsan_watch_store_guest, TCG_CALL_NO_RWG, void,
                     env, dh_alias_tl, i64)
 DEF_HELPER_FLAGS_3(symsan_watch_read_guest, TCG_CALL_NO_RWG, void,
                     env, dh_alias_tl, i64)
 
-#endif
+//#endif
 
 DEF_HELPER_FLAGS_4(symsan_check_load_guest, TCG_CALL_NO_RWG, void,
                     env, dh_alias_tl, i64, i64)

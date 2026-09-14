@@ -45,6 +45,10 @@ Inappropriate uses (concrete tools are better):
 - Confirming a function was called - a breakpoint is sufficient
 - Any question with a concrete, already-known answer
 
+Bear in mind that the concolic execution engine incorporated into Symfit is notably faster than classic symbolic execution tools such as Angr or Klee.
+There is likely to be significantly less speed penalty for any symbolic branches taken. If the situation calls for multiple points to be tainted, do
+not assume this will result in unmanageably slow execution speed. 
+
 ## Quick Start
 
 ```python
@@ -76,7 +80,9 @@ with ScriptSession.system(
 
 System-mode sessions use QMP plus the instrumentation RPC socket. They can read
 guest physical memory with `address_space="physical"` and do not expose stdin as
-a target process stream.
+a target process stream. Snapshots (`take_snapshot`/`restore_snapshot`) are dispatched via QMP
+`human-monitor-command` (`savevm`/`loadvm`) and require a writable qcow2 block
+device (see the snapshot note under Symbolic Execution Support).
 
 ## Core Concepts
 
@@ -98,6 +104,15 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
 - **Tracing**: `trace_start()`, `trace_stop()`, `trace_status()`, `trace_get()`, `get_recent_events()`
 - **Snapshots**: `take_snapshot()`, `restore_snapshot()`, `diff_snapshots()`
 - **Annotations**: `annotate()`, `list_annotations()`
+- **Constraints**: `get_path_constraint_evaluated()`, `get_path_constraint_smt2()`, `query_value_range()`, `query_value_eq()`
+
+Please note that `get_path_constraint_evaluated()` and `get_path_constraint_smt2()` will *only* work on labels that are associated with branch constraints. You may wish to check and see if the PC value associated with a label corresponds to a conditional branch before use, or use in conjunction with a breakpoint at a conditional branch. Additionally, label must be a branch-condition label that was actually recorded as taken during execution — not merely a label of branch-condition shape. Labels sourced from get_symbolic_expression or constructed independently aren't guaranteed to satisfy this; labels from `recent_path_constraints()` or a prior successful `solve_path_constraint()` call are. Passing a shape-valid but unrecorded label returns an error ("label has no recorded branch history") rather than a partial result.
+
+Both functions require two arguments - a label as a hex string, and a boolean determining whether or not to flip the conditional branch in question when printing the constraints. The difference between the two is `get_path_constraint_evaluated()`, while retaining a format largely adhering to SMT2 output, will attempt to resolve concrete values associated with a label. This will produce output such as: (= (bvsgt (bvadd #xe0000efff2e90001 a!1) #x0000000000000010) true), which may prove to be more readable depending on your particular circumstance.
+
+The purpose of `query_value_range()` and `query_value_eq()` is to iterate over the cumulative constraints associated with a particular label (i.e., what constraints to get to that execution path were already in place before the label was created?) to get a range of acceptable input values. `query_value_eq()` can also return a true/false value rather than a range to indicate whether or not a value one seeks to introduce is permissible with a given set of constraints.
+
+As of this particular release, the RPC and Python commands necessary to run these queries are only associated with softmmu/system emulation.
 
 ### 3. Symbolic Execution Support
 
@@ -114,7 +129,34 @@ Important:
 - Dynamiq does not symbolize argv, stack buffers, heap buffers, or derived parser buffers automatically.
 - For stdin-driven input, prefer `write_stdin(..., symbolic=True)`. When the runtime supports `queue_stdin_chunk`, dynamiq records each stdin write as an ordered concrete or symbolic chunk, and the consumed stdin bytes become symbolic automatically at the syscall boundary. `queue_stdin_chunk` itself only records chunk metadata (`size`, `symbolic`) and reserves a `stream_offset` for symbolic chunks — it does not push bytes into the target's stdin pipe; `write_stdin` handles both the queuing and the actual write. You generally won't call `queue_stdin_chunk` directly, but its bookkeeping is what `get_state()["pending_stdin_bytes"]` / `pending_symbolic_stdin_bytes` reflect.
 - Use explicit `symbolize_memory(...)` or `symbolize_register(...)` for non-stdin sources or when you want to symbolize a later derived buffer instead of the original stdin stream.
-- Snapshot API calls can be performed with a call such as scriptsesion_name.take_snapshot(name=snapshot_name). However, do be aware that QEMU Machine Protocol emulation will need to be enabled for this to work.
+- Snapshot API calls are dispatched via QMP `human-monitor-command` (HMP
+  `savevm`/`loadvm`), which runs in QEMU's main loop context. A QMP control
+  channel is required (system-mode sessions create one automatically).
+  In system-mode sessions, `take_snapshot()` and `restore_snapshot()` require a
+  writable block device for QEMU's `save_snapshot`/`load_snapshot` to store VM
+  state. For kernel-only VMs (no disk), add a scratch qcow2 drive:
+  ```python
+  # Create a scratch qcow2 for snapshot storage
+  import subprocess, tempfile, os
+  fd, snap_path = tempfile.mkstemp(suffix=".qcow2")
+  os.close(fd)
+  subprocess.check_call(["qemu-img", "create", "-f", "qcow2", snap_path, "64M"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+  with ScriptSession.system(
+      qemu_args=[
+          "-machine", "pc", "-m", "2048M",
+          "-kernel", "/path/to/bzImage", "-initrd", "/path/to/initramfs.cpio.gz",
+          "-drive", f"file={snap_path},format=qcow2,if=none,id=snap0",
+          # ... other args ...
+      ],
+      arch="x86_64",
+  ) as session:
+      session.take_snapshot(name="pre_exploit")
+      # ... do work ...
+      session.restore_snapshot("pre_exploit")
+  ```
+  The drive uses `if=none` so it is not visible to the guest as a boot disk.
 
 Typical symbolic stdin workflow:
 ```python

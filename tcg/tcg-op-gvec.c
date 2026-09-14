@@ -454,6 +454,25 @@ static void do_dup(unsigned vece, uint32_t dofs, uint32_t oprsz,
         }
     }
 
+    /*
+     * Immediate duplicates are concrete. TCG vector operations and gvec
+     * helpers do not currently update SymSan's shadow for CPU state, so a
+     * concrete MOVI can otherwise leave the destination register tainted.
+     *
+     * Clear maxsz because gvec also clears the inactive upper portion of the
+     * architectural vector register.
+     */
+    if (second_ccache_flag && in_32 == NULL && in_64 == NULL) {
+        TCGv_i64 label = tcg_const_i64(0);
+        TCGv_i64 offset = tcg_const_i64(dofs);
+        TCGv_i64 size = tcg_const_i64(maxsz);
+
+        gen_helper_symsan_store_host_i64(label, cpu_env, offset, size);
+        tcg_temp_free_i64(size);
+        tcg_temp_free_i64(offset);
+        tcg_temp_free_i64(label);
+    }
+
     /* Implement inline with a vector type, if possible.
      * Prefer integer when 64-bit host and no variable dup.
      */

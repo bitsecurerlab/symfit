@@ -11,6 +11,7 @@
 #include "dfsan_interface.h"
 #include "exec/address-spaces.h"
 #include "exec/cpu-all.h"
+#include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
 #include "exec/tcg-runtime-symsan-ext.h"
 #include "linux-user/ia-rpc.h"
@@ -24,6 +25,7 @@
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "qemu/thread.h"
+#include "migration/snapshot.h"
 #include "sysemu/cpus.h"
 #include "sysemu/sysemu.h"
 
@@ -79,6 +81,19 @@ extern int __attribute__((weak)) dfsan_solve_path_constraint(
     size_t *assignment_count, dfsan_solve_assumption *assumptions,
     size_t assumption_capacity, size_t *assumption_count,
     char *error, size_t error_capacity);
+extern int __attribute__((weak)) dfsan_query_value_range(
+    dfsan_label label, uint64_t lo_bound, uint64_t hi_bound, uint64_t base,
+    uint64_t *out_min, uint64_t *out_max, size_t *assumption_count,
+    char *error, size_t error_capacity);
+extern int __attribute__((weak)) dfsan_query_value_eq(
+    dfsan_label label, uint64_t target, dfsan_solve_assignment *assignments,
+    size_t assignment_capacity, size_t *assignment_count,
+    size_t *assumption_count, char *error, size_t error_capacity);
+extern int __attribute__((weak)) dfsan_get_path_constraint_text(
+    dfsan_label label, uint8_t desired_taken, uint8_t want_evaluated,
+    char *smt2_out, size_t smt2_capacity, size_t *smt2_len,
+    char *evaluated_out, size_t evaluated_capacity, size_t *evaluated_len,
+    char *error, size_t error_capacity);
 #pragma GCC diagnostic pop
 
 #define IA_EXPR_MAX_DEPTH 24
@@ -105,6 +120,38 @@ typedef struct IAState {
     uint64_t stop_address;
     uint64_t stop_addresses[64];
     size_t stop_address_count;
+    struct {
+        uint64_t address;
+        uint64_t size;
+    } write_watchpoints[1024];
+    size_t write_watchpoint_count;
+    bool write_watchpoint_matched;
+    uint64_t write_watchpoint_address;
+    uint64_t write_watchpoint_size;
+    uint64_t write_watchpoint_hit_address;
+    uint64_t write_watchpoint_hit_size;
+    uint64_t write_watchpoint_hit_pc;
+    bool write_watchpoint_skip_once;
+    uint64_t write_watchpoint_skip_address;
+    uint64_t write_watchpoint_skip_size;
+    uint64_t write_watchpoint_skip_pc;
+
+    struct {
+        uint64_t address;
+        uint64_t size;
+    } read_watchpoints[1024];
+    size_t read_watchpoint_count;
+    bool read_watchpoint_matched;
+    uint64_t read_watchpoint_address;
+    uint64_t read_watchpoint_size;
+    uint64_t read_watchpoint_hit_address;
+    uint64_t read_watchpoint_hit_size;
+    uint64_t read_watchpoint_hit_pc;
+    bool read_watchpoint_skip_once;
+    uint64_t read_watchpoint_skip_address;
+    uint64_t read_watchpoint_skip_size;
+    uint64_t read_watchpoint_skip_pc;
+
     uint64_t last_block_pc;
     uint64_t last_insn_pc;
     uint64_t last_matched_pc;
@@ -141,6 +188,52 @@ static target_ulong get_pc(CPUArchState *env)
 
     cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
     return pc;
+}
+
+static void ia_clear_watchpoint_match_locked(void)
+{
+    ia_state.write_watchpoint_matched = false;
+    ia_state.write_watchpoint_address = 0;
+    ia_state.write_watchpoint_size = 0;
+    ia_state.write_watchpoint_hit_address = 0;
+    ia_state.write_watchpoint_hit_size = 0;
+    ia_state.write_watchpoint_hit_pc = 0;
+}
+
+static void ia_clear_watchpoint_skip_locked(void)
+{
+    ia_state.write_watchpoint_skip_once = false;
+    ia_state.write_watchpoint_skip_address = 0;
+    ia_state.write_watchpoint_skip_size = 0;
+    ia_state.write_watchpoint_skip_pc = 0;
+}
+
+static void ia_clear_read_watchpoint_match_locked(void)
+{
+    ia_state.read_watchpoint_matched = false;
+    ia_state.read_watchpoint_address = 0;
+    ia_state.read_watchpoint_size = 0;
+    ia_state.read_watchpoint_hit_address = 0;
+    ia_state.read_watchpoint_hit_size = 0;
+    ia_state.read_watchpoint_hit_pc = 0;
+}
+
+static void ia_clear_read_watchpoint_skip_locked(void)
+{
+    ia_state.read_watchpoint_skip_once = false;
+    ia_state.read_watchpoint_skip_address = 0;
+    ia_state.read_watchpoint_skip_size = 0;
+    ia_state.read_watchpoint_skip_pc = 0;
+}
+
+static bool ia_ranges_overlap(uint64_t left_start, uint64_t left_size,
+                              uint64_t right_start, uint64_t right_size)
+{
+    uint64_t left_end = left_start + left_size;
+    uint64_t right_end = right_start + right_size;
+    if (left_end < left_start) left_end = UINT64_MAX;
+    if (right_end < right_start) right_end = UINT64_MAX;
+    return left_start < right_end && right_start < left_end;
 }
 
 static bool ia_debug_path_constraints_enabled(void)
@@ -965,6 +1058,43 @@ static QDict *ia_handle_query_status(int64_t id)
     if (ia_state.has_exit_code) {
         qdict_put_int(result, "exit_code", ia_state.exit_code);
     }
+    if (ia_state.write_watchpoint_matched) {
+        QDict *watchpoint = qdict_new();
+        g_autofree char *address_hex = g_strdup_printf(
+            "0x%" PRIx64, ia_state.write_watchpoint_address);
+        g_autofree char *hit_address_hex = g_strdup_printf(
+            "0x%" PRIx64, ia_state.write_watchpoint_hit_address);
+        g_autofree char *hit_pc_hex = g_strdup_printf(
+            "0x%" PRIx64, ia_state.write_watchpoint_hit_pc);
+
+        qdict_put_str(result, "stop_reason", "watchpoint");
+        qdict_put_str(watchpoint, "mode", "write");
+        qdict_put_str(watchpoint, "address", address_hex);
+        qdict_put_int(watchpoint, "size", ia_state.write_watchpoint_size);
+        qdict_put_str(watchpoint, "hit_address", hit_address_hex);
+        qdict_put_int(watchpoint, "hit_size", ia_state.write_watchpoint_hit_size);
+        qdict_put_str(watchpoint, "pc", hit_pc_hex);
+        qdict_put(result, "watchpoint", watchpoint);
+    }
+
+    if (ia_state.read_watchpoint_matched) {
+        QDict *watchpoint = qdict_new();
+        g_autofree char *address_hex = g_strdup_printf(
+            "0x%" PRIx64, ia_state.read_watchpoint_address);
+        g_autofree char *hit_address_hex = g_strdup_printf(
+            "0x%" PRIx64, ia_state.read_watchpoint_hit_address);
+        g_autofree char *hit_pc_hex = g_strdup_printf(
+            "0x%" PRIx64, ia_state.read_watchpoint_hit_pc);
+
+        qdict_put_str(result, "stop_reason", "watchpoint");
+        qdict_put_str(watchpoint, "mode", "read");
+        qdict_put_str(watchpoint, "address", address_hex);
+        qdict_put_int(watchpoint, "size", ia_state.read_watchpoint_size);
+        qdict_put_str(watchpoint, "hit_address", hit_address_hex);
+        qdict_put_int(watchpoint, "hit_size", ia_state.read_watchpoint_hit_size);
+        qdict_put_str(watchpoint, "pc", hit_pc_hex);
+        qdict_put(result, "watchpoint", watchpoint);
+    }
     ia_trace_append_status_locked(result);
     qemu_mutex_unlock(&ia_state.lock);
 
@@ -990,6 +1120,10 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_bool(caps, "read_path_constraints", true);
     qdict_put_bool(caps, "read_recent_path_constraints", true);
     qdict_put_bool(caps, "solve_path_constraints", dfsan_solve_path_constraint != NULL);
+    qdict_put_bool(caps, "query_value_range", dfsan_query_value_range != NULL);
+    qdict_put_bool(caps, "query_value_eq", dfsan_query_value_eq != NULL);
+    qdict_put_bool(caps, "get_path_constraint_smt2", dfsan_get_path_constraint_text != NULL);
+    qdict_put_bool(caps, "get_path_constraint_evaluated", dfsan_get_path_constraint_text != NULL);
     qdict_put_bool(caps, "queue_stdin_chunk", false);
     qdict_put_bool(caps, "close", true);
     qdict_put_bool(caps, "symbolize_memory", true);
@@ -1005,7 +1139,7 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_bool(caps, "run_until_address", true);
     qdict_put_bool(caps, "run_until_any_address", true);
     qdict_put_bool(caps, "single_step", true);
-    qdict_put_bool(caps, "watchpoints", false);
+    qdict_put_bool(caps, "watchpoints", true);
     qdict_put(result, "capabilities", caps);
     return ia_make_ok_response(id, result);
 }
@@ -1025,6 +1159,7 @@ static QDict *ia_handle_resume(int64_t id)
     ia_state.stop_address_enabled = false;
     ia_state.stop_address_set_enabled = false;
     ia_state.stop_address_count = 0;
+    ia_clear_watchpoint_match_locked();
     ia_state.exec_state = IA_EXEC_RUNNING;
     ia_update_active_flag_locked(); // For performance issue fix
     qemu_mutex_unlock(&ia_state.lock);
@@ -1126,6 +1261,7 @@ static QDict *ia_handle_resume_until_basic_block(int64_t id, QDict *params)
     ia_state.stop_address_enabled = false;
     ia_state.stop_address_set_enabled = false;
     ia_state.stop_address_count = 0;
+    ia_clear_watchpoint_match_locked();
     ia_state.exec_state = IA_EXEC_RUNNING;
     ia_update_active_flag_locked(); // For performance issue fix
     qemu_mutex_unlock(&ia_state.lock);
@@ -1135,6 +1271,7 @@ static QDict *ia_handle_resume_until_basic_block(int64_t id, QDict *params)
     qemu_mutex_lock(&ia_state.lock);
     while (ia_state.block_budget > 0 &&
            ia_state.exec_state != IA_EXEC_EXITED &&
+           ia_state.exec_state != IA_EXEC_PAUSED &&
            !ia_state.shutting_down) {
         qemu_cond_wait(&ia_state.cond, &ia_state.lock);
     }
@@ -1142,10 +1279,41 @@ static QDict *ia_handle_resume_until_basic_block(int64_t id, QDict *params)
     stop_pc = ia_state.last_block_pc;
     cpu = ia_state.current_cpu;
     status = ia_status_string_locked();
+
+    bool wp_write_matched = ia_state.write_watchpoint_matched;
+    bool wp_read_matched = ia_state.read_watchpoint_matched;
+    uint64_t wp_address = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_address
+                        : ia_state.read_watchpoint_address;
+    uint64_t wp_size = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_size
+                     : ia_state.read_watchpoint_size;
+    uint64_t wp_hit_address = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_hit_address
+                            : ia_state.read_watchpoint_hit_address;
+    uint64_t wp_hit_size = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_hit_size
+                         : ia_state.read_watchpoint_hit_size;
+    uint64_t wp_hit_pc = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_hit_pc
+                       : ia_state.read_watchpoint_hit_pc;
+    const char *wp_mode = ia_state.write_watchpoint_matched ? "write" : "read";
+
     qemu_mutex_unlock(&ia_state.lock);
 
     if (strcmp(status, "paused") == 0) {
         ia_current_cpu_pc(cpu, &stop_pc);
+    }
+
+    if (wp_write_matched || wp_read_matched) {
+        QDict *watchpoint = qdict_new();
+        g_autofree char *wp_addr_hex = g_strdup_printf("0x%" PRIx64, wp_address);
+        g_autofree char *wp_hit_addr_hex = g_strdup_printf("0x%" PRIx64, wp_hit_address);
+        g_autofree char *wp_pc_hex = g_strdup_printf("0x%" PRIx64, wp_hit_pc);
+
+        qdict_put_str(result, "stop_reason", "watchpoint");
+        qdict_put_str(watchpoint, "mode", wp_mode);
+        qdict_put_str(watchpoint, "address", wp_addr_hex);
+        qdict_put_int(watchpoint, "size", wp_size);
+        qdict_put_str(watchpoint, "hit_address", wp_hit_addr_hex);
+        qdict_put_int(watchpoint, "hit_size", wp_hit_size);
+        qdict_put_str(watchpoint, "pc", wp_pc_hex);
+        qdict_put(result, "watchpoint", watchpoint);
     }
 
     qdict_put_str(result, "status", status);
@@ -1196,6 +1364,7 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
     ia_state.stop_address = 0;
     ia_state.last_matched_pc = 0;
     ia_state.instruction_budget = (uint64_t)count + 1;
+    ia_clear_watchpoint_match_locked();
     ia_state.exec_state = IA_EXEC_RUNNING;
     ia_update_active_flag_locked(); // For performance issue fix
     qemu_mutex_unlock(&ia_state.lock);
@@ -1213,6 +1382,22 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
     stop_pc = ia_state.last_insn_pc;
     cpu = ia_state.current_cpu;
     status = ia_status_string_locked();
+
+    // New state capture for watchpoints. This is done inside the mutex lock now to avoid potential race conditions.
+    bool wp_write_matched = ia_state.write_watchpoint_matched;
+    bool wp_read_matched = ia_state.read_watchpoint_matched;
+    uint64_t wp_address = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_address
+                        : ia_state.read_watchpoint_address;
+    uint64_t wp_size = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_size
+                     : ia_state.read_watchpoint_size;
+    uint64_t wp_hit_address = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_hit_address
+                            : ia_state.read_watchpoint_hit_address;
+    uint64_t wp_hit_size = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_hit_size
+                         : ia_state.read_watchpoint_hit_size;
+    uint64_t wp_hit_pc = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_hit_pc
+                       : ia_state.read_watchpoint_hit_pc;
+    const char *wp_mode = ia_state.write_watchpoint_matched ? "write" : "read";
+
     qemu_mutex_unlock(&ia_state.lock);
 
     if (budget_remaining >= (uint64_t)count + 1) {
@@ -1227,6 +1412,21 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
         ia_current_cpu_pc(cpu, &stop_pc);
     }
 
+    if (wp_write_matched || wp_read_matched) {
+      QDict *watchpoint = qdict_new();
+      g_autofree char *wp_addr_hex = g_strdup_printf("0x%" PRIx64, wp_address);
+      g_autofree char *wp_hit_addr_hex = g_strdup_printf("0x%" PRIx64, wp_hit_address);
+      g_autofree char *wp_pc_hex = g_strdup_printf("0x%" PRIx64, wp_hit_pc);
+
+      qdict_put_str(result, "stop_reason", "watchpoint");
+      qdict_put_str(watchpoint, "mode", wp_mode);
+      qdict_put_str(watchpoint, "address", wp_addr_hex);
+      qdict_put_int(watchpoint, "size", wp_size);
+      qdict_put_str(watchpoint, "hit_address", wp_hit_addr_hex);
+      qdict_put_int(watchpoint, "hit_size", wp_hit_size);
+      qdict_put_str(watchpoint, "pc", wp_pc_hex);
+      qdict_put(result, "watchpoint", watchpoint);
+    }
     qdict_put_str(result, "status", status);
     qdict_put_int(result, "count", count);
     qdict_put_int(result, "executed", executed);
@@ -1266,6 +1466,9 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
         qobject_unref(result);
         return ia_make_error_response(id, "not_attached", "backend is not attached");
     }
+
+    // This dooesn't have a check for ia_state.exec_state == IA_EXEC_RUNNING, unlike the userland ia-rpc file. Why?
+
     if (!ia_inspection_available_locked() && !ia_stop_address_set_contains_locked(address)) {
         qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(result);
@@ -1280,6 +1483,7 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
         ia_state.stop_address = address;
         ia_state.instruction_budget = 0;
         ia_state.last_matched_pc = 0;
+        ia_clear_watchpoint_match_locked();
         ia_state.exec_state = IA_EXEC_RUNNING;
         ia_update_active_flag_locked(); // For performance issue fix
         qemu_mutex_unlock(&ia_state.lock);
@@ -1287,8 +1491,10 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
         qemu_mutex_lock(&ia_state.lock);
     }
 
+    // Check for IA_EXEC_PAUSED added for future state additions
+
     while ((ia_state.stop_address_enabled || ia_state.stop_address_set_enabled) &&
-           ia_state.exec_state != IA_EXEC_EXITED &&
+           ia_state.exec_state != IA_EXEC_EXITED && ia_state.exec_state != IA_EXEC_PAUSED &&
            !ia_state.shutting_down) {
         qemu_cond_wait(&ia_state.cond, &ia_state.lock);
     }
@@ -1299,10 +1505,41 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
     matched = ia_state.stop_address_matched;
     cpu = ia_state.current_cpu;
     status = ia_status_string_locked();
+
+    bool wp_write_matched = ia_state.write_watchpoint_matched;
+    bool wp_read_matched = ia_state.read_watchpoint_matched;
+    uint64_t wp_address = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_address
+                        : ia_state.read_watchpoint_address;
+    uint64_t wp_size = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_size
+                     : ia_state.read_watchpoint_size;
+    uint64_t wp_hit_address = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_hit_address
+                            : ia_state.read_watchpoint_hit_address;
+    uint64_t wp_hit_size = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_hit_size
+                         : ia_state.read_watchpoint_hit_size;
+    uint64_t wp_hit_pc = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_hit_pc
+                       : ia_state.read_watchpoint_hit_pc;
+    const char *wp_mode = ia_state.write_watchpoint_matched ? "write" : "read";
+
     qemu_mutex_unlock(&ia_state.lock);
 
     if (strcmp(status, "paused") == 0) {
         ia_current_cpu_pc(cpu, &stop_pc);
+    }
+
+    if (wp_write_matched || wp_read_matched) {
+        QDict *watchpoint = qdict_new();
+        g_autofree char *wp_addr_hex = g_strdup_printf("0x%" PRIx64, wp_address);
+        g_autofree char *wp_hit_addr_hex = g_strdup_printf("0x%" PRIx64, wp_hit_address);
+        g_autofree char *wp_pc_hex = g_strdup_printf("0x%" PRIx64, wp_hit_pc);
+
+        qdict_put_str(result, "stop_reason", "watchpoint");
+        qdict_put_str(watchpoint, "mode", wp_mode);
+        qdict_put_str(watchpoint, "address", wp_addr_hex);
+        qdict_put_int(watchpoint, "size", wp_size);
+        qdict_put_str(watchpoint, "hit_address", wp_hit_addr_hex);
+        qdict_put_int(watchpoint, "hit_size", wp_hit_size);
+        qdict_put_str(watchpoint, "pc", wp_pc_hex);
+        qdict_put(result, "watchpoint", watchpoint);
     }
 
     qdict_put_str(result, "status", status);
@@ -1380,6 +1617,7 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
     ia_state.stop_address = 0;
     ia_state.instruction_budget = 0;
     ia_state.last_matched_pc = 0;
+    ia_clear_watchpoint_match_locked();
     ia_state.exec_state = IA_EXEC_RUNNING;
     ia_update_active_flag_locked(); // For performance issue fix
     qemu_mutex_unlock(&ia_state.lock);
@@ -1388,7 +1626,7 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
 
     qemu_mutex_lock(&ia_state.lock);
     while ((ia_state.stop_address_enabled || ia_state.stop_address_set_enabled) &&
-           ia_state.exec_state != IA_EXEC_EXITED &&
+           ia_state.exec_state != IA_EXEC_EXITED && ia_state.exec_state != IA_EXEC_PAUSED &&
            !ia_state.shutting_down) {
         qemu_cond_wait(&ia_state.cond, &ia_state.lock);
     }
@@ -1399,10 +1637,41 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
     matched = ia_state.stop_address_matched;
     cpu = ia_state.current_cpu;
     status = ia_status_string_locked();
+
+    bool wp_write_matched = ia_state.write_watchpoint_matched;
+    bool wp_read_matched = ia_state.read_watchpoint_matched;
+    uint64_t wp_address = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_address
+                        : ia_state.read_watchpoint_address;
+    uint64_t wp_size = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_size
+                     : ia_state.read_watchpoint_size;
+    uint64_t wp_hit_address = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_hit_address
+                            : ia_state.read_watchpoint_hit_address;
+    uint64_t wp_hit_size = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_hit_size
+                         : ia_state.read_watchpoint_hit_size;
+    uint64_t wp_hit_pc = ia_state.write_watchpoint_matched ? ia_state.write_watchpoint_hit_pc
+                       : ia_state.read_watchpoint_hit_pc;
+    const char *wp_mode = ia_state.write_watchpoint_matched ? "write" : "read";
+
     qemu_mutex_unlock(&ia_state.lock);
 
     if (strcmp(status, "paused") == 0) {
         ia_current_cpu_pc(cpu, &stop_pc);
+    }
+
+    if (wp_write_matched || wp_read_matched) {
+        QDict *watchpoint = qdict_new();
+        g_autofree char *wp_addr_hex = g_strdup_printf("0x%" PRIx64, wp_address);
+        g_autofree char *wp_hit_addr_hex = g_strdup_printf("0x%" PRIx64, wp_hit_address);
+        g_autofree char *wp_pc_hex = g_strdup_printf("0x%" PRIx64, wp_hit_pc);
+
+        qdict_put_str(result, "stop_reason", "watchpoint");
+        qdict_put_str(watchpoint, "mode", wp_mode);
+        qdict_put_str(watchpoint, "address", wp_addr_hex);
+        qdict_put_int(watchpoint, "size", wp_size);
+        qdict_put_str(watchpoint, "hit_address", wp_hit_addr_hex);
+        qdict_put_int(watchpoint, "hit_size", wp_hit_size);
+        qdict_put_str(watchpoint, "pc", wp_pc_hex);
+        qdict_put(result, "watchpoint", watchpoint);
     }
 
     qdict_put_str(result, "status", status);
@@ -2156,6 +2425,402 @@ static QDict *ia_handle_solve_path_constraint(int64_t id, QDict *params)
     return ia_make_ok_response(id, result);
 }
 
+/* Shared core for get_path_constraint_smt2 and get_path_constraint_evaluated.
+ * Both RPC verbs parse the same params and drive the same two-pass call into
+ * dfsan_get_path_constraint_text() -- they differ only in want_evaluated (and
+ * therefore in whether the "evaluated" buffer is worth allocating at all).
+ * Mirrors the probe-then-fill shape of ia_make_symbolic_label_entry()'s
+ * dfsan_format_simplified_expression() call, extended to two independent
+ * strings instead of one.
+ *
+ * Returns an ok or error QDict* ready to hand back to the caller; never
+ * returns NULL. */
+static QDict *ia_dump_path_constraint_common(int64_t id, QDict *params,
+                                             bool want_evaluated)
+{
+    dfsan_label label;
+    uint8_t root_taken = 0;
+    uint8_t desired_taken;
+    bool negate;
+    int solved;
+    size_t smt2_len = 0;
+    size_t evaluated_len = 0;
+    char *smt2_buf = NULL;
+    char *evaluated_buf = NULL;
+    char error[256] = { 0 };
+    Error *err = NULL;
+    QDict *result = NULL;
+    g_autofree char *label_hex = NULL;
+
+    if (!params) {
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+    if (!ia_parse_label_param(params, "label", &label, &err)) {
+        const char *message = error_get_pretty(err);
+        QDict *resp = ia_make_error_response(id, "invalid_params", message);
+        error_free(err);
+        return resp;
+    }
+    if (label == 0 || label > dfsan_get_label_count() || !dfsan_get_label_info(label)) {
+        return ia_make_error_response(id, "invalid_params", "label is not valid");
+    }
+    if (!dfsan_is_branch_condition_label ||
+        !dfsan_get_branch_direction ||
+        !dfsan_get_path_constraint_text) {
+        return ia_make_error_response(id, "unsupported",
+                                      "path-constraint text dumping is unavailable in the current Symsan runtime");
+    }
+    if (!dfsan_is_branch_condition_label(label)) {
+        return ia_make_error_response(id, "invalid_params",
+                                      "label is not a branch-condition label");
+    }
+    if (!dfsan_get_branch_direction(label, &root_taken)) {
+        return ia_make_error_response(id, "invalid_params",
+                                      "failed to recover branch direction for label");
+    }
+
+    negate = qdict_get_try_bool(params, "negate", true);
+    desired_taken = negate ? !root_taken : root_taken;
+
+    /* Pass 1: buffers null, capacities zero -- just learn the lengths. */
+    solved = dfsan_get_path_constraint_text(label, desired_taken,
+                                            want_evaluated ? 1 : 0,
+                                            NULL, 0, &smt2_len,
+                                            NULL, 0, &evaluated_len,
+                                            error, sizeof(error));
+    if (solved < 0) {
+        return ia_make_error_response(id,
+                                      solved == -2 ? "solver_unknown" : "solver_error",
+                                      error[0] ? error : "path constraint dump failed");
+    }
+
+    /* smt2 is always populated (sat or unsat); evaluated only on sat and
+     * only when requested, per dfsan_get_path_constraint_text()'s contract. */
+    smt2_buf = g_malloc(smt2_len + 1);
+    if (want_evaluated && solved == 1 && evaluated_len > 0) {
+        evaluated_buf = g_malloc(evaluated_len + 1);
+    }
+
+    /* Pass 2: fill. Re-check the return code -- the label's underlying
+     * constraint tree can't change between passes within a single RPC call,
+     * but treat a mismatch defensively rather than trusting pass 1 blindly. */
+    solved = dfsan_get_path_constraint_text(label, desired_taken,
+                                            want_evaluated ? 1 : 0,
+                                            smt2_buf, smt2_len + 1, &smt2_len,
+                                            evaluated_buf,
+                                            evaluated_buf ? evaluated_len + 1 : 0,
+                                            &evaluated_len,
+                                            error, sizeof(error));
+    if (solved < 0) {
+        g_free(smt2_buf);
+        g_free(evaluated_buf);
+        return ia_make_error_response(id,
+                                      solved == -2 ? "solver_unknown" : "solver_error",
+                                      error[0] ? error : "path constraint dump failed");
+    }
+
+    result = qdict_new();
+    label_hex = g_strdup_printf("0x%x", label);
+    qdict_put_str(result, "label", label_hex);
+    qdict_put_bool(result, "negate", negate);
+    qdict_put_bool(result, "root_taken", root_taken != 0);
+    qdict_put_bool(result, "desired_taken", desired_taken != 0);
+    qdict_put_str(result, "status", solved == 1 ? "sat" : "unsat");
+    qdict_put_str(result, "smt2", smt2_buf ? smt2_buf : "");
+    if (want_evaluated) {
+        qdict_put_str(result, "evaluated", evaluated_buf ? evaluated_buf : "");
+    }
+
+    g_free(smt2_buf);
+    g_free(evaluated_buf);
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_get_path_constraint_smt2(int64_t id, QDict *params)
+{
+    return ia_dump_path_constraint_common(id, params, false);
+}
+
+static QDict *ia_handle_get_path_constraint_evaluated(int64_t id, QDict *params)
+{
+    return ia_dump_path_constraint_common(id, params, true);
+}
+
+/* Parse a 64-bit unsigned value that may arrive either as a JSON integer or as
+ * a "0x..."/decimal string. Kernel addresses exceed the positive int64 range,
+ * so callers pass them as hex strings; small bounds may come as plain ints. */
+static uint64_t ia_parse_u64_param(QDict *params, const char *name, uint64_t dflt)
+{
+    const char *s;
+
+    if (!params) {
+        return dflt;
+    }
+    s = qdict_get_try_str(params, name);
+    if (s != NULL && s[0] != '\0') {
+        return (uint64_t)g_ascii_strtoull(s, NULL, 0);
+    }
+    return (uint64_t)qdict_get_try_int(params, name, (int64_t)dflt);
+}
+
+static QDict *ia_handle_query_value_range(int64_t id, QDict *params)
+{
+    dfsan_label label;
+    uint64_t lo_bound = 0;
+    uint64_t hi_bound = 0;
+    uint64_t base = 0;
+    uint64_t min_val = 0;
+    uint64_t max_val = 0;
+    size_t assumption_count = 0;
+    int rc;
+    char error[256] = { 0 };
+    Error *err = NULL;
+    QDict *result = NULL;
+    g_autofree char *label_hex = NULL;
+    g_autofree char *min_hex = NULL;
+    g_autofree char *max_hex = NULL;
+
+    if (!params) {
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+    if (!ia_parse_label_param(params, "label", &label, &err)) {
+        const char *message = error_get_pretty(err);
+        QDict *resp = ia_make_error_response(id, "invalid_params", message);
+        error_free(err);
+        return resp;
+    }
+    if (label == 0 || label > dfsan_get_label_count() || !dfsan_get_label_info(label)) {
+        return ia_make_error_response(id, "invalid_params", "label is not valid");
+    }
+    if (!dfsan_query_value_range) {
+        return ia_make_error_response(id, "unsupported",
+                                      "value-range querying is unavailable in the current Symsan runtime");
+    }
+
+    lo_bound = ia_parse_u64_param(params, "lo", 0);
+    hi_bound = ia_parse_u64_param(params, "hi", 0);
+    base = ia_parse_u64_param(params, "base", 0);
+
+    rc = dfsan_query_value_range(label, lo_bound, hi_bound, base, &min_val,
+                                 &max_val, &assumption_count, error, sizeof(error));
+    if (rc < 0) {
+        return ia_make_error_response(id,
+                                      rc == -3 ? "solver_unknown" : "solver_error",
+                                      error[0] ? error : "value range query failed");
+    }
+
+    result = qdict_new();
+    label_hex = g_strdup_printf("0x%x", label);
+    min_hex = g_strdup_printf("0x%" PRIx64, min_val);
+    max_hex = g_strdup_printf("0x%" PRIx64, max_val);
+    qdict_put_str(result, "label", label_hex);
+    qdict_put_int(result, "min", min_val);
+    qdict_put_str(result, "min_hex", min_hex);
+    qdict_put_int(result, "max", max_val);
+    qdict_put_str(result, "max_hex", max_hex);
+    qdict_put_int(result, "assumption_count", assumption_count);
+    qdict_put_str(result, "soundness", assumption_count > 0 ? "conditional" : "sound");
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_set_watchpoints(int64_t id, QDict *params) {
+    if (!params) {
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+
+    QList *watchpoints = qobject_to(QList, qdict_get(params, "watchpoints"));
+    if (!watchpoints) {
+        return ia_make_error_response(id, "invalid_params", "watchpoints must be a list");
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+
+    if (!ia_state.attached || !ia_state.current_cpu) {
+        qemu_mutex_unlock(&ia_state.lock);
+        return ia_make_error_response(id, "not_attached", "backend is not attached");
+    }
+
+    const QListEntry *entry;
+    bool is_read = false;
+    size_t write_count = 0;
+    size_t read_count = 0;
+    QDict *result = qdict_new();
+    QList *installed = qlist_new();
+
+    QLIST_FOREACH_ENTRY(watchpoints, entry) {
+        QDict *item = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *address_str;
+        const char *mode;
+        uint64_t address = 0;
+        int64_t size;
+        QDict *installed_item;
+        g_autofree char *address_hex = NULL;
+
+        if (!item) {
+            qemu_mutex_unlock(&ia_state.lock);
+            return ia_make_error_response(
+                id,
+                "invalid_params",
+                "watchpoints must contain objects"
+            );
+        }
+        mode = qdict_get_try_str(item, "mode");
+
+        if (mode && strcmp(mode, "read") == 0) {
+            is_read = true;
+        } else if (!mode || strcmp(mode, "write") == 0) {
+            is_read = false;
+        } else {
+            qemu_mutex_unlock(&ia_state.lock);
+            return ia_make_error_response(id, "invalid_params", "watchpoint mode must be \"read\" or \"write\"");
+        }
+
+        if (is_read && read_count >= G_N_ELEMENTS(ia_state.read_watchpoints)) {
+            qemu_mutex_unlock(&ia_state.lock);
+            qobject_unref(installed);
+            qobject_unref(result);
+            return ia_make_error_response(id, "invalid_params",
+                                          "too many read watchpoints (max 1024)");
+        }
+        if (!is_read && write_count >= G_N_ELEMENTS(ia_state.write_watchpoints)) {
+            qemu_mutex_unlock(&ia_state.lock);
+            qobject_unref(installed);
+            qobject_unref(result);
+            return ia_make_error_response(id, "invalid_params",
+                                          "too many write watchpoints (max 1024)");
+        }
+
+        address_str = qdict_get_try_str(item, "address");
+        size = qdict_get_try_int(item, "size", -1);
+        if (!address_str || qemu_strtou64(address_str, NULL, 0, &address) != 0 ||
+            size <= 0) {
+            qemu_mutex_unlock(&ia_state.lock);
+            qobject_unref(installed);
+            qobject_unref(result);
+            return ia_make_error_response(
+                id,
+                "invalid_params",
+                "watchpoints require address hex strings and positive sizes"
+            );
+        }
+
+        if (is_read) {
+            ia_state.read_watchpoints[read_count].address = address;
+            ia_state.read_watchpoints[read_count].size = (uint64_t)size;
+            read_count++;
+        } else {
+            ia_state.write_watchpoints[write_count].address = address;
+            ia_state.write_watchpoints[write_count].size = (uint64_t)size;
+            write_count++;
+        }
+
+        installed_item = qdict_new();
+        address_hex = g_strdup_printf("0x%" PRIx64, address);
+        qdict_put_str(installed_item, "mode", is_read ? "read" : "write");
+        qdict_put_str(installed_item, "address", address_hex);
+        qdict_put_int(installed_item, "size", size);
+        qlist_append(installed, installed_item);
+    }
+
+    ia_state.write_watchpoint_count = write_count;
+    ia_state.read_watchpoint_count = read_count;
+    ia_clear_watchpoint_match_locked();
+    ia_clear_watchpoint_skip_locked();
+    ia_clear_read_watchpoint_match_locked();
+    ia_clear_read_watchpoint_skip_locked();
+    qdict_put_str(result, "status", ia_status_string_locked());
+    qdict_put_bool(result, "armed", (write_count > 0 || read_count > 0));
+    qdict_put(result, "watchpoints", installed);
+    qemu_mutex_unlock(&ia_state.lock);
+
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_query_value_eq(int64_t id, QDict *params)
+{
+    dfsan_label label;
+    uint64_t target = 0;
+    int rc;
+    size_t assignment_count = 0;
+    size_t assumption_count = 0;
+    dfsan_solve_assignment *assignments = NULL;
+    char error[256] = { 0 };
+    Error *err = NULL;
+    QDict *result = NULL;
+    QList *assignment_list = NULL;
+    size_t i;
+    g_autofree char *label_hex = NULL;
+    g_autofree char *target_hex = NULL;
+
+    if (!params) {
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+    if (!ia_parse_label_param(params, "label", &label, &err)) {
+        const char *message = error_get_pretty(err);
+        QDict *resp = ia_make_error_response(id, "invalid_params", message);
+        error_free(err);
+        return resp;
+    }
+    if (label == 0 || label > dfsan_get_label_count() || !dfsan_get_label_info(label)) {
+        return ia_make_error_response(id, "invalid_params", "label is not valid");
+    }
+    if (!dfsan_query_value_eq) {
+        return ia_make_error_response(id, "unsupported",
+                                      "value targeting is unavailable in the current Symsan runtime");
+    }
+    if (!qdict_get(params, "target")) {
+        return ia_make_error_response(id, "invalid_params", "target is required");
+    }
+    target = ia_parse_u64_param(params, "target", 0);
+
+    /* First call sizes the assignment vector; second fills it (mirrors the
+     * branch-flipper). Each call re-solves, which is cheap for these formulas. */
+    rc = dfsan_query_value_eq(label, target, NULL, 0, &assignment_count,
+                              &assumption_count, error, sizeof(error));
+    if (rc < 0) {
+        return ia_make_error_response(id,
+                                      rc == -2 ? "solver_unknown" : "solver_error",
+                                      error[0] ? error : "value targeting failed");
+    }
+    if (rc == 1 && assignment_count > 0) {
+        assignments = g_new0(dfsan_solve_assignment, assignment_count);
+        rc = dfsan_query_value_eq(label, target, assignments, assignment_count,
+                                  &assignment_count, &assumption_count, error,
+                                  sizeof(error));
+        if (rc < 0) {
+            g_free(assignments);
+            return ia_make_error_response(id,
+                                          rc == -2 ? "solver_unknown" : "solver_error",
+                                          error[0] ? error : "value targeting failed");
+        }
+    }
+
+    result = qdict_new();
+    assignment_list = qlist_new();
+    label_hex = g_strdup_printf("0x%x", label);
+    target_hex = g_strdup_printf("0x%" PRIx64, target);
+    qdict_put_str(result, "label", label_hex);
+    qdict_put_str(result, "target", target_hex);
+    qdict_put_str(result, "status", rc == 1 ? "sat" : "unsat");
+    qdict_put_str(result, "soundness", assumption_count > 0 ? "conditional" : "sound");
+
+    for (i = 0; rc == 1 && i < assignment_count; i++) {
+        QDict *entry = qdict_new();
+        g_autofree char *offset_hex = g_strdup_printf("0x%" PRIx64, assignments[i].offset);
+        g_autofree char *value_hex = g_strdup_printf("0x%02x", assignments[i].value);
+
+        qdict_put_str(entry, "offset", offset_hex);
+        qdict_put_int(entry, "value", assignments[i].value);
+        qdict_put_str(entry, "value_hex", value_hex);
+        qlist_append(assignment_list, entry);
+    }
+    qdict_put(result, "assignments", assignment_list);
+    qdict_put_int(result, "assignment_count", rc == 1 ? assignment_count : 0);
+
+    g_free(assignments);
+    return ia_make_ok_response(id, result);
+}
+
 static QDict *ia_handle_start_trace(int64_t id, QDict *params)
 {
     bool basic_block = true;
@@ -2200,6 +2865,96 @@ static QDict *ia_handle_stop_trace(int64_t id)
     ia_trace_close_locked();
     ia_trace_append_status_locked(result);
     qemu_mutex_unlock(&ia_state.lock);
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_take_snapshot(int64_t id, QDict *params)
+{
+    QDict *result = qdict_new();
+    const char *name = NULL;
+    Error *err = NULL;
+    int ret;
+
+    if (params) {
+        name = qdict_get_try_str(params, "name");
+    }
+    if (!name || !*name) {
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params",
+                                      "snapshot name is required");
+    }
+
+    ia_softmmu_vm_stop();
+
+    qemu_mutex_lock(&ia_state.lock);
+    ia_set_paused_locked();
+    qemu_mutex_unlock(&ia_state.lock);
+
+    qemu_mutex_lock_iothread();
+    ret = save_snapshot(name, &err);
+    qemu_mutex_unlock_iothread();
+
+    if (ret < 0) {
+        g_autofree char *msg = g_strdup_printf("save_snapshot failed: %s",
+            err ? error_get_pretty(err) : "unknown error");
+        error_free(err);
+        qobject_unref(result);
+        return ia_make_error_response(id, "snapshot_failed", msg);
+    }
+
+    qdict_put_str(result, "snapshot_id", name);
+    qdict_put_str(result, "name", name);
+    qdict_put_int(result, "created_at", (int64_t)time(NULL));
+
+    if (ia_state.last_insn_pc) {
+        g_autofree char *pc_hex = g_strdup_printf("0x%" PRIx64,
+                                                  ia_state.last_insn_pc);
+        qdict_put_str(result, "pc", pc_hex);
+    }
+
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_restore_snapshot(int64_t id, QDict *params)
+{
+    QDict *result = qdict_new();
+    const char *name = NULL;
+    Error *err = NULL;
+    int ret;
+
+    if (params) {
+        name = qdict_get_try_str(params, "snapshot_id");
+        if (!name) {
+            name = qdict_get_try_str(params, "name");
+        }
+    }
+    if (!name || !*name) {
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_params",
+                                      "snapshot_id is required");
+    }
+
+    ia_softmmu_vm_stop();
+
+    qemu_mutex_lock(&ia_state.lock);
+    ia_set_paused_locked();
+    qemu_mutex_unlock(&ia_state.lock);
+
+    qemu_mutex_lock_iothread();
+    ret = load_snapshot(name, &err);
+    qemu_mutex_unlock_iothread();
+
+    if (ret < 0) {
+        g_autofree char *msg = g_strdup_printf("load_snapshot failed: %s",
+            err ? error_get_pretty(err) : "unknown error");
+        error_free(err);
+        qobject_unref(result);
+        return ia_make_error_response(id, "snapshot_failed", msg);
+    }
+
+    qdict_put_str(result, "snapshot_id", name);
+    qdict_put_str(result, "status", "restored");
+
     return ia_make_ok_response(id, result);
 }
 
@@ -2320,9 +3075,31 @@ static QDict *ia_dispatch_request(QDict *request)
     if (strcmp(method, "solve_path_constraint") == 0) {
         return ia_handle_solve_path_constraint(id, params);
     }
+    if (strcmp(method, "get_path_constraint_smt2") == 0) {
+        return ia_handle_get_path_constraint_smt2(id, params);
+    }
+    if (strcmp(method, "get_path_constraint_evaluated") == 0) {
+        return ia_handle_get_path_constraint_evaluated(id, params);
+    }
+    if (strcmp(method, "query_value_range") == 0) {
+        return ia_handle_query_value_range(id, params);
+    }
+    if (strcmp(method, "query_value_eq") == 0) {
+        return ia_handle_query_value_eq(id, params);
+    }
+    if (strcmp(method, "set_watchpoints") == 0) {
+        return ia_handle_set_watchpoints(id, params);
+    }
+    if (strcmp(method, "take_snapshot") == 0) {
+        return ia_handle_take_snapshot(id, params);
+    }
+    if (strcmp(method, "restore_snapshot") == 0) {
+        return ia_handle_restore_snapshot(id, params);
+    }
+
     if (strcmp(method, "queue_stdin_chunk") == 0 ||
         strcmp(method, "set_breakpoints") == 0 ||
-        strcmp(method, "set_watchpoints") == 0 ||
+        //strcmp(method, "set_watchpoints") == 0 || // Commented out for experimental watchpoint support
         strcmp(method, "list_memory_maps") == 0 ||
         strcmp(method, "disassemble") == 0) {
         return ia_handle_unsupported(id, method);
@@ -2587,10 +3364,139 @@ void ia_rpc_consume_stdin_read(int fd, void *host_buf, size_t size)
 {
 }
 
+bool ia_rpc_check_read_watchpoint(CPUState *cpu, uint64_t address,
+                                  uint64_t size, uint64_t pc)
+{
+    bool matched = false;
+    uint64_t current_pc;
+
+    if (!ia_state.enabled || size == 0) {
+        return false;
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    ia_state.current_cpu = cpu;
+    current_pc = ia_state.last_insn_pc != 0 ? ia_state.last_insn_pc : pc;
+    if (ia_state.exec_state == IA_EXEC_RUNNING &&
+        ia_state.read_watchpoint_count > 0) {
+        size_t i;
+
+        if (ia_state.read_watchpoint_skip_once &&
+            ia_state.read_watchpoint_skip_address == address &&
+            ia_state.read_watchpoint_skip_size == size &&
+            (ia_state.read_watchpoint_skip_pc == 0 ||
+             ia_state.read_watchpoint_skip_pc == current_pc)) {
+            ia_clear_read_watchpoint_skip_locked();
+            qemu_mutex_unlock(&ia_state.lock);
+            return false;
+        }
+
+        for (i = 0; i < ia_state.read_watchpoint_count; i++) {
+            uint64_t watch_address = ia_state.read_watchpoints[i].address;
+            uint64_t watch_size = ia_state.read_watchpoints[i].size;
+
+            if (!ia_ranges_overlap(address, size, watch_address, watch_size)) {
+                continue;
+            }
+
+            ia_state.read_watchpoint_matched = true;
+            ia_state.read_watchpoint_address = watch_address;
+            ia_state.read_watchpoint_size = watch_size;
+            ia_state.read_watchpoint_hit_address = address;
+            ia_state.read_watchpoint_hit_size = size;
+            ia_state.read_watchpoint_hit_pc = current_pc;
+            ia_state.read_watchpoint_skip_once = true;
+            ia_state.read_watchpoint_skip_address = address;
+            ia_state.read_watchpoint_skip_size = size;
+            ia_state.read_watchpoint_skip_pc = current_pc;
+            ia_state.block_budget = 0;
+            ia_state.instruction_budget = 0;
+            ia_state.stop_address_enabled = false;
+            ia_state.stop_address_set_enabled = false;
+            ia_state.stop_address_count = 0;
+            ia_state.stop_address_matched = false;
+            ia_state.exec_state = IA_EXEC_PAUSED;
+            ia_update_active_flag_locked();
+            qemu_cond_broadcast(&ia_state.cond);
+            /*
+            ia_state.start_paused = true;
+            ia_state.run_requested = false;
+            ia_state.pause_pending = true;
+            */
+            matched = true;
+            break;
+        }
+    }
+    qemu_mutex_unlock(&ia_state.lock);
+    return matched;
+}
+
 bool ia_rpc_check_write_watchpoint(CPUState *cpu, uint64_t address,
                                    uint64_t size, uint64_t pc)
 {
-    return false;
+    bool matched = false;
+    uint64_t current_pc;
+
+    if (!ia_state.enabled || size == 0) {
+        return false;
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    ia_state.current_cpu = cpu;
+    current_pc = ia_state.last_insn_pc != 0 ? ia_state.last_insn_pc : pc;
+    if (ia_state.exec_state == IA_EXEC_RUNNING &&
+        ia_state.write_watchpoint_count > 0) {
+        size_t i;
+
+        if (ia_state.write_watchpoint_skip_once &&
+            ia_state.write_watchpoint_skip_address == address &&
+            ia_state.write_watchpoint_skip_size == size &&
+            (ia_state.write_watchpoint_skip_pc == 0 ||
+             ia_state.write_watchpoint_skip_pc == current_pc)) {
+            ia_clear_watchpoint_skip_locked();
+            qemu_mutex_unlock(&ia_state.lock);
+            return false;
+        }
+
+        for (i = 0; i < ia_state.write_watchpoint_count; i++) {
+            uint64_t watch_address = ia_state.write_watchpoints[i].address;
+            uint64_t watch_size = ia_state.write_watchpoints[i].size;
+
+            if (!ia_ranges_overlap(address, size, watch_address, watch_size)) {
+                continue;
+            }
+
+            ia_state.write_watchpoint_matched = true;
+            ia_state.write_watchpoint_address = watch_address;
+            ia_state.write_watchpoint_size = watch_size;
+            ia_state.write_watchpoint_hit_address = address;
+            ia_state.write_watchpoint_hit_size = size;
+            ia_state.write_watchpoint_hit_pc = current_pc;
+            ia_state.write_watchpoint_skip_once = true;
+            ia_state.write_watchpoint_skip_address = address;
+            ia_state.write_watchpoint_skip_size = size;
+            ia_state.write_watchpoint_skip_pc = current_pc;
+            ia_state.block_budget = 0;
+            ia_state.instruction_budget = 0;
+            ia_state.stop_address_enabled = false;
+            ia_state.stop_address_set_enabled = false;
+            ia_state.stop_address_count = 0;
+            ia_state.stop_address_matched = false;
+            /*
+            ia_state.start_paused = true;
+            ia_state.run_requested = false;
+            ia_state.pause_pending = true;
+            */
+            ia_state.exec_state = IA_EXEC_PAUSED;
+            ia_update_active_flag_locked();
+            qemu_cond_broadcast(&ia_state.cond);
+            matched = true;
+            break;
+        }
+    }
+    qemu_mutex_unlock(&ia_state.lock);
+
+    return matched;
 }
 
 void symsan_record_path_constraint(uint64_t pc, dfsan_label label, bool taken)
@@ -2630,57 +3536,56 @@ void symsan_record_path_constraint(uint64_t pc, dfsan_label label, bool taken)
 
 bool ia_should_stop_before_instruction(CPUState *cpu, vaddr pc)
 {
-    bool should_stop = false;
-
     if (!ia_state.enabled) {
         return false;
     }
 
-    qemu_mutex_lock(&ia_state.lock);
-    ia_state.current_cpu = cpu;
     ia_state.last_insn_pc = pc;
-    if (ia_state.exec_state == IA_EXEC_RUNNING) {
-        bool address_match = false;
+    ia_state.current_cpu = cpu;
 
-        if (ia_state.stop_address_enabled &&
-            ia_state.stop_address == (uint64_t)pc) {
-            address_match = true;
-            ia_state.stop_address_enabled = false;
-        } else if (ia_state.stop_address_set_enabled) {
-            size_t i;
+    if (ia_state.exec_state != IA_EXEC_RUNNING) {
+        return false;
+    }
 
-            for (i = 0; i < ia_state.stop_address_count; i++) {
-                if (ia_state.stop_addresses[i] == (uint64_t)pc) {
-                    address_match = true;
-                    break;
-                }
-            }
-            if (address_match) {
-                ia_state.stop_address_set_enabled = false;
-                ia_state.stop_address_count = 0;
+    bool address_match = false;
+
+    if (ia_state.stop_address_enabled &&
+        ia_state.stop_address == (uint64_t)pc) {
+        address_match = true;
+    } else if (ia_state.stop_address_set_enabled) {
+        for (size_t i = 0; i < ia_state.stop_address_count; i++) {
+            if (ia_state.stop_addresses[i] == (uint64_t)pc) {
+                address_match = true;
+                break;
             }
         }
+    }
 
+    bool budget_expired = false;
+    if (!address_match && ia_state.instruction_budget > 0) {
+        ia_state.instruction_budget--;
+        if (ia_state.instruction_budget == 0) {
+            budget_expired = true;
+        }
+    }
+
+    if (address_match || budget_expired) {
+        qemu_mutex_lock(&ia_state.lock);
+        ia_state.stop_address_enabled = false;
         if (address_match) {
-            ia_state.stop_address_enabled = false;
+            ia_state.stop_address_set_enabled = false;
+            ia_state.stop_address_count = 0;
             ia_state.stop_address_matched = true;
             ia_state.last_matched_pc = pc;
-            ia_state.exec_state = IA_EXEC_PAUSED;
-            qemu_cond_broadcast(&ia_state.cond);
-            should_stop = true;
-        } else if (ia_state.instruction_budget > 0) {
-            ia_state.instruction_budget--;
-            if (ia_state.instruction_budget == 0) {
-                ia_state.exec_state = IA_EXEC_PAUSED;
-                qemu_cond_broadcast(&ia_state.cond);
-                should_stop = true;
-            }
         }
-        ia_update_active_flag_locked(); // For performance issue fix
+        ia_state.exec_state = IA_EXEC_PAUSED;
+        ia_update_active_flag_locked();
+        qemu_cond_broadcast(&ia_state.cond);
+        qemu_mutex_unlock(&ia_state.lock);
+        return true;
     }
-    qemu_mutex_unlock(&ia_state.lock);
 
-    return should_stop;
+    return false;
 }
 
 void ia_on_basic_block_executed(CPUState *cpu, vaddr pc)
@@ -2719,5 +3624,9 @@ static void ia_update_active_flag_locked(void)
          ia_state.stop_address_set_enabled ||
          ia_state.instruction_budget > 0)
     );
+    bool was_active = atomic_read(&ia_instrumentation_active);
     atomic_set(&ia_instrumentation_active, active);
+    if (was_active && !active && ia_state.current_cpu) {
+        tb_flush(ia_state.current_cpu);
+    }
 }
