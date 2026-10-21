@@ -1125,10 +1125,13 @@ static inline target_ulong get_stack_pointer(CPUArchState *env) {
     return env->regs[R_ESP];  // RSP
 #elif defined(TARGET_I386)
     return env->regs[R_ESP];  // ESP
+#elif defined(TARGET_AARCH64)
+    if (env->aarch64) {
+        return env->xregs[31];  // AArch64 SP
+    }
+    return env->regs[13];       // AArch32 R13 (SP)
 #elif defined(TARGET_ARM)
     return env->regs[13];     // R13 (SP)
-#elif defined(TARGET_AARCH64)
-    return env->xregs[31];    // SP (X31)
 #elif defined(TARGET_PPC) || defined(TARGET_PPC64)
     return env->gpr[1];       // R1 (SP)
 #elif defined(TARGET_MIPS) || defined(TARGET_MIPS64)
@@ -1145,10 +1148,13 @@ static inline target_ulong get_stack_pointer(CPUArchState *env) {
 static inline target_ulong get_frame_pointer(CPUArchState *env) {
 #if defined(TARGET_X86_64) || defined(TARGET_I386)
     return env->regs[R_EBP];  // RBP/EBP
+#elif defined(TARGET_AARCH64)
+    if (env->aarch64) {
+        return env->xregs[29];  // AArch64 X29 (FP)
+    }
+    return env->regs[11];       // AArch32 R11 (FP)
 #elif defined(TARGET_ARM)
     return env->regs[11];     // R11 (FP) - by convention, not guaranteed
-#elif defined(TARGET_AARCH64)
-    return env->xregs[29];    // X29 (FP)
 #elif defined(TARGET_PPC) || defined(TARGET_PPC64)
     return env->gpr[1];       // R1 also used as frame base (same as SP)
 #elif defined(TARGET_MIPS) || defined(TARGET_MIPS64)
