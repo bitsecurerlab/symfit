@@ -13,7 +13,7 @@ Examples below assume one of these setups:
 
 Repo-local example runner:
 ```bash
-cd /home/heng/git/dynamiq
+cd /path/to/dynamiq
 PYTHONPATH=src .venv/bin/python your_script.py
 ```
 
@@ -47,7 +47,15 @@ Inappropriate uses (concrete tools are better):
 
 Bear in mind that the concolic execution engine incorporated into Symfit is notably faster than classic symbolic execution tools such as Angr or Klee.
 There is likely to be significantly less speed penalty for any symbolic branches taken. If the situation calls for multiple points to be tainted, do
-not assume this will result in unmanageably slow execution speed. 
+not assume this will result in unmanageably slow execution speed. That being said, there's still a penalty associated with the Qemu tiny code generator.
+If you're booting a particularly resource-intensive environement in system-mode (i.e, a large Android build as opposed to an Alpine livecd or something
+ equally small), you may benefit from use of the snapshot feature to avoid having to wait for the image to boot.
+
+Also worth noting is that the execution engine can still be vulnerable to taint explosions in system builds. When aggressive or broad tainting
+strategies are required, it might benefit the performance and signal-to-noise level of the output to consider a PC filtering strategy.
+
+As of the current version, breakpoints are not yet implemented in system builds. In lieu of this, run_until_address() can be used as a functional
+equivalent.
 
 ## Quick Start
 
@@ -99,12 +107,12 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
 - **Lifecycle**: `start()`, `close()`, `capabilities()`
 - **Execution**: `step()`, `run()`, `pause()`, `advance_basic_blocks()`, `run_until_address()`, `run_until_any_address()`
 - **Breakpoints/watchpoints**: `bp_add()`, `bp_del()`, `bp_list()`, `bp_clear()`, `bp_run()`, `watch()`, `watch_clear()`
-- **Inspection**: `get_registers()`, `read_memory()`, `mem_search()`, `backtrace()`, `disassemble()`, `symbols()`, `list_memory_maps()`, `get_state()`
+- **Inspection**: `get_registers()`, `read_memory()`, `read_symbolic_memory()`, `mem_search()`, `backtrace()`, `disassemble()`, `symbols()`, `list_memory_maps()`, `get_state()`
 - **I/O**: `write_stdin()`, `write_stdin_and_advance()`, `read_stdout()`, `read_stderr()`
 - **Tracing**: `trace_start()`, `trace_stop()`, `trace_status()`, `trace_get()`, `get_recent_events()`
 - **Snapshots**: `take_snapshot()`, `restore_snapshot()`, `diff_snapshots()`
 - **Annotations**: `annotate()`, `list_annotations()`
-- **Constraints**: `get_path_constraint_evaluated()`, `get_path_constraint_smt2()`, `query_value_range()`, `query_value_eq()`
+- **Constraints**: `get_path_constraint_evaluated()`, `get_path_constraint_smt2()`, `query_value_range()`, `query_value_eq()`, `begin_value_solver_capture()`, `begin_value_query_capture()`, `export_value_solver()`
 
 Please note that `get_path_constraint_evaluated()` and `get_path_constraint_smt2()` will *only* work on labels that are associated with branch constraints. You may wish to check and see if the PC value associated with a label corresponds to a conditional branch before use, or use in conjunction with a breakpoint at a conditional branch. Additionally, label must be a branch-condition label that was actually recorded as taken during execution — not merely a label of branch-condition shape. Labels sourced from get_symbolic_expression or constructed independently aren't guaranteed to satisfy this; labels from `recent_path_constraints()` or a prior successful `solve_path_constraint()` call are. Passing a shape-valid but unrecorded label returns an error ("label has no recorded branch history") rather than a partial result.
 
@@ -112,7 +120,113 @@ Both functions require two arguments - a label as a hex string, and a boolean de
 
 The purpose of `query_value_range()` and `query_value_eq()` is to iterate over the cumulative constraints associated with a particular label (i.e., what constraints to get to that execution path were already in place before the label was created?) to get a range of acceptable input values. `query_value_eq()` can also return a true/false value rather than a range to indicate whether or not a value one seeks to introduce is permissible with a given set of constraints.
 
-As of this particular release, the RPC and Python commands necessary to run these queries are only associated with softmmu/system emulation.
+All symbolic execution features — `query_value_range`, `query_value_eq`,
+`get_path_constraint_smt2`, `get_path_constraint_evaluated`,
+`begin_value_solver_capture`, `begin_value_query_capture`, and
+`export_value_solver` — are available in both system-mode and user-mode
+sessions.
+
+**User-mode constraint limit:** User-mode sessions store path constraints in a
+fixed 256-entry ring buffer. Once 256 constraints have been recorded, the oldest
+entries are overwritten. System-mode sessions use a dynamically growing array
+with no hard cap. If your user-mode analysis involves long execution paths with
+many branches, call `begin_value_solver_capture()` periodically to reset the
+recorded state and avoid silently losing older constraints.
+
+#### Choosing the right label
+
+The label passed to `query_value_range` or `query_value_eq` must be a **composite value label** — the label the CPU created when it loaded multiple symbolic bytes as a wider integer for comparison. Do **not** use the per-byte labels returned by `symbolize_memory` (e.g. 0x24–0x27 for a 4-byte symbolization). Those leaf labels have no connection to the branch-condition dependency graph, and the solver will return an unconstrained range (asserted=0).
+
+The reliable way to obtain the composite value label is from the `left_label` field of a path constraint entry:
+
+```python
+constraints = sess.recent_path_constraints(limit=8)["result"]["constraints"]
+# Pick a constraint whose left operand IS the value (not a derived subtraction).
+# For example, `number <= 60` has left_label = the loaded 32-bit number.
+entry = next(c for c in constraints if c["pc"] == "0x4011cb")
+vlabel = f"0x{entry['left_label']:x}"
+```
+
+Avoid using `left_label` from equality/inequality constraints where the compiler
+has transformed the comparison into a subtraction (e.g. `number - 45 != 0`),
+because the resulting label represents the subtraction expression, not the
+original value.
+
+#### Interpreting `query_value_range` results
+
+The solver returns `min` and `max` bounding the feasible range under the
+current path constraints. A discrete exclusion (like `number != 45`) does not
+change the reported min/max — the constraint is enforced but cannot be expressed
+as a contiguous range. Use `query_value_eq` to probe specific values within the
+range.
+
+Pass `hi=0` to let the solver use the label's full bit-width maximum rather than
+supplying an explicit upper bound.
+
+#### Interpreting `query_value_eq` with `relaxation: "auto"`
+
+With `relaxation: "auto"`, the solver tries progressively weaker constraint
+profiles until one returns `sat`:
+
+1. **`full-path-and-loads`** — all recorded path constraints plus load
+   dependencies. A `sat` here means the value is reachable on the current
+   execution path.
+2. **`path-without-branch-loads`** — path constraints without branch-load
+   assumptions.
+3. **`target-and-target-loads`** — only the target expression's own load
+   dependencies, ignoring all path constraints.
+
+The `selected_profile` field in the result tells you which level produced
+the `sat`. If only the most relaxed profile returns `sat`, the value is
+**not feasible on the current path** — it is only representable by the
+underlying bitvector. Check `relaxation_attempts[0].query_status` for the
+path-constrained answer:
+
+```python
+result = sess.query_value_eq(label=vlabel, target=69)["result"]
+# Was it satisfiable under the full path constraints?
+strict = result["relaxation_attempts"][0]
+if strict["query_status"] == "sat":
+    print("Value is reachable on the current path")
+else:
+    print(f"Value is infeasible on this path (relaxed to {result['selected_profile']})")
+```
+
+#### `read_symbolic_memory(address, size)`
+
+Returns the symbolic label state for a memory region without modifying it.
+The response contains a `bytes` array where each entry has `offset`,
+`symbolic` (bool), and `label` (hex string). This is useful for inspecting
+whether memory has been tainted and which labels are associated with it,
+without the side effects of `symbolize_memory`.
+
+#### Capture and export functions
+
+`begin_value_solver_capture()` and `begin_value_query_capture()` reset the
+solver's internal branch/constraint caches and recorded branch history. Call
+one of these before re-executing past new branches to build a fresh
+constraint set for subsequent value queries. Both return `{"status": "started"}`.
+
+`begin_value_query_capture()` calls `begin_value_solver_capture()` internally
+— the two are equivalent in the current implementation.
+
+`export_value_solver(label)` exports the Z3 solver state for a value label
+as a JSON object containing the SMT2 representation, target metadata (symbol
+name, bit-width, input offsets), and the path constraints that were active.
+The result includes `export_json` (string) and `export_json_len` (int).
+
+Because the capture functions clear all recorded state, call
+`export_value_solver` **before** `begin_value_solver_capture` if you want
+the export to include the current path constraints:
+
+```python
+# Export with constraints, then reset for a new capture
+export = sess.export_value_solver(label=vlabel)
+print(export["result"]["export_json_len"])
+
+# Now clear state for the next execution segment
+sess.begin_value_solver_capture()
+```
 
 ### 3. Symbolic Execution Support
 

@@ -548,6 +548,12 @@ class QemuUserInstrumentedBackend:
         result = MemoryReadResult.from_rpc_result(self._rpc_request("read_memory", params))
         return self._response(result.to_dict())
 
+    def read_symbolic_memory(self, address: str, size: int) -> dict[str, Any]:
+        self._require_started()
+        return self._response(
+            self._rpc_request("read_symbolic_memory", {"address": address, "size": size})
+        )
+
     def symbolize_memory(self, address: str, size: int, name: str | None = None) -> dict[str, Any]:
         self._require_started()
         params: dict[str, Any] = {"address": address, "size": size}
@@ -594,6 +600,59 @@ class QemuUserInstrumentedBackend:
     def solve_path_constraint(self, label: str, negate: bool = True) -> dict[str, Any]:
         self._require_started()
         return self._response(self._rpc_request("solve_path_constraint", {"label": label, "negate": negate}))
+
+    def get_path_constraint_smt2(self, label: str, negate: bool = True) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("get_path_constraint_smt2", {
+            "label": label,
+            "negate": negate,
+        }))
+
+    def get_path_constraint_evaluated(self, label: str, negate: bool = True) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("get_path_constraint_evaluated", {
+            "label": label,
+            "negate": negate,
+        }))
+
+    @staticmethod
+    def _u64(v: "int | str") -> str:
+        return v if isinstance(v, str) else hex(v)
+
+    def query_value_range(self, label: str, lo: "int | str" = 0, hi: "int | str" = 0,
+                          base: "int | str" = 0,
+                          relaxation: str = "auto") -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("query_value_range", {
+            "label": label,
+            "lo": self._u64(lo),
+            "hi": self._u64(hi),
+            "base": self._u64(base),
+            "relaxation": relaxation,
+        }))
+
+    def query_value_eq(self, label: str, target: "int | str",
+                       relaxation: str = "auto") -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("query_value_eq", {
+            "label": label,
+            "target": self._u64(target),
+            "relaxation": relaxation,
+        }))
+
+    def begin_value_solver_capture(self) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("begin_value_solver_capture"))
+
+    def begin_value_query_capture(self) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("begin_value_query_capture"))
+
+    def export_value_solver(self, label: str) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("export_value_solver", {
+            "label": label,
+        }))
 
     def disassemble(self, address: str, count: int) -> dict[str, Any]:
         self._require_started()

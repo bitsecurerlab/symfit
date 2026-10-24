@@ -64,6 +64,23 @@ extern IADfsanLabelInfo *dfsan_get_label_info(dfsan_label label);
 extern int __attribute__((weak)) dfsan_is_branch_condition_label(dfsan_label label);
 extern int __attribute__((weak)) dfsan_get_branch_direction(dfsan_label label,
                                                             uint8_t *taken);
+extern int __attribute__((weak)) dfsan_query_value_range(
+    dfsan_label label, uint64_t lo_bound, uint64_t hi_bound, uint64_t base,
+    uint64_t *out_seed, uint64_t *out_min, uint64_t *out_max, size_t *assumption_count,
+    char *error, size_t error_capacity);
+extern int __attribute__((weak)) dfsan_query_value_eq(
+    dfsan_label label, uint64_t target, dfsan_solve_assignment *assignments,
+    size_t assignment_capacity, size_t *assignment_count,
+    size_t *assumption_count, char *error, size_t error_capacity);
+extern void __attribute__((weak)) dfsan_begin_value_solver_capture(void);
+extern void __attribute__((weak)) dfsan_begin_value_query_capture(void);
+
+extern int __attribute__((weak)) dfsan_get_path_constraint_text(
+    dfsan_label label, uint8_t desired_taken, uint8_t want_evaluated,
+    char *smt2_out, size_t smt2_capacity, size_t *smt2_len,
+    char *evaluated_out, size_t evaluated_capacity, size_t *evaluated_len,
+    char *error, size_t error_capacity);
+
 extern size_t __attribute__((weak)) dfsan_get_nested_constraint_count(dfsan_label label);
 extern size_t __attribute__((weak)) dfsan_get_nested_constraints(dfsan_label label,
                                                                  dfsan_label *out,
@@ -71,6 +88,10 @@ extern size_t __attribute__((weak)) dfsan_get_nested_constraints(dfsan_label lab
 extern size_t __attribute__((weak)) dfsan_get_nested_constraint_directions(dfsan_label label,
                                                                            uint8_t *out,
                                                                            size_t capacity);
+extern int __attribute__((weak)) dfsan_export_value_solver(
+    dfsan_label label, char *json_out, size_t json_capacity, size_t *json_len,
+    char *error, size_t error_capacity);
+
 extern int __attribute__((weak)) dfsan_solve_path_constraint(
     dfsan_label label, uint8_t desired_taken,
     dfsan_solve_assignment *assignments, size_t assignment_capacity,
@@ -393,6 +414,681 @@ static bool ia_parse_label_param(QDict *params, const char *name,
 
     *out_label = (dfsan_label)label_raw;
     return true;
+}
+
+static QList *ia_value_query_assignments(dfsan_label label, uint64_t target,
+                                         size_t *out_count)
+{
+    dfsan_solve_assignment *assignments = NULL;
+    size_t count = 0;
+    size_t assumptions = 0;
+    char error[256] = { 0 };
+    QList *result = qlist_new();
+    int rc = dfsan_query_value_eq(label, target, NULL, 0, &count, &assumptions,
+                                  error, sizeof(error));
+    size_t i;
+
+    if (rc == 1 && count > 0) {
+        assignments = g_new0(dfsan_solve_assignment, count);
+        rc = dfsan_query_value_eq(label, target, assignments, count, &count,
+                                  &assumptions, error, sizeof(error));
+    }
+    if (rc == 1) {
+        for (i = 0; i < count; i++) {
+            QDict *entry = qdict_new();
+            g_autofree char *symbol = g_strdup_printf("symfit_input_%" PRIu64,
+                                                       assignments[i].offset);
+            g_autofree char *value_hex = g_strdup_printf("0x%02x", assignments[i].value);
+            qdict_put_str(entry, "symbol", symbol);
+            qdict_put_int(entry, "offset", assignments[i].offset);
+            qdict_put_int(entry, "value", assignments[i].value);
+            qdict_put_str(entry, "value_hex", value_hex);
+            qlist_append(result, entry);
+        }
+    }
+    if (out_count) {
+        *out_count = rc == 1 ? count : 0;
+    }
+    g_free(assignments);
+    return result;
+}
+
+static QDict *ia_value_query_candidate(dfsan_label label, const char *name,
+                                       uint64_t target, uint64_t raw_target,
+                                       const char *profile)
+{
+    QDict *candidate = qdict_new();
+    size_t count = 0;
+    QList *assignments = ia_value_query_assignments(label, raw_target, &count);
+    g_autofree char *target_hex = g_strdup_printf("0x%" PRIx64, target);
+
+    qdict_put_str(candidate, "name", name);
+    qdict_put_int(candidate, "target", target);
+    qdict_put_str(candidate, "target_hex", target_hex);
+    if (profile) {
+        qdict_put_str(candidate, "profile", profile);
+    }
+    qdict_put(candidate, "assignments", assignments);
+    qdict_put_int(candidate, "assignment_count", count);
+    return candidate;
+}
+
+/* Shared core for get_path_constraint_smt2 and get_path_constraint_evaluated.
+ * Both RPC verbs parse the same params and drive the same two-pass call into
+ * dfsan_get_path_constraint_text() -- they differ only in want_evaluated (and
+ * therefore in whether the "evaluated" buffer is worth allocating at all).
+ * Mirrors the probe-then-fill shape of ia_make_symbolic_label_entry()'s
+ * dfsan_format_simplified_expression() call, extended to two independent
+ * strings instead of one.
+ *
+ * Returns an ok or error QDict* ready to hand back to the caller; never
+ * returns NULL. */
+static QDict *ia_dump_path_constraint_common(int64_t id, QDict *params,
+                                             bool want_evaluated)
+{
+    dfsan_label label;
+    uint8_t root_taken = 0;
+    uint8_t desired_taken;
+    bool negate;
+    int solved;
+    size_t smt2_len = 0;
+    size_t evaluated_len = 0;
+    char *smt2_buf = NULL;
+    char *evaluated_buf = NULL;
+    char error[256] = { 0 };
+    Error *err = NULL;
+    QDict *result = NULL;
+    g_autofree char *label_hex = NULL;
+
+    if (!params) {
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+    if (!ia_parse_label_param(params, "label", &label, &err)) {
+        const char *message = error_get_pretty(err);
+        QDict *resp = ia_make_error_response(id, "invalid_params", message);
+        error_free(err);
+        return resp;
+    }
+    if (label == 0 || label > dfsan_get_label_count() || !dfsan_get_label_info(label)) {
+        return ia_make_error_response(id, "invalid_params", "label is not valid");
+    }
+    if (!dfsan_is_branch_condition_label ||
+        !dfsan_get_branch_direction ||
+        !dfsan_get_path_constraint_text) {
+        return ia_make_error_response(id, "unsupported",
+                                      "path-constraint text dumping is unavailable in the current Symsan runtime");
+    }
+    if (!dfsan_is_branch_condition_label(label)) {
+        return ia_make_error_response(id, "invalid_params",
+                                      "label is not a branch-condition label");
+    }
+    if (!dfsan_get_branch_direction(label, &root_taken)) {
+        return ia_make_error_response(id, "invalid_params",
+                                      "failed to recover branch direction for label");
+    }
+
+    negate = qdict_get_try_bool(params, "negate", true);
+    desired_taken = negate ? !root_taken : root_taken;
+
+    /* Pass 1: buffers null, capacities zero -- just learn the lengths. */
+    solved = dfsan_get_path_constraint_text(label, desired_taken,
+                                            want_evaluated ? 1 : 0,
+                                            NULL, 0, &smt2_len,
+                                            NULL, 0, &evaluated_len,
+                                            error, sizeof(error));
+    if (solved < 0) {
+        return ia_make_error_response(id,
+                                      solved == -2 ? "solver_unknown" : "solver_error",
+                                      error[0] ? error : "path constraint dump failed");
+    }
+
+    /* smt2 is always populated (sat or unsat); evaluated only on sat and
+     * only when requested, per dfsan_get_path_constraint_text()'s contract. */
+    smt2_buf = g_malloc(smt2_len + 1);
+    if (want_evaluated && solved == 1 && evaluated_len > 0) {
+        evaluated_buf = g_malloc(evaluated_len + 1);
+    }
+
+    /* Pass 2: fill. Re-check the return code -- the label's underlying
+     * constraint tree can't change between passes within a single RPC call,
+     * but treat a mismatch defensively rather than trusting pass 1 blindly. */
+    solved = dfsan_get_path_constraint_text(label, desired_taken,
+                                            want_evaluated ? 1 : 0,
+                                            smt2_buf, smt2_len + 1, &smt2_len,
+                                            evaluated_buf,
+                                            evaluated_buf ? evaluated_len + 1 : 0,
+                                            &evaluated_len,
+                                            error, sizeof(error));
+    if (solved < 0) {
+        g_free(smt2_buf);
+        g_free(evaluated_buf);
+        return ia_make_error_response(id,
+                                      solved == -2 ? "solver_unknown" : "solver_error",
+                                      error[0] ? error : "path constraint dump failed");
+    }
+
+    result = qdict_new();
+    label_hex = g_strdup_printf("0x%x", label);
+    qdict_put_str(result, "label", label_hex);
+    qdict_put_bool(result, "negate", negate);
+    qdict_put_bool(result, "root_taken", root_taken != 0);
+    qdict_put_bool(result, "desired_taken", desired_taken != 0);
+    qdict_put_str(result, "status", solved == 1 ? "sat" : "unsat");
+    qdict_put_str(result, "smt2", smt2_buf ? smt2_buf : "");
+    if (want_evaluated) {
+        qdict_put_str(result, "evaluated", evaluated_buf ? evaluated_buf : "");
+    }
+
+    g_free(smt2_buf);
+    g_free(evaluated_buf);
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_get_path_constraint_smt2(int64_t id, QDict *params)
+{
+    return ia_dump_path_constraint_common(id, params, false);
+}
+
+static QDict *ia_handle_get_path_constraint_evaluated(int64_t id, QDict *params)
+{
+    return ia_dump_path_constraint_common(id, params, true);
+}
+
+/* Parse a 64-bit unsigned value that may arrive either as a JSON integer or as
+ * a "0x..."/decimal string. Kernel addresses exceed the positive int64 range,
+ * so callers pass them as hex strings; small bounds may come as plain ints. */
+static uint64_t ia_parse_u64_param(QDict *params, const char *name, uint64_t dflt)
+{
+    const char *s;
+
+    if (!params) {
+        return dflt;
+    }
+    s = qdict_get_try_str(params, name);
+    if (s != NULL && s[0] != '\0') {
+        return (uint64_t)g_ascii_strtoull(s, NULL, 0);
+    }
+    return (uint64_t)qdict_get_try_int(params, name, (int64_t)dflt);
+}
+
+static const char *ia_value_query_profile_name(unsigned profile)
+{
+    static const char *names[] = {
+        "full-path-and-loads",
+        "path-without-branch-loads",
+        "target-and-target-loads",
+        "target-with-observed-loads",
+    };
+    return profile < G_N_ELEMENTS(names) ? names[profile] : "unknown";
+}
+
+static QList *ia_assignment_list(const dfsan_solve_assignment *assignments,
+                                 size_t count)
+{
+    QList *result = qlist_new();
+    size_t i;
+    for (i = 0; i < count; i++) {
+        QDict *entry = qdict_new();
+        g_autofree char *symbol = g_strdup_printf("symfit_input_%" PRIu64,
+                                                   assignments[i].offset);
+        g_autofree char *value_hex = g_strdup_printf("0x%02x", assignments[i].value);
+        qdict_put_str(entry, "symbol", symbol);
+        qdict_put_int(entry, "offset", assignments[i].offset);
+        qdict_put_int(entry, "value", assignments[i].value);
+        qdict_put_str(entry, "value_hex", value_hex);
+        qlist_append(result, entry);
+    }
+    return result;
+}
+
+static QDict *ia_handle_begin_value_solver_capture(int64_t id)
+{
+    QDict *result = qdict_new();
+
+    if (!dfsan_begin_value_solver_capture) {
+        qobject_unref(result);
+        return ia_make_error_response(id, "unsupported",
+                                      "native value-solver capture is unavailable");
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_inspection_available_locked()) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_state",
+                                      "backend must be paused before starting value-solver capture");
+    }
+    ia_state.path_constraints_head = 0;
+    ia_state.path_constraints_count = 0;
+    qemu_mutex_unlock(&ia_state.lock);
+
+    dfsan_begin_value_solver_capture();
+    qdict_put_str(result, "status", "started");
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_begin_value_query_capture(int64_t id)
+{
+    QDict *result = qdict_new();
+
+    if (!dfsan_begin_value_query_capture) {
+        qobject_unref(result);
+        return ia_make_error_response(id, "unsupported",
+                                      "native value-query capture is unavailable");
+    }
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_inspection_available_locked()) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qobject_unref(result);
+        return ia_make_error_response(id, "invalid_state",
+                                      "backend must be paused before starting value-query capture");
+    }
+    ia_state.path_constraints_head = 0;
+    ia_state.path_constraints_count = 0;
+    qemu_mutex_unlock(&ia_state.lock);
+    dfsan_begin_value_query_capture();
+    qdict_put_str(result, "status", "started");
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_value_query_sample(dfsan_label label, const char *name,
+                                    uint64_t minimum, uint64_t maximum,
+                                    uint64_t base, const char *profile)
+{
+    dfsan_solve_assignment *assignments = NULL;
+    size_t count = 0;
+    size_t assumptions = 0;
+    uint64_t target = 0;
+    char error[256] = { 0 };
+    int rc;
+    QDict *candidate;
+    g_autofree char *target_hex = NULL;
+
+    if (!dfsan_query_value_candidate) {
+        return NULL;
+    }
+    rc = dfsan_query_value_candidate(label, minimum + base, maximum + base,
+                                     &target, NULL, 0, &count, &assumptions,
+                                     error, sizeof(error));
+    if (rc != 1 || target < base) {
+        return NULL;
+    }
+    if (count > 0) {
+        assignments = g_new0(dfsan_solve_assignment, count);
+        rc = dfsan_query_value_candidate(label, minimum + base, maximum + base,
+                                         &target, assignments, count, &count,
+                                         &assumptions, error, sizeof(error));
+        if (rc != 1 || target < base) {
+            g_free(assignments);
+            return NULL;
+        }
+    }
+    candidate = qdict_new();
+    target_hex = g_strdup_printf("0x%" PRIx64, target - base);
+    qdict_put_str(candidate, "name", name);
+    qdict_put_int(candidate, "target", target - base);
+    qdict_put_str(candidate, "target_hex", target_hex);
+    qdict_put_str(candidate, "profile", profile);
+    qdict_put(candidate, "assignments", ia_assignment_list(assignments, count));
+    qdict_put_int(candidate, "assignment_count", count);
+    g_free(assignments);
+    return candidate;
+}
+
+static QDict *ia_value_query_seed_candidate(dfsan_label label, uint64_t base,
+                                            uint64_t *out_target,
+                                            char *error, size_t error_capacity)
+{
+    dfsan_solve_assignment *assignments = NULL;
+    size_t count = 0;
+    uint64_t raw = 0;
+    int rc;
+    QDict *candidate;
+    g_autofree char *target_hex = NULL;
+
+    if (!dfsan_get_value_query_seed) {
+        g_strlcpy(error, "value-query seed extraction is unavailable", error_capacity);
+        return NULL;
+    }
+    rc = dfsan_get_value_query_seed(label, &raw, NULL, 0, &count,
+                                    error, error_capacity);
+    if (rc != 1 || raw < base) {
+        if (rc == 1) {
+            g_strlcpy(error, "seed target is below the requested base", error_capacity);
+        }
+        return NULL;
+    }
+    if (count > 0) {
+        assignments = g_new0(dfsan_solve_assignment, count);
+        rc = dfsan_get_value_query_seed(label, &raw, assignments, count, &count,
+                                        error, error_capacity);
+        if (rc != 1) {
+            g_free(assignments);
+            return NULL;
+        }
+    }
+    candidate = qdict_new();
+    target_hex = g_strdup_printf("0x%" PRIx64, raw - base);
+    qdict_put_str(candidate, "name", "seed");
+    qdict_put_int(candidate, "target", raw - base);
+    qdict_put_str(candidate, "target_hex", target_hex);
+    qdict_put(candidate, "assignments", ia_assignment_list(assignments, count));
+    qdict_put_int(candidate, "assignment_count", count);
+    if (out_target) {
+        *out_target = raw - base;
+    }
+    g_free(assignments);
+    return candidate;
+}
+
+static QDict *ia_handle_query_value_eq(int64_t id, QDict *params)
+{
+    dfsan_label label;
+    uint64_t target = 0;
+    int rc;
+    size_t assignment_count = 0;
+    size_t assumption_count = 0;
+    size_t selected_assumption_count = 0;
+    dfsan_solve_assignment *assignments = NULL;
+    char error[256] = { 0 };
+    Error *err = NULL;
+    QDict *result = NULL;
+    QList *assignment_list = NULL;
+    size_t i;
+    g_autofree char *label_hex = NULL;
+    g_autofree char *target_hex = NULL;
+    QList *attempts = NULL;
+    QDict *seed_candidate = NULL;
+    int selected = -1;
+    int last_unsat = -1;
+    unsigned profile;
+    const char *relaxation;
+
+    if (!params) {
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+    if (!ia_parse_label_param(params, "label", &label, &err)) {
+        const char *message = error_get_pretty(err);
+        QDict *resp = ia_make_error_response(id, "invalid_params", message);
+        error_free(err);
+        return resp;
+    }
+    if (label == 0 || label > dfsan_get_label_count() || !dfsan_get_label_info(label)) {
+        return ia_make_error_response(id, "invalid_params", "label is not valid");
+    }
+    if (!dfsan_query_value_eq) {
+        return ia_make_error_response(id, "unsupported",
+                                      "value targeting is unavailable in the current Symsan runtime");
+    }
+    if (!qdict_get(params, "target")) {
+        return ia_make_error_response(id, "invalid_params", "target is required");
+    }
+    target = ia_parse_u64_param(params, "target", 0);
+
+    relaxation = qdict_get_try_str(params, "relaxation");
+    if (relaxation && strcmp(relaxation, "auto") != 0) {
+        return ia_make_error_response(id, "invalid_params", "relaxation must be \"auto\"");
+    }
+    seed_candidate = ia_value_query_seed_candidate(
+        label, 0, NULL, error, sizeof(error));
+    if (!seed_candidate) {
+        return ia_make_error_response(id, "solver_error",
+                                      error[0] ? error : "cannot extract observed seed");
+    }
+
+    attempts = qlist_new();
+    rc = -1;
+    for (profile = 0; profile < 4; profile++) {
+        QDict *attempt = qdict_new();
+        qdict_put_str(attempt, "profile", ia_value_query_profile_name(profile));
+        if (!dfsan_set_value_query_relaxation_profile ||
+            !dfsan_set_value_query_relaxation_profile(profile)) {
+            rc = -1;
+            g_strlcpy(error, "relaxation profile is unavailable", sizeof(error));
+        } else {
+            error[0] = '\0';
+            rc = dfsan_query_value_eq(label, target, NULL, 0, &assignment_count,
+                                      &assumption_count, error, sizeof(error));
+        }
+        if (rc >= 0) {
+            qdict_put_str(attempt, "status", "success");
+            qdict_put_str(attempt, "query_status", rc == 1 ? "sat" : "unsat");
+            qdict_put_int(attempt, "assumption_count", assumption_count);
+            qlist_append(attempts, attempt);
+            if (rc == 1) {
+                selected = profile;
+                break;
+            }
+            last_unsat = profile;
+            selected_assumption_count = assumption_count;
+            continue;
+        }
+        qdict_put_str(attempt, "status", rc == -2 ? "unknown" : "error");
+        qdict_put_str(attempt, "error", error[0] ? error : "value targeting failed");
+        qlist_append(attempts, attempt);
+    }
+    if (selected < 0 && last_unsat >= 0) {
+        selected = last_unsat;
+        assumption_count = selected_assumption_count;
+        dfsan_set_value_query_relaxation_profile((unsigned)selected);
+    }
+    if (rc == 1 && assignment_count > 0) {
+        assignments = g_new0(dfsan_solve_assignment, assignment_count);
+        rc = dfsan_query_value_eq(label, target, assignments, assignment_count,
+                                  &assignment_count, &assumption_count, error,
+                                  sizeof(error));
+        if (rc < 0) {
+            g_free(assignments);
+            assignments = NULL;
+            assignment_count = 0;
+        }
+    }
+
+    result = qdict_new();
+    assignment_list = qlist_new();
+    label_hex = g_strdup_printf("0x%x", label);
+    target_hex = g_strdup_printf("0x%" PRIx64, target);
+    qdict_put_str(result, "label", label_hex);
+    qdict_put_str(result, "target", target_hex);
+    qdict_put_str(result, "status", "complete");
+    qdict_put_str(result, "query_status",
+                  selected < 0 ? "seed-only" : (rc == 1 ? "sat" : "unsat"));
+    qdict_put_str(result, "relaxation", "auto");
+    qdict_put(result, "relaxation_attempts", attempts);
+    if (selected >= 0) {
+        qdict_put_str(result, "selected_profile",
+                      ia_value_query_profile_name(selected));
+    }
+    qdict_put_str(result, "soundness", assumption_count > 0 ? "conditional" : "sound");
+
+    for (i = 0; rc == 1 && i < assignment_count; i++) {
+        QDict *entry = qdict_new();
+        g_autofree char *offset_hex = g_strdup_printf("0x%" PRIx64, assignments[i].offset);
+        g_autofree char *value_hex = g_strdup_printf("0x%02x", assignments[i].value);
+
+        qdict_put_str(entry, "offset", offset_hex);
+        g_autofree char *symbol = g_strdup_printf("symfit_input_%" PRIu64,
+                                                   assignments[i].offset);
+        qdict_put_str(entry, "symbol", symbol);
+        qdict_put_int(entry, "value", assignments[i].value);
+        qdict_put_str(entry, "value_hex", value_hex);
+        qlist_append(assignment_list, entry);
+    }
+    qdict_put(result, "assignments", assignment_list);
+    qdict_put_int(result, "assignment_count", rc == 1 ? assignment_count : 0);
+    {
+        QList *candidates = qlist_new();
+        qlist_append(candidates, seed_candidate);
+        if (rc == 1) {
+            qlist_append(candidates, ia_value_query_candidate(
+                label, "equality", target, target,
+                ia_value_query_profile_name(selected)));
+        }
+        qdict_put(result, "candidates", candidates);
+    }
+
+    g_free(assignments);
+    return ia_make_ok_response(id, result);
+}
+
+static QDict *ia_handle_query_value_range(int64_t id, QDict *params)
+{
+    dfsan_label label;
+    uint64_t lo_bound = 0;
+    uint64_t hi_bound = 0;
+    uint64_t base = 0;
+    uint64_t seed_val = 0;
+    uint64_t anchor_val = 0;
+    uint64_t min_val = 0;
+    uint64_t max_val = 0;
+    uint64_t selected_min = 0;
+    uint64_t selected_max = 0;
+    size_t assumption_count = 0;
+    size_t selected_assumption_count = 0;
+    int rc;
+    char error[256] = { 0 };
+    Error *err = NULL;
+    QDict *result = NULL;
+    g_autofree char *label_hex = NULL;
+    g_autofree char *min_hex = NULL;
+    g_autofree char *max_hex = NULL;
+
+    if (!params) {
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+    if (!ia_parse_label_param(params, "label", &label, &err)) {
+        const char *message = error_get_pretty(err);
+        QDict *resp = ia_make_error_response(id, "invalid_params", message);
+        error_free(err);
+        return resp;
+    }
+    if (label == 0 || label > dfsan_get_label_count() || !dfsan_get_label_info(label)) {
+        return ia_make_error_response(id, "invalid_params", "label is not valid");
+    }
+    if (!dfsan_query_value_range) {
+        return ia_make_error_response(id, "unsupported",
+                                      "value-range querying is unavailable in the current Symsan runtime");
+    }
+
+    lo_bound = ia_parse_u64_param(params, "lo", 0);
+    hi_bound = ia_parse_u64_param(params, "hi", 0);
+    base = ia_parse_u64_param(params, "base", 0);
+
+    if (hi_bound != 0 && lo_bound > hi_bound) {
+        return ia_make_error_response(id, "invalid_params",
+                                      "range lower bound exceeds upper bound");
+    }
+
+    QDict *seed_candidate = ia_value_query_seed_candidate(
+        label, base, &seed_val, error, sizeof(error));
+    const char *relaxation = qdict_get_try_str(params, "relaxation");
+    QList *attempts = qlist_new();
+    int selected = -1;
+    int last_success = -1;
+    unsigned profile;
+    if (!seed_candidate) {
+        return ia_make_error_response(id, "solver_error",
+                                      error[0] ? error : "cannot extract observed seed");
+    }
+    if (relaxation && strcmp(relaxation, "auto") != 0) {
+        qobject_unref(seed_candidate);
+        qobject_unref(attempts);
+        return ia_make_error_response(id, "invalid_params", "relaxation must be \"auto\"");
+    }
+    for (profile = 0; profile < 4; profile++) {
+        QDict *attempt = qdict_new();
+        qdict_put_str(attempt, "profile", ia_value_query_profile_name(profile));
+        if (!dfsan_set_value_query_relaxation_profile ||
+            !dfsan_set_value_query_relaxation_profile(profile)) {
+            rc = -1;
+            g_strlcpy(error, "relaxation profile is unavailable", sizeof(error));
+        } else {
+            error[0] = '\0';
+            rc = dfsan_query_value_range(label, lo_bound, hi_bound, base,
+                                         &anchor_val, &min_val, &max_val,
+                                         &assumption_count, error, sizeof(error));
+        }
+        if (rc == 1) {
+            qdict_put_str(attempt, "status", "success");
+            qdict_put_int(attempt, "minimum", min_val);
+            qdict_put_int(attempt, "maximum", max_val);
+            qdict_put_int(attempt, "assumption_count", assumption_count);
+            qlist_append(attempts, attempt);
+            last_success = profile;
+            selected_min = min_val;
+            selected_max = max_val;
+            selected_assumption_count = assumption_count;
+            /* A path-specific singleton is useful evidence, but not a reason to
+             * hide a broader profile that may expose a replayable capability. */
+            if (min_val != max_val || profile == 3) {
+                selected = profile;
+                break;
+            }
+            continue;
+        }
+        qdict_put_str(attempt, "status", rc == -3 ? "unsat" : "error");
+        qdict_put_str(attempt, "error", error[0] ? error : "value range query failed");
+        qlist_append(attempts, attempt);
+    }
+    if (selected < 0 && last_success >= 0) {
+        selected = last_success;
+    }
+    if (selected >= 0) {
+        min_val = selected_min;
+        max_val = selected_max;
+        assumption_count = selected_assumption_count;
+        dfsan_set_value_query_relaxation_profile((unsigned)selected);
+    }
+
+    result = qdict_new();
+    label_hex = g_strdup_printf("0x%x", label);
+    min_hex = g_strdup_printf("0x%" PRIx64, min_val);
+    max_hex = g_strdup_printf("0x%" PRIx64, max_val);
+    qdict_put_str(result, "label", label_hex);
+    qdict_put_str(result, "status", "complete");
+    qdict_put_str(result, "relaxation", "auto");
+    qdict_put(result, "relaxation_attempts", attempts);
+    if (selected >= 0) {
+        QList *candidates = qlist_new();
+        const char *profile_name = ia_value_query_profile_name(selected);
+        uint64_t span = max_val - min_val;
+        unsigned i;
+        qdict_put_str(result, "selected_profile", profile_name);
+        qlist_append(candidates, seed_candidate);
+        qlist_append(candidates, ia_value_query_candidate(label, "minimum", min_val,
+                                                          min_val + base, profile_name));
+        qlist_append(candidates, ia_value_query_candidate(label, "maximum", max_val,
+                                                          max_val + base, profile_name));
+        for (i = 1; i <= 4; i++) {
+            g_autofree char *sample_name = g_strdup_printf("sample-%u", i);
+            uint64_t sample_lo = min_val +
+                (uint64_t)(((__uint128_t)span * (i - 1)) / 4);
+            uint64_t sample_hi = min_val +
+                (uint64_t)(((__uint128_t)span * i) / 4);
+            QDict *sample = ia_value_query_sample(
+                label, sample_name, sample_lo, sample_hi, base, profile_name);
+            if (!sample) {
+                uint64_t fallback = (i & 1) ? min_val : max_val;
+                sample = ia_value_query_candidate(label, sample_name,
+                                                  fallback, fallback + base,
+                                                  profile_name);
+            }
+            qlist_append(candidates, sample);
+        }
+        qdict_put(result, "candidates", candidates);
+    } else {
+        QList *candidates = qlist_new();
+        qlist_append(candidates, seed_candidate);
+        qdict_put(result, "candidates", candidates);
+    }
+    qdict_put_int(result, "seed", seed_val);
+    qdict_put_int(result, "min", min_val);
+    qdict_put_str(result, "min_hex", min_hex);
+    qdict_put_int(result, "max", max_val);
+    qdict_put_str(result, "max_hex", max_hex);
+    qdict_put_int(result, "assumption_count", assumption_count);
+    qdict_put_str(result, "soundness", assumption_count > 0 ? "conditional" : "sound");
+    return ia_make_ok_response(id, result);
 }
 
 static QDict *ia_make_symbolic_label_entry(dfsan_label label)
@@ -1652,6 +2348,64 @@ static bool ia_lookup_register_binding(CPUARMState *env, const char *name,
 }
 #endif
 
+static QDict *ia_handle_export_value_solver(int64_t id, QDict *params)
+{
+    dfsan_label label;
+    size_t json_len = 0;
+    int rc;
+    char *json_buf = NULL;
+    char error[256] = { 0 };
+    Error *err = NULL;
+    QDict *result = NULL;
+
+    if (!params) {
+        return ia_make_error_response(id, "invalid_params", "params are required");
+    }
+    if (!ia_parse_label_param(params, "label", &label, &err)) {
+        const char *message = error_get_pretty(err);
+        QDict *resp = ia_make_error_response(id, "invalid_params", message);
+        error_free(err);
+        return resp;
+    }
+    if (label == 0 || label > dfsan_get_label_count() || !dfsan_get_label_info(label)) {
+        return ia_make_error_response(id, "invalid_params", "label is not valid");
+    }
+    if (!dfsan_export_value_solver) {
+        return ia_make_error_response(id, "unsupported",
+                                      "native value-solver export is unavailable");
+    }
+
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_inspection_available_locked()) {
+        qemu_mutex_unlock(&ia_state.lock);
+        return ia_make_error_response(id, "invalid_state",
+                                      "backend must be paused before exporting value-solver state");
+    }
+    qemu_mutex_unlock(&ia_state.lock);
+
+    rc = dfsan_export_value_solver(label, NULL, 0, &json_len,
+                                   error, sizeof(error));
+    if (rc < 0) {
+        return ia_make_error_response(id, "solver_error",
+                                      error[0] ? error : "value-solver export failed");
+    }
+
+    json_buf = g_malloc(json_len + 1);
+    rc = dfsan_export_value_solver(label, json_buf, json_len + 1, &json_len,
+                                   error, sizeof(error));
+    if (rc < 0) {
+        g_free(json_buf);
+        return ia_make_error_response(id, "solver_error",
+                                      error[0] ? error : "value-solver export failed");
+    }
+
+    result = qdict_new();
+    qdict_put_str(result, "export_json", json_buf ? json_buf : "");
+    qdict_put_int(result, "export_json_len", json_len);
+    g_free(json_buf);
+    return ia_make_ok_response(id, result);
+}
+
 static QDict *ia_handle_query_status(int64_t id)
 {
     QDict *result = qdict_new();
@@ -1753,6 +2507,10 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_bool(caps, "read_path_constraints", true);
     qdict_put_bool(caps, "read_recent_path_constraints", true);
     qdict_put_bool(caps, "solve_path_constraints", dfsan_solve_path_constraint != NULL);
+    qdict_put_bool(caps, "query_value_range", dfsan_query_value_range != NULL);
+    qdict_put_bool(caps, "query_value_eq", dfsan_query_value_eq != NULL);
+    qdict_put_bool(caps, "begin_value_query_capture", dfsan_begin_value_query_capture != NULL);
+    qdict_put_bool(caps, "begin_value_solver_capture", dfsan_begin_value_solver_capture != NULL);
     qdict_put_bool(caps, "queue_stdin_chunk", true);
     qdict_put_bool(caps, "close", true);
     qdict_put_bool(caps, "symbolize_memory", true);
@@ -1769,6 +2527,9 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_bool(caps, "run_until_any_address", true);
     qdict_put_bool(caps, "single_step", true);
     qdict_put_bool(caps, "watchpoints", true);
+    qdict_put_bool(caps, "get_path_constraint_smt2", dfsan_get_path_constraint_text != NULL);
+    qdict_put_bool(caps, "get_path_constraint_evaluated", dfsan_get_path_constraint_text != NULL);
+    qdict_put_bool(caps, "export_value_solver", dfsan_export_value_solver != NULL);
     qdict_put(result, "capabilities", caps);
     return ia_make_ok_response(id, result);
 }
@@ -3229,6 +3990,28 @@ static QDict *ia_dispatch_request(QDict *request)
     if (strcmp(method, "disassemble") == 0) {
         return ia_handle_disassemble(id, params);
     }
+    if (strcmp(method, "query_value_range") == 0) {
+        return ia_handle_query_value_range(id, params);
+    }
+    if (strcmp(method, "query_value_eq") == 0) {
+        return ia_handle_query_value_eq(id, params);
+    }
+    if (strcmp(method, "get_path_constraint_smt2") == 0) {
+        return ia_handle_get_path_constraint_smt2(id, params);
+    }
+    if (strcmp(method, "get_path_constraint_evaluated") == 0) {
+        return ia_handle_get_path_constraint_evaluated(id, params);
+    }
+    if (strcmp(method, "begin_value_solver_capture") == 0) {
+        return ia_handle_begin_value_solver_capture(id);
+    }
+    if (strcmp(method, "begin_value_query_capture") == 0) {
+        return ia_handle_begin_value_query_capture(id);
+    }
+    if (strcmp(method, "export_value_solver") == 0) {
+        return ia_handle_export_value_solver(id, params);
+    }
+
     return ia_make_error_response(id, "unknown_method", "unknown instrumentation RPC method");
 }
 

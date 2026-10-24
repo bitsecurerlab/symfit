@@ -582,7 +582,7 @@ static bool collect_recorded_constraint_context(
     if (root_trace_index >= 0 && static_cast<int64_t>(i) >= root_trace_index) {
       break;
     }
-    if (!require_branch_root && entry.label >= label) {
+    if (!require_branch_root && entry.label == label) {
       continue;
     }
     if (entry.label == label || !seen.insert(entry.label).second) {
