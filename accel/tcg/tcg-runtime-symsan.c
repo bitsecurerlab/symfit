@@ -17,10 +17,28 @@ extern CPUArchState *global_env;
 
 static target_ulong get_pc(CPUArchState *env)
 {
-    target_ulong pc, cs_base;
-    uint32_t flags;
+    target_ulong pc;
 
-    cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+    /*
+     * Only the PC is wanted here.  cpu_get_tb_cpu_state() also rebuilds the
+     * full TB flag set, which on ARM is an out-of-line function deriving the
+     * SVE and FP exception levels, the VA parameters and the MMU index -- all
+     * of it discarded below.  It is cheap on x86 (an 8-line inline) but costs
+     * roughly 50ns per call on ARM, and this runs per instrumented guest
+     * access.  Read the PC directly; cpu_get_tb_cpu_state() assigns it from
+     * exactly these fields, so the value is unchanged.
+     */
+#if defined(TARGET_AARCH64)
+    pc = is_a64(env) ? env->pc : env->regs[15];
+#elif defined(TARGET_ARM)
+    pc = env->regs[15];
+#else
+    {
+        target_ulong cs_base;
+        uint32_t flags;
+        cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+    }
+#endif
 
 #ifdef CONFIG_USER_ONLY
     return ia_get_current_insn_pc(pc);

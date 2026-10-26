@@ -77,13 +77,27 @@ build_symsan() {
 build_symfit() {
   LLVM_CONFIG_BIN="${LLVM_CONFIG_BIN:-}"
   LLVM_INCLUDEDIR="${LLVM_INCLUDEDIR:-}"
+  LIBCXX_LIBDIR="${LIBCXX_LIBDIR:-}"
+
+  # Symsan is compiled by CMake with clang-${CLANG_VER} against its own libc++.
+  # Symfit links that runtime in and shares its LLVM opcode definitions, so it
+  # has to use the same toolchain: configure otherwise falls back to the system
+  # cc and to whatever llvm-config is first on PATH.  Derive everything from the
+  # clang binary itself so the two halves cannot drift apart.
+  local clang_bin clang_root
+  clang_bin="$(command -v "clang-${CLANG_VER}" || true)"
+  [[ -n "${clang_bin}" ]] \
+    || die "clang-${CLANG_VER} not found on PATH. Add its bin/ to PATH or set CLANG_VER."
+  clang_root="$(cd "$(dirname "${clang_bin}")/.." && pwd)"
 
   if [[ -z "${LLVM_INCLUDEDIR}" ]]; then
     if [[ -n "${LLVM_CONFIG_BIN}" ]] && command -v "$LLVM_CONFIG_BIN" >/dev/null 2>&1; then
       LLVM_INCLUDEDIR="$($LLVM_CONFIG_BIN --includedir)"
+    elif [[ -f "${clang_root}/include/llvm/IR/Instruction.def" ]]; then
+      LLVM_INCLUDEDIR="${clang_root}/include"
     else
       local llvm_cfg
-      for llvm_cfg in llvm-config llvm-config-18 llvm-config-17 llvm-config-16 llvm-config-15 llvm-config-14 llvm-config-13 llvm-config-12; do
+      for llvm_cfg in "llvm-config-${CLANG_VER}" llvm-config; do
         if command -v "$llvm_cfg" >/dev/null 2>&1; then
           LLVM_CONFIG_BIN="$llvm_cfg"
           LLVM_INCLUDEDIR="$($llvm_cfg --includedir)"
@@ -94,17 +108,19 @@ build_symfit() {
   fi
 
   if [[ -z "${LLVM_INCLUDEDIR}" || ! -f "${LLVM_INCLUDEDIR}/llvm/IR/Instruction.def" ]]; then
-    local llvm_root
-    for llvm_root in /usr/lib/llvm-18 /usr/lib/llvm-17 /usr/lib/llvm-16 /usr/lib/llvm-15 /usr/lib/llvm-14 /usr/lib/llvm-13 /usr/lib/llvm-12; do
-      if [[ -f "${llvm_root}/include/llvm/IR/Instruction.def" ]]; then
-        LLVM_INCLUDEDIR="${llvm_root}/include"
-        break
-      fi
-    done
+    if [[ -f "/usr/lib/llvm-${CLANG_VER}/include/llvm/IR/Instruction.def" ]]; then
+      LLVM_INCLUDEDIR="/usr/lib/llvm-${CLANG_VER}/include"
+    fi
   fi
 
   [[ -n "${LLVM_INCLUDEDIR}" && -f "${LLVM_INCLUDEDIR}/llvm/IR/Instruction.def" ]] \
     || die "Could not find LLVM include dir containing llvm/IR/Instruction.def. Set LLVM_INCLUDEDIR or LLVM_CONFIG_BIN."
+
+  # libc++/libc++abi/libunwind are pulled in by the Symsan runtime and usually
+  # ship only inside the clang tree, not in the system library path.
+  if [[ -z "${LIBCXX_LIBDIR}" && -f "${clang_root}/lib/libc++.so" ]]; then
+    LIBCXX_LIBDIR="${clang_root}/lib"
+  fi
 
   need_dir "$SYMFIT_SRC"
   mkcd "$SYMFIT_BUILD"
@@ -113,9 +129,18 @@ build_symfit() {
   [[ $DEBUG -eq 1 ]] && debug_flag="--enable-debug"
 
   EXTRA_CFLAGS="-I${LLVM_INCLUDEDIR}"
+  EXTRA_LDFLAGS=""
+  if [[ -n "${LIBCXX_LIBDIR}" ]]; then
+    EXTRA_LDFLAGS="-L${LIBCXX_LIBDIR} -Wl,-rpath,${LIBCXX_LIBDIR}"
+  fi
+
+  log "Configuring SymFit with clang-${CLANG_VER}, LLVM headers ${LLVM_INCLUDEDIR}"
   # Common configure flags (from your script)
   "${SYMFIT_SRC}/configure"       \
+    --cc="clang-${CLANG_VER}"     \
+    --cxx="clang++-${CLANG_VER}"  \
     --extra-cflags="${EXTRA_CFLAGS}" \
+    --extra-ldflags="${EXTRA_LDFLAGS}" \
     --audio-drv-list=             \
     --disable-bluez               \
     --disable-sdl                 \

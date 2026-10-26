@@ -4616,7 +4616,11 @@ static void ia_update_active_flag_locked(void)
     );
     bool was_active = atomic_read(&ia_instrumentation_active);
     atomic_set(&ia_instrumentation_active, active);
-    if (was_active && !active && ia_state.current_cpu) {
+    /* Flush on either transition.  Turning instrumentation on must discard
+     * TBs translated without the hooks, or they keep running uninstrumented
+     * and watchpoints are missed; turning it off discards the instrumented
+     * ones so the fast path returns.  */
+    if (was_active != active && ia_state.current_cpu) {
         tb_flush(ia_state.current_cpu);
     }
 }

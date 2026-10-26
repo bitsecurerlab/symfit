@@ -31,6 +31,12 @@
 #include "trace-tcg.h"
 #include "trace/mem.h"
 
+/* Watchpoint instrumentation is gated at translation time rather than per
+ * access; ia_update_active_flag_locked() flushes the code cache when the flag
+ * changes.  Same pattern as target/arm/translate-a64.c and
+ * target/i386/translate.c.  */
+extern bool ia_instrumentation_active;
+
 /* Reduce the number of ifdefs below.  This assumes that all uses of
    TCGV_HIGH and TCGV_LOW are properly protected by a conditional that
    the compiler can eliminate.  */
@@ -3506,7 +3512,9 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
      * g_assert(!probe) on demand-paged addresses during boot.
      */
     gen_ldst_i32(INDEX_op_qemu_ld_i32, val, addr, memop, idx);
-    gen_helper_symsan_watch_read_guest(cpu_env, saved_addr, load_size);
+    if (atomic_read(&ia_instrumentation_active)) {
+        gen_helper_symsan_watch_read_guest(cpu_env, saved_addr, load_size);
+    }
     if (second_ccache_flag) {
         gen_helper_symsan_load_guest_i32(shadow_i32(val), cpu_env,
                                          saved_addr,
@@ -3571,7 +3579,9 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     store_size = tcg_const_i64(1 << (memop & MO_SIZE));
 
     //#ifdef CONFIG_USER_ONLY // Test for softmmu watchpoints
-    gen_helper_symsan_watch_store_guest(cpu_env, addr, store_size);
+    if (atomic_read(&ia_instrumentation_active)) {
+        gen_helper_symsan_watch_store_guest(cpu_env, addr, store_size);
+    }
     //#endif
     gen_ldst_i32(INDEX_op_qemu_st_i32, val, addr, memop, idx);
 
@@ -3657,7 +3667,9 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 #else
     /* System mode: probe after the load for TLB population. */
     gen_ldst_i64(INDEX_op_qemu_ld_i64, val, addr, memop, idx);
-    gen_helper_symsan_watch_read_guest(cpu_env, saved_addr, load_size);
+    if (atomic_read(&ia_instrumentation_active)) {
+        gen_helper_symsan_watch_read_guest(cpu_env, saved_addr, load_size);
+    }
     if (second_ccache_flag) {
         gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val), cpu_env,
                                          saved_addr, tcgv_i64_expr_num(saved_addr),
@@ -3741,7 +3753,9 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     TCGv_i64 mmu_idx = tcg_const_i64(idx);
     store_size = tcg_const_i64(1 << (memop & MO_SIZE));
     //#ifdef CONFIG_USER_ONLY // Test for softmmu watchpoints
-    gen_helper_symsan_watch_store_guest(cpu_env, addr, store_size);
+    if (atomic_read(&ia_instrumentation_active)) {
+        gen_helper_symsan_watch_store_guest(cpu_env, addr, store_size);
+    }
     //#endif
     gen_ldst_i64(INDEX_op_qemu_st_i64, val, addr, memop, idx);
     /* Perform the symbolic memory access. Doing so _after_ the concrete

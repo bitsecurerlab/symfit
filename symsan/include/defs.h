@@ -71,6 +71,10 @@ typedef uint32_t u32;
 #ifdef __x86_64__
 typedef unsigned long long u64;
 typedef long long s64;
+#elif defined(__aarch64__)
+/* Match the 64-bit aliases imported from __sanitizer on AArch64. */
+typedef unsigned long long u64;
+typedef long long s64;
 #else
 typedef uint64_t u64;
 typedef int64_t s64;

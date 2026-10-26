@@ -1255,9 +1255,13 @@ static void dfsan_init(int argc, char **argv, char **envp) {
   // will load our executable in the middle of our unused region. This mostly
   // works so long as the program doesn't use too much memory. We support this
   // case by disabling memory protection when ASLR is disabled.
+  // On AArch64 this range can contain the native loader and shared libraries.
+  // MAP_FIXED would unmap them before DFSan initialization completes.
+  #if !defined(__aarch64__)
   uptr init_addr = (uptr)&dfsan_init;
   if (!(init_addr >= UnusedAddr() && init_addr < AppAddr()))
     MmapFixedNoAccess(UnusedAddr(), AppAddr() - UnusedAddr());
+  #endif
 
   InitializeInterceptors();
 

@@ -227,7 +227,13 @@ static void ia_update_active_flag_locked(void)
                    ia_state.write_watchpoint_count > 0 ||
                    ia_state.read_watchpoint_count > 0 ||
                    ia_state.trace_file != NULL);
+    bool was_active = atomic_read(&ia_instrumentation_active);
     atomic_set(&ia_instrumentation_active, active);
+    /* See ia-rpc-softmmu.c: translation-time gating requires a flush on
+     * either transition so TBs match the current instrumentation state.  */
+    if (was_active != active && ia_state.current_cpu) {
+        tb_flush(ia_state.current_cpu);
+    }
 }
 
 static target_ulong get_pc(CPUArchState *env)
