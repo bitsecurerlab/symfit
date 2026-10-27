@@ -169,7 +169,7 @@ Usage: ./build.sh [options]
 Build Symsan from ./symsan, then build SymFit.
 
 Options
-  --debug          Enable debug for symfit (and Symsan's SYMSAN_DEBUG=ON)
+  --debug          Enable debug for symfit (and Symsan's SYMSAN_DEBUG=ON) and disable compiler optimizations
   --release        (default) Release/RelWithDebInfo as in original script
   -jN              Set parallel jobs (default: auto-detected)
   --print-paths    Print effective paths and exit

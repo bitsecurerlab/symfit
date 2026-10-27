@@ -315,6 +315,10 @@ static void ia_ensure_symbolic_mode_active(void)
         noSymbolicData = 0;
     }
 #endif
+    /* Taint may have just been introduced, which makes the concrete-mode
+     * taint checks necessary again.  Idempotent and cheap once the gate is
+     * open; see symsan_refresh_shadow_gate(). */
+    symsan_refresh_shadow_gate(ia_state.current_cpu);
 }
 
 static void ia_init_primitives_once(void)

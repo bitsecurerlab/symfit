@@ -100,6 +100,13 @@ void dfsan_store_label(dfsan_label l, void *addr, size_t size, u64 pc);
 /// Returns non-zero when every byte in [addr, addr + size) is concrete.
 int dfsan_region_is_concrete(const void *addr, size_t size);
 
+/// Returns non-zero once any shadow page has been created, i.e. once taint
+/// has been introduced somewhere.  While this is zero, dfsan_read_label()
+/// cannot return anything but 0 and dfsan_store_label(0, ...) cannot have an
+/// effect, so callers may skip those calls entirely.  Monotonic: a true
+/// result may be cached, a false one may not.
+int dfsan_shadow_exists(void);
+
 /// Retrieves the starting address for the shadow memory of the given address
 const dfsan_label * dfsan_shadow_for(const void * addr);
 

@@ -1744,6 +1744,10 @@ static void ia_ensure_symbolic_mode_active(void)
     if (noSymbolicData != 0) {
         noSymbolicData = 0;
     }
+    /* Taint may have just been introduced, which makes the concrete-mode
+     * taint checks necessary again.  Idempotent and cheap once the gate is
+     * open; see symsan_refresh_shadow_gate(). */
+    symsan_refresh_shadow_gate(ia_state.current_cpu);
 }
 
 static dfsan_label ia_create_symbolic_value_label(uint32_t width_bits,

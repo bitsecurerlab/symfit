@@ -46,10 +46,23 @@
 #include <assert.h>
 #include <fcntl.h>
 #include <map>
+#include <unordered_map>
 //#include <algorithm>
 //#include <string> // For op-to-string conversion
 
-std::map<uintptr_t, dfsan_label *> g_shadow_pages;
+/* Shadow pages are looked up on every instrumented guest memory access, so
+ * this has to be a constant-time container rather than an ordered one; a
+ * std::map costs an O(log n) pointer-chasing walk per access, which on a
+ * large tainted working set dominates the shadow path.  Nothing here needs
+ * the keys ordered. */
+std::unordered_map<uintptr_t, dfsan_label *> g_shadow_pages;
+
+/* Set once, when the first shadow page is created.  While this is zero no
+ * shadow memory exists anywhere, so every dfsan_read_label() must return 0
+ * and every dfsan_store_label(0, ...) is a no-op.  The emulator reads this
+ * through dfsan_shadow_exists() to decide whether the concrete-mode taint
+ * checks need to be emitted at all. */
+static volatile int g_shadow_any = 0;
 extern "C" void telemetry_send(const char *json);
 extern "C" char telemetry_enabled;
 
@@ -139,12 +152,39 @@ static void dfsan_check_label(dfsan_label label) {
   }
 }
 
+/* One-entry memo in front of the map, holding the last page looked up and its
+ * shadow base -- which may legitimately be null.
+ *
+ * Caching the null answers is the important part: the common shape of a run is
+ * a handful of tainted bytes against a very large concrete working set, so
+ * nearly every lookup is a miss and a positive-only cache would never be
+ * consulted.  Misses can be falsified by a later getOrCreateShadow(), so the
+ * memo carries the shadow-table generation it was taken at and is ignored once
+ * that moves.  Pages are never removed and a page's shadow base never changes,
+ * so a generation match is sufficient.
+ *
+ * The memo is thread-local; the generation is shared.  Reading it relaxed means
+ * a thread can briefly keep a stale miss after another thread creates that
+ * page -- the same window that already exists in reading g_shadow_pages itself
+ * without a lock, which this does not widen in kind. */
+static u64 g_shadow_gen = 0;
+static __thread u64 t_memo_gen = (u64)-1;
+static __thread uintptr_t t_memo_page = 0;
+static __thread dfsan_label *t_memo_base = nullptr;
+
 dfsan_label *__dfsan::shadow_for(void *ptr) {
-    auto shadowPageIt = g_shadow_pages.find(pageStart(ptr));
-            if (shadowPageIt != g_shadow_pages.end()) {
-        return shadowPageIt->second + pageOffset(ptr);
+    const uintptr_t page = pageStart(ptr);
+    const u64 gen = __atomic_load_n(&g_shadow_gen, __ATOMIC_RELAXED);
+    if (t_memo_gen == gen && t_memo_page == page) {
+        return t_memo_base ? t_memo_base + pageOffset(ptr) : nullptr;
     }
-    return nullptr;
+    auto shadowPageIt = g_shadow_pages.find(page);
+    dfsan_label *base =
+        (shadowPageIt != g_shadow_pages.end()) ? shadowPageIt->second : nullptr;
+    t_memo_gen = gen;
+    t_memo_page = page;
+    t_memo_base = base;
+    return base ? base + pageOffset(ptr) : nullptr;
 }
 
 dfsan_label *getOrCreateShadow(void *ptr, dfsan_label l) {
@@ -155,7 +195,14 @@ dfsan_label *getOrCreateShadow(void *ptr, dfsan_label l) {
     auto *newShadow =
         static_cast<dfsan_label *>(malloc(kPageSize * sizeof(dfsan_label)));
     memset(newShadow, 0, kPageSize * sizeof(dfsan_label));
-    g_shadow_pages[pageStart(ptr)] = newShadow;
+    const uintptr_t page = pageStart(ptr);
+    g_shadow_pages[page] = newShadow;
+    g_shadow_any = 1;
+    /* Invalidate every cached miss, then seed this thread's memo. */
+    __atomic_add_fetch(&g_shadow_gen, 1, __ATOMIC_RELAXED);
+    t_memo_gen = __atomic_load_n(&g_shadow_gen, __ATOMIC_RELAXED);
+    t_memo_page = page;
+    t_memo_base = newShadow;
     return newShadow + pageOffset(ptr);
 }
 
@@ -937,6 +984,13 @@ dfsan_read_label(const void *addr, uptr size) {
 SANITIZER_INTERFACE_ATTRIBUTE dfsan_label
 dfsan_get_label(const void *addr) {
   return *shadow_for(addr);
+}
+
+/* Non-zero once any shadow page exists.  Monotonic: pages are never removed,
+ * so a caller may cache a true result but must not cache a false one. */
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE
+int dfsan_shadow_exists(void) {
+  return g_shadow_any;
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE

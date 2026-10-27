@@ -37,6 +37,13 @@
  * target/i386/translate.c.  */
 extern bool ia_instrumentation_active;
 
+/* symsan_shadow_gate (tcg/tcg.h) is zero until taint has been introduced
+ * somewhere.  While it is zero the concrete-mode probes below -- which only
+ * look for taint that cannot exist yet -- are not emitted at all.
+ * symsan_refresh_shadow_gate() flushes the code cache when it opens, so TBs
+ * always match the current gate state.  Same translate-time gating pattern as
+ * ia_instrumentation_active above. */
+
 /* Reduce the number of ifdefs below.  This assumes that all uses of
    TCGV_HIGH and TCGV_LOW are properly protected by a conditional that
    the compiler can eliminate.  */
@@ -3494,7 +3501,7 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
      * with the loaded value before the replay can re-read the address).
      * User mode has no hardware TLB, so probing before the load is safe.
      */
-    if (!second_ccache_flag) {
+    if (!second_ccache_flag && symsan_shadow_gate) {
         gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
                                            mmu_idx);
     }
@@ -3520,7 +3527,7 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
                                          saved_addr,
                                          tcgv_i64_expr_num(saved_addr),
                                          load_size, mmu_idx);
-    } else {
+    } else if (symsan_shadow_gate) {
         gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
                                            mmu_idx);
     }
@@ -3591,7 +3598,7 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     if(second_ccache_flag) {
         // gen_helper_sym_store_guest_i32(cpu_env, val, tcgv_i32_expr(val), addr, tcgv_i64_expr(addr), store_size);
         gen_helper_symsan_store_guest_i32(cpu_env, tcgv_i32_expr_num(val), addr, tcgv_i64_expr_num(addr), store_size, mmu_idx);
-    } else {
+    } else if (symsan_shadow_gate) {
         //gen_helper_sym_check_store_guest_i32(cpu_env, addr, store_size);
         gen_helper_symsan_check_store_guest(cpu_env, addr, store_size, mmu_idx);
     }
@@ -3654,7 +3661,7 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 
 #ifdef CONFIG_USER_ONLY
     /* User mode: probe before the load — same rationale as the i32 path. */
-    if (!second_ccache_flag) {
+    if (!second_ccache_flag && symsan_shadow_gate) {
         gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
                                            mmu_idx);
     }
@@ -3674,7 +3681,7 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
         gen_helper_symsan_load_guest_i64(tcgv_i64_expr_num(val), cpu_env,
                                          saved_addr, tcgv_i64_expr_num(saved_addr),
                                          load_size, mmu_idx);
-    } else {
+    } else if (symsan_shadow_gate) {
         gen_helper_symsan_check_load_guest(cpu_env, saved_addr, load_size,
                                            mmu_idx);
     }
@@ -3765,7 +3772,7 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
                                        addr, tcgv_i64_expr(addr),
                                        store_size);*/
         gen_helper_symsan_store_guest_i64(cpu_env, shadow_i64(val), addr, tcgv_i64_expr_num(addr), store_size, mmu_idx);
-    } else {
+    } else if (symsan_shadow_gate) {
         //gen_helper_sym_check_store_guest_i64(cpu_env, addr, store_size);
         gen_helper_symsan_check_store_guest(cpu_env, addr, store_size, mmu_idx);
     }

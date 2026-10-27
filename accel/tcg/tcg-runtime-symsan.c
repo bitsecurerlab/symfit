@@ -69,6 +69,37 @@ int noSymbolicData = 1;
 #endif
 #endif
 
+/* Translate-time gate for the concrete-mode taint checks.
+ *
+ * While no shadow memory exists anywhere, symsan_check_load_guest() can only
+ * read a zero label and symsan_check_store_guest() can only clear an
+ * already-clear shadow, so emitting them costs a helper call, a redundant
+ * address resolution and two calls into the runtime per guest memory access
+ * for no reachable effect.  Gating emission on this flag removes all of that
+ * for fully concrete execution, which is the whole of a guest boot.
+ *
+ * The flag is monotonic -- dfsan never removes shadow pages -- so symbolic
+ * execution is never slowed: once taint has been introduced the gate is open
+ * for the rest of the run and the code path is exactly what it was before.
+ * A 0->1 transition has to discard TBs translated without the checks, or they
+ * would keep running uninstrumented and taint reaching memory would be missed.
+ */
+int symsan_shadow_gate = 0;
+
+void symsan_refresh_shadow_gate(CPUState *cs)
+{
+    if (atomic_read(&symsan_shadow_gate)) {
+        return;                 /* monotonic; nothing to do */
+    }
+    if (!dfsan_shadow_exists()) {
+        return;
+    }
+    atomic_set(&symsan_shadow_gate, 1);
+    if (cs) {
+        tb_flush(cs);
+    }
+}
+
 #ifdef TARGET_ARM
 // Declaration of exception raising function for ARM CPUs
 void raise_exception_ra(CPUARMState *env, uint32_t excp, uint32_t syndrome,
@@ -1539,6 +1570,11 @@ void HELPER(symsan_check_state_switch)(CPUArchState *env) {
     second_ccache_flag = symbolic_flag;
     if (second_ccache_flag == 0) {
         CPUState *cs = env_cpu(env);
+        /* Leaving symbolic mode: the concrete-mode taint checks matter
+         * again, so make sure they are being emitted.  This is the catch-all
+         * for the gate -- whatever introduced the taint, execution has to
+         * come back through here before concrete TBs run again. */
+        symsan_refresh_shadow_gate(cs);
         cpu_loop_exit_noexc(cs);
     }
 }
@@ -1613,6 +1649,12 @@ void HELPER(symsan_check_state)(CPUArchState *env) {
     }
     #endif
     second_ccache_flag = symbolic_flag;
+    if (second_ccache_flag == 0) {
+        /* See symsan_check_state_switch(): re-arm the concrete-mode checks on
+         * the way out of symbolic mode.  This path does not exit the cpu loop,
+         * so the tb_flush() inside is what makes the new TBs take effect. */
+        symsan_refresh_shadow_gate(env_cpu(env));
+    }
 }
 
 void HELPER(symsan_check_state_no_sse)(CPUArchState *env) {
@@ -1694,6 +1736,11 @@ void HELPER(symsan_check_state_no_sse)(CPUArchState *env) {
     // if (!noSymbolicData) fprintf(stderr, "block 0x%lx state %s\n", env->eip, second_ccache_flag?"symbolic":"concrete");
     if (second_ccache_flag == 0) {
         CPUState *cs = env_cpu(env);
+        /* Leaving symbolic mode: the concrete-mode taint checks matter
+         * again, so make sure they are being emitted.  This is the catch-all
+         * for the gate -- whatever introduced the taint, execution has to
+         * come back through here before concrete TBs run again. */
+        symsan_refresh_shadow_gate(cs);
         cpu_loop_exit_noexc(cs);
     }
 }

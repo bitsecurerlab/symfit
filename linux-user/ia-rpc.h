@@ -47,4 +47,11 @@ void ia_rpc_leave_blocking_syscall(void);
 
 extern bool ia_instrumentation_active; // To prevent performance penalty
 
+/* Re-check whether shadow memory now exists and, if so, open the
+ * translate-time gate on the concrete-mode taint checks, flushing TBs that
+ * were translated without them.  Cheap and idempotent: it returns immediately
+ * once the gate is open.  Call it after introducing taint, and on the way out
+ * of symbolic mode.  Defined in accel/tcg/tcg-runtime-symsan.c. */
+void symsan_refresh_shadow_gate(CPUState *cs);
+
 #endif

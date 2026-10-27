@@ -495,6 +495,11 @@ extern int fake_flag;
 extern target_ulong symbolic_count;
 extern target_ulong concrete_count;
 #endif
+
+/* Translate-time gate for the concrete-mode taint checks.  Non-zero once any
+ * shadow memory exists; see symsan_refresh_shadow_gate() in
+ * accel/tcg/tcg-runtime-symsan.c. */
+extern int symsan_shadow_gate;
 /* call flags */
 /* Helper does not read globals (either directly or through an exception). It
    implies TCG_CALL_NO_WRITE_GLOBALS. */
