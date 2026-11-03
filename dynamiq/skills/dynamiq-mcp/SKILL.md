@@ -7,6 +7,8 @@ description: 'Use when driving the Dynamiq MCP server (`dynamiq`) for live binar
 
 Use this skill when operating the `dynamiq` MCP tools for live binary analysis.
 
+For additional directions, please see <symfit main source directory>/dynamiq/skills/symfit-field-notes/SKILL.md
+
 ## Core Rules
 
 1. Use session data, not guesses.
@@ -47,6 +49,10 @@ Inappropriate uses (concrete tools are better):
 - Checking what's in a specific memory region - just use read_memory
 - Confirming a function was called - a breakpoint is sufficient
 - Any question with a concrete, already-known answer
+
+Bear in mind that the concolic execution engine incorporated into Symfit is notably faster than classic symbolic execution tools such as Angr or Klee.
+There is likely to be significantly less speed penalty for any symbolic branches taken. If the situation calls for multiple points to be tainted, do
+not assume this will result in unmanageably slow execution speed.
 
 ## Minimal Loop
 

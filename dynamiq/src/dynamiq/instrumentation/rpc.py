@@ -56,12 +56,37 @@ class InstrumentationRpcClient:
         self._reader = sock.makefile("r", encoding="utf-8")
 
     def close(self) -> None:
-        if self._reader is not None:
-            self._reader.close()
-            self._reader = None
-        if self._socket is not None:
-            self._socket.close()
-            self._socket = None
+        """Idempotently release the socket and reader.
+
+        State is cleared before closing so a failing close() still leaves
+        the client reconnectable, and a second close() is a no-op. Dropping
+        the socket also discards any per-request socket deadline, so a later
+        connect() starts from the configured default timeout.
+        """
+        reader, self._reader = self._reader, None
+        sock, self._socket = self._socket, None
+        if reader is not None:
+            try:
+                reader.close()
+            except Exception:
+                pass
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def reconnect(self) -> None:
+        """Close and re-establish the channel with a fresh socket+reader.
+
+        Safe to call after a SessionTimeoutError: a timed-out resume leaves
+        the local ``socket.makefile`` reader stale (later reads fail without
+        waiting) while the server keeps running. Reconnecting gives the next
+        explicit caller retry a fresh channel. It does not retry the timed-out
+        request itself; execution is forward-only, so the caller decides.
+        """
+        self.close()
+        self.connect()
 
     def request(
         self,
@@ -69,6 +94,13 @@ class InstrumentationRpcClient:
         params: dict[str, Any] | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
+        """Send one RPC request and wait for its reply.
+
+        A socket timeout raises SessionTimeoutError without retrying: the
+        guest keeps running forward-only, so the caller decides whether to
+        retry. After a timeout the local reader is stale; call reconnect()
+        before reusing this client.
+        """
         if self._socket is None or self._reader is None:
             raise InstrumentationRpcError("instrumentation RPC client is not connected")
         effective_timeout = self.timeout if timeout is None else float(timeout)

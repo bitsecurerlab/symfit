@@ -14,6 +14,25 @@ class FakeProcessRunner:
     def exited_summary(self) -> str | None:
         return self.summary
 
+class FakeRpc:
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, dict]] = []
+
+    def request(self, method: str, params: dict | None = None, timeout: float | None = None) -> dict:
+        del timeout
+        self.requests.append((method, dict(params or {})))
+        if method == "begin_value_query_capture":
+            return {"status": "started"}
+        return {
+            "status": "complete",
+            "selected_profile": "full-path-and-loads",
+            "relaxation_attempts": [{
+                "profile": "full-path-and-loads", "status": "success",
+            }],
+            "candidates": [],
+        }
+
+
 
 def test_system_backend_default_capabilities() -> None:
     backend = QemuSystemInstrumentedBackend()
@@ -50,6 +69,28 @@ def test_system_backend_capabilities_method() -> None:
     assert caps["read_registers"] is True
     assert caps["read_memory"] is True
 
+def test_system_backend_forwards_value_query_capture_and_auto_relaxation() -> None:
+    rpc = FakeRpc()
+    backend = QemuSystemInstrumentedBackend(instrumentation_rpc_client=rpc)
+    backend._started = True
+
+    assert backend.begin_value_query_capture()["result"]["status"] == "started"
+    backend.query_value_range("0x12", lo=1, hi=9, base=1)
+    backend.query_value_eq("0x12", target=7)
+
+    requests = [item for item in rpc.requests if item[0] != "query_status"]
+    assert requests == [
+        ("begin_value_query_capture", {}),
+        ("query_value_range", {
+            "label": "0x12", "lo": "0x1", "hi": "0x9",
+            "base": "0x1", "relaxation": "auto",
+        }),
+        ("query_value_eq", {
+            "label": "0x12", "target": "0x7", "relaxation": "auto",
+        }),
+    ]
+
+
 
 def test_system_backend_write_stdin_raises() -> None:
     """System-mode backend should not support stdin."""
@@ -67,6 +108,13 @@ def test_system_backend_close_stdin() -> None:
     result = backend.close_stdin()
     assert result["closed"] is True
     assert result["available"] is False
+
+def test_system_backend_read_memory_rejects_invalid_address_space() -> None:
+    backend = QemuSystemInstrumentedBackend()
+    backend._started = True
+
+    with pytest.raises(InvalidStateError, match="address_space must be either 'virtual' or 'physical'"):
+        backend.read_memory("0x7c00", 2, address_space="guest")
 
 
 def test_system_backend_read_memory_rejects_invalid_address_space() -> None:

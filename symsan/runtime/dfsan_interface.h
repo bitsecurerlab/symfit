@@ -45,7 +45,7 @@ enum operators {
   // higher-order
   fmemcmp   = last_llvm_op + 7,
   fsize     = last_llvm_op + 8,
-  /* last_llvm_op + 9 was previously reserved for LoadAddr */
+  LoadAddr  = last_llvm_op + 9,
   Ite       = last_llvm_op + 10,
 };
 
@@ -75,7 +75,8 @@ dfsan_label dfsan_union(dfsan_label l1, dfsan_label l2, u16 op, u16 size,
 
 /// Creates and returns a base label with the given description and user data.
 dfsan_label dfsan_create_label(int pos);
-  
+dfsan_label dfsan_create_label_with_value(int pos, u8 value); // Convenience function
+
 /// Sets the label for each address in [addr,addr+size) to \c label.
 void dfsan_set_label(dfsan_label label, void *addr, size_t size, u64 pc);
 
@@ -98,6 +99,13 @@ void dfsan_store_label(dfsan_label l, void *addr, size_t size, u64 pc);
 
 /// Returns non-zero when every byte in [addr, addr + size) is concrete.
 int dfsan_region_is_concrete(const void *addr, size_t size);
+
+/// Returns non-zero once any shadow page has been created, i.e. once taint
+/// has been introduced somewhere.  While this is zero, dfsan_read_label()
+/// cannot return anything but 0 and dfsan_store_label(0, ...) cannot have an
+/// effect, so callers may skip those calls entirely.  Monotonic: a true
+/// result may be cached, a false one may not.
+int dfsan_shadow_exists(void);
 
 /// Retrieves the starting address for the shadow memory of the given address
 const dfsan_label * dfsan_shadow_for(const void * addr);
@@ -124,7 +132,8 @@ void dfsan_init_qemu(void);
 void dfsan_unimplemented(char *fname);
 
 dfsan_label __taint_trace_cmp(dfsan_label l1, dfsan_label l2, u8 size, u32 predicate,
-                       u64 op1, u64 op2, u32 cid);
+                       u64 op1, u64 op2, u64 cid);
+void __taint_trace_cond(dfsan_label label, u8 r, u64 cid);
 
 int dfsan_is_branch_condition_label(dfsan_label label);
 int dfsan_get_branch_direction(dfsan_label label, uint8_t *taken);
@@ -158,6 +167,39 @@ int dfsan_solve_path_constraint(dfsan_label label, uint8_t desired_taken,
                                 size_t assumption_capacity,
                                 size_t *assumption_count,
                                 char *error, size_t error_capacity);
+int dfsan_query_value_range(dfsan_label label, uint64_t lo_bound, uint64_t hi_bound,
+                            uint64_t base, uint64_t *out_seed,
+                            uint64_t *out_min, uint64_t *out_max,
+                            size_t *assumption_count,
+                            char *error, size_t error_capacity);
+
+int dfsan_query_value_eq(dfsan_label label, uint64_t target,
+                         dfsan_solve_assignment *assignments,
+                         size_t assignment_capacity, size_t *assignment_count,
+                         size_t *assumption_count,
+                         char *error, size_t error_capacity);
+
+int dfsan_query_value_candidate(dfsan_label label, uint64_t minimum,
+                                uint64_t maximum, uint64_t *out_value,
+                                dfsan_solve_assignment *assignments,
+                                size_t assignment_capacity,
+                                size_t *assignment_count,
+                                size_t *assumption_count,
+                                char *error, size_t error_capacity);
+
+void dfsan_begin_value_solver_capture(void);
+
+void dfsan_begin_value_query_capture(void);
+int dfsan_set_value_query_relaxation_profile(unsigned profile);
+int dfsan_get_value_query_seed(dfsan_label label, uint64_t *out_value,
+                               dfsan_solve_assignment *assignments,
+                               size_t assignment_capacity,
+                               size_t *assignment_count,
+                               char *error, size_t error_capacity);
+
+int dfsan_export_value_solver(dfsan_label label, char *json_out,
+                              size_t json_capacity, size_t *json_len,
+                              char *error, size_t error_capacity);
 
 void addContextRecording(u64 func_addr);
 

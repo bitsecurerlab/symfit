@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from dynamiq.errors import SessionTimeoutError
 from dynamiq.instrumentation import InstrumentationRpcClient
 from dynamiq.instrumentation.rpc import InstrumentationRpcError
 
@@ -101,3 +102,57 @@ def test_instrumentation_rpc_client_raises_on_ok_false(monkeypatch) -> None:
     client.connect()
     with pytest.raises(InstrumentationRpcError, match="unknown_method"):
         client.request("pause")
+
+
+class TimeoutOnceReader(FakeReader):
+    def __init__(self, lines: list[str]) -> None:
+        super().__init__(lines)
+        self._timed_out = False
+
+    def readline(self) -> str:
+        if not self._timed_out:
+            self._timed_out = True
+            raise TimeoutError("timed out")
+        return super().readline()
+
+
+class TimeoutOnceSocket(FakeSocket):
+    def __init__(self, lines: list[str]) -> None:
+        self.reader = TimeoutOnceReader(lines)
+        self.sent = []
+
+
+def test_instrumentation_rpc_client_reconnect_restores_channel_after_timeout(monkeypatch) -> None:
+    stale_socket = TimeoutOnceSocket([])
+    fresh_socket = FakeSocket(['{"id":2,"result":{"status":"paused","pc":"0x401000"}}\n'])
+    sockets = [stale_socket, fresh_socket]
+    monkeypatch.setattr("socket.socket", lambda *args, **kwargs: sockets.pop(0))
+
+    client = InstrumentationRpcClient("/tmp/instrument.sock")
+    client.connect()
+    with pytest.raises(SessionTimeoutError):
+        client.request("resume", timeout=0.1)
+
+    client.reconnect()
+    result = client.request("query_status")
+    client.close()
+
+    assert result == {"status": "paused", "pc": "0x401000"}
+    assert fresh_socket.sent[0]["method"] == "query_status"
+
+
+def test_instrumentation_rpc_client_close_is_idempotent_and_clears_state(monkeypatch) -> None:
+    class RaisingCloseSocket(FakeSocket):
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    fake_socket = RaisingCloseSocket(['{"id":1,"result":{"status":"paused"}}\n'])
+    monkeypatch.setattr("socket.socket", lambda *args, **kwargs: fake_socket)
+
+    client = InstrumentationRpcClient("/tmp/instrument.sock")
+    client.connect()
+    client.close()
+    client.close()
+
+    assert client._socket is None
+    assert client._reader is None

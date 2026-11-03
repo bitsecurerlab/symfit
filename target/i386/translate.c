@@ -8558,7 +8558,13 @@ static void i386_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
 static void i386_tr_tb_start(DisasContextBase *db, CPUState *cpu)
 {
 #if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
-    gen_helper_ia_tb_start(cpu_env, tcg_const_tl(db->pc_first));
+    #if defined(CONFIG_SOFTMMU)
+    if (atomic_read(&ia_instrumentation_active)) {
+    #endif
+        gen_helper_ia_tb_start(cpu_env, tcg_const_tl(db->pc_first));
+    #if defined(CONFIG_SOFTMMU)
+    }
+    #endif
 #endif
 }
 

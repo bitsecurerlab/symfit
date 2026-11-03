@@ -31,6 +31,7 @@ bool ia_rpc_pause_on_signal(int sig, int si_code, uint64_t fault_addr);
 bool ia_rpc_finalize_pending_termination(CPUArchState *env);
 void ia_wait_if_paused(void);
 bool ia_should_stop_before_instruction(CPUState *cpu, vaddr pc);
+uint64_t ia_get_current_insn_pc(uint64_t fallback_pc);
 void ia_on_basic_block_executed(CPUState *cpu, vaddr pc);
 bool ia_rpc_check_write_watchpoint(CPUState *cpu, uint64_t address,
                                    uint64_t size, uint64_t pc);
@@ -45,5 +46,12 @@ void ia_rpc_enter_blocking_syscall_fd(int syscall_nr, const char *name, int fd);
 void ia_rpc_leave_blocking_syscall(void);
 
 extern bool ia_instrumentation_active; // To prevent performance penalty
+
+/* Re-check whether shadow memory now exists and, if so, open the
+ * translate-time gate on the concrete-mode taint checks, flushing TBs that
+ * were translated without them.  Cheap and idempotent: it returns immediately
+ * once the gate is open.  Call it after introducing taint, and on the way out
+ * of symbolic mode.  Defined in accel/tcg/tcg-runtime-symsan.c. */
+void symsan_refresh_shadow_gate(CPUState *cs);
 
 #endif

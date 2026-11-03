@@ -5052,6 +5052,25 @@ static void handle_div(DisasContext *s, bool is_signed, unsigned int sf,
         gen_helper_udiv64(tcg_rd, tcg_n, tcg_m);
     }
 
+    // Redirect sdiv and udiv through symsan helpers to avoid losing symbolic labels
+
+    /*
+     * The architectural division helpers bypass tcg_gen_div_i64() and
+     * tcg_gen_divu_i64(), so populate the parallel SymSan expression slot
+     * explicitly.
+     */
+    if (second_ccache_flag) {
+        if (is_signed) {
+            gen_helper_symsan_div_i64(shadow_i64(tcg_rd),
+                                      tcg_n, shadow_i64(tcg_n),
+                                      tcg_m, shadow_i64(tcg_m));
+        } else {
+            gen_helper_symsan_divu_i64(shadow_i64(tcg_rd),
+                                       tcg_n, shadow_i64(tcg_n),
+                                       tcg_m, shadow_i64(tcg_m));
+        }
+    }
+
     if (!sf) { /* zero extend final result */
         tcg_gen_ext32u_i64(tcg_rd, tcg_rd);
     }
@@ -14213,9 +14232,15 @@ static void aarch64_tr_init_disas_context(DisasContextBase *dcbase,
 static void aarch64_tr_tb_start(DisasContextBase *db, CPUState *cpu)
 {
 #if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
-    TCGv pc_temp = tcg_const_tl(db->pc_first);    
-    gen_helper_ia_tb_start(cpu_env, pc_temp);
-    tcg_temp_free(pc_temp); // This wasn't freeing implicitly on softmmu targets and caused a TCG temp leak
+    #if defined(CONFIG_SOFTMMU)
+    if (atomic_read(&ia_instrumentation_active) || second_ccache_flag) {
+    #endif
+        TCGv pc_temp = tcg_const_tl(db->pc_first);
+        gen_helper_ia_tb_start(cpu_env, pc_temp);
+        tcg_temp_free(pc_temp);
+    #if defined(CONFIG_SOFTMMU)
+    }
+    #endif
 #endif
 }
 
@@ -14227,7 +14252,7 @@ static void aarch64_tr_insn_start(DisasContextBase *dcbase, CPUState *cpu)
     dc->insn_start = tcg_last_op();
 #if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
     #if defined(CONFIG_SOFTMMU)
-    if (atomic_read(&ia_instrumentation_active)) {
+    if (atomic_read(&ia_instrumentation_active) || second_ccache_flag) {
     #endif
         TCGv pc_temp = tcg_const_tl(dc->pc);
         gen_helper_ia_insn_start(cpu_env, pc_temp);

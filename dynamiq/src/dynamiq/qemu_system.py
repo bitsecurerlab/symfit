@@ -216,7 +216,6 @@ class QemuSystemLaunchConfig:
 def _has_qmp_option(args: list[str]) -> bool:
     return any(arg == "-qmp" or arg == "-qmp-pretty" for arg in args)
 
-
 def _normalize_arch(arch: str) -> str:
     normalized = arch.strip().lower()
     return _ARCH_ALIASES.get(normalized, normalized)

@@ -221,10 +221,16 @@ typedef struct CPUARMState {
     uint32_t shadow_regs[16];
     uint64_t shadow_xregs[32];
     /* Conditional flags too */
-    uint32_t shadow_CF;
-    uint32_t shadow_NF;
-    uint32_t shadow_VF;
-    uint32_t shadow_ZF;
+
+    /* Increase size of variables for shadow flag variables, QEMU on arm 
+     * temporarily stores the result of some operations here, despite the 
+     * individual FLAG results being a single bit on real arm. (was uint32_t)
+     */
+
+    uint64_t shadow_CF;
+    uint64_t shadow_NF;
+    uint64_t shadow_VF;
+    uint64_t shadow_ZF;
 
     /* PSTATE isn't an architectural register for ARMv8. However, it is
      * convenient for us to assemble the underlying state into a 32 bit format

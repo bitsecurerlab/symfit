@@ -431,7 +431,15 @@ unsigned struct_ElfW_Phdr_sz = sizeof(Elf_Phdr);
   unsigned struct_mtpos_sz = sizeof(struct mtpos);
   unsigned struct_rtentry_sz = sizeof(struct rtentry);
 #if SANITIZER_GLIBC || SANITIZER_ANDROID
-  unsigned struct_termio_sz = sizeof(struct termio);
+  // glibc 2.42 removed <termio.h> and struct termio, but struct termio is a
+  // frozen kernel ioctl ABI type, so describe it locally.  <linux/termios.h>
+  // would supply it at the cost of redefining struct termios, included above.
+  struct __sanitizer_termio {
+    unsigned short c_iflag, c_oflag, c_cflag, c_lflag;
+    unsigned char c_line;
+    unsigned char c_cc[8];  // NCC
+  };
+  unsigned struct_termio_sz = sizeof(struct __sanitizer_termio);
 #endif
   unsigned struct_vt_consize_sz = sizeof(struct vt_consize);
   unsigned struct_vt_sizes_sz = sizeof(struct vt_sizes);

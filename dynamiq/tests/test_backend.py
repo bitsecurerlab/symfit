@@ -812,12 +812,14 @@ def test_backend_get_state_returns_cached_running_state_after_rpc_timeout() -> N
     )
     backend.start("target.bin", [], None, {})
 
-    rpc.timeout_methods.add("resume_until_basic_block")
+    rpc.timeout_methods.update({"resume_until_basic_block", "query_status"})
     with pytest.raises(SessionTimeoutError):
         backend.advance_basic_blocks(count=1, timeout=0.25)
     assert backend._state["session_status"] == "running"
+    # Best-effort resync was attempted on the fresh channel and also timed out.
+    assert ("query_status", None) in rpc.request_timeouts
 
-    rpc.timeout_methods.add("query_status")
+    #rpc.timeout_methods.add("query_status") # Removed in RPC value query relaxation workflow commit
     state = backend.get_state()
 
     assert state["session_status"] == "running"
@@ -838,12 +840,57 @@ def test_backend_stdout_does_not_query_rpc_after_running_timeout() -> None:
 
     with pytest.raises(SessionTimeoutError):
         backend.advance_basic_blocks(count=1, timeout=0.25)
+    # Timeout handling performs one best-effort query_status resync; read_stdout adds none.
+    pending = list(rpc.request_timeouts)
+    assert pending[-1][0] == "query_status"
     result = backend.read_stdout(cursor=0, max_chars=500)
 
     assert result["state"]["session_status"] == "running"
     assert result["result"] == {"data": "", "cursor": 0, "eof": False}
-    assert rpc.request_timeouts[-1][0] == "resume_until_basic_block"
+    assert rpc.request_timeouts == pending
 
+
+def test_backend_resync_after_resume_timeout_updates_live_status() -> None:
+    rpc = TimeoutInstrumentationRpcClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+        process_runner=FakeProcessRunner(),
+    )
+    backend.start("target.bin", [], None, {})
+
+    rpc.timeout_methods.add("resume_until_basic_block")
+    with pytest.raises(SessionTimeoutError):
+        backend.advance_basic_blocks(count=1, timeout=0.25)
+    # Original timeout still surfaces, but the best-effort resync observed the live guest.
+    assert backend._state["session_status"] == "paused"
+    assert backend._state["last_rpc_status"] == "paused"
+    assert any(
+        entry.get("method") == "query_status" and entry.get("params", {}).get("resync_after_timeout") is True
+        for entry in backend._state.get("rpc_history", [])
+    )
+
+    # The channel was reset, so an explicit caller retry gets a fresh channel.
+    rpc.timeout_methods.clear()
+    result = backend.advance_basic_blocks(count=1, timeout=0.25)
+    assert result["state"]["session_status"] == "paused"
+
+
+def test_backend_reconnect_instrumentation_rpc_supports_close_connect_doubles() -> None:
+    rpc = TimeoutInstrumentationRpcClient()
+    backend = QemuUserInstrumentedBackend(
+        qmp_client=None,
+        instrumentation_client=None,
+        instrumentation_rpc_client=rpc,
+        process_runner=FakeProcessRunner(),
+    )
+    backend.start("target.bin", [], None, {})
+
+    assert not hasattr(rpc, "reconnect")
+    rpc.connected = False
+    backend.reconnect_instrumentation_rpc()
+    assert rpc.connected is True
 
 def test_backend_resume_uses_rpc_control_when_available() -> None:
     instrumentation = FakeInstrumentationClient()
@@ -1447,7 +1494,6 @@ def test_backend_read_memory_passes_address_space_to_rpc() -> None:
         {"address": "0x7c00", "size": 2, "address_space": "physical"},
     )
 
-
 def test_backend_read_memory_rejects_invalid_address_space() -> None:
     instrumentation = FakeInstrumentationClient()
     rpc = FakeInstrumentationRpcClient(instrumentation)
@@ -1462,7 +1508,6 @@ def test_backend_read_memory_rejects_invalid_address_space() -> None:
         backend.read_memory("0x7c00", 2, address_space="guest")
 
     assert rpc.requests == []
-
 
 def test_backend_list_memory_maps_uses_rpc_channel() -> None:
     instrumentation = FakeInstrumentationClient()

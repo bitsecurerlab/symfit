@@ -50,7 +50,17 @@
  * (N = number of input arguments + output arguments).  */
 #define MAX_OPC_PARAM (4 + (MAX_OPC_PARAM_PER_ARG * MAX_OPC_PARAM_ARGS))
 
+/*
+ * Symbolic translation creates an expression temporary alongside ordinary
+ * TCG temporaries.  CONFIG_2nd_CCACHE therefore doubles TCG_MAX_TEMPS below;
+ * its spill frame must grow by the same factor or register allocation can
+ * exhaust the frame and abort on otherwise valid translation blocks.
+ */
+#ifdef CONFIG_2nd_CCACHE
+#define CPU_TEMP_BUF_NLONGS 256
+#else
 #define CPU_TEMP_BUF_NLONGS 128
+#endif
 
 /* Default target word size to pointer size.  */
 #ifndef TCG_TARGET_REG_BITS
@@ -478,13 +488,22 @@ typedef TCGv_ptr TCGv_env;
 #define SYM_DEBUG 0
 #define sym_debug_print(fmt, ...) \
             do { if(SYM_DEBUG) printf(fmt, __VA_ARGS__); } while (0)
+#ifdef CONFIG_USER_ONLY
 extern int second_ccache_flag;
+#else
+extern __thread int second_ccache_flag;
+#endif
 extern int sse_operation;
 extern int noSymbolicData;
 extern int fake_flag;
 extern target_ulong symbolic_count;
 extern target_ulong concrete_count;
 #endif
+
+/* Translate-time gate for the concrete-mode taint checks.  Non-zero once any
+ * shadow memory exists; see symsan_refresh_shadow_gate() in
+ * accel/tcg/tcg-runtime-symsan.c. */
+extern int symsan_shadow_gate;
 /* call flags */
 /* Helper does not read globals (either directly or through an exception). It
    implies TCG_CALL_NO_WRITE_GLOBALS. */
@@ -873,12 +892,12 @@ static inline TCGv_ptr tcgv_i64_expr(TCGv_i64 v)
 /* Expression pointers as (64-bit) numbers for code simplification. This assumes
  * that we're running on a 64-bit architecture! */
 
-static inline TCGv tcgv_i32_expr_num(TCGv_i32 v)
+static inline TCGv_i64 tcgv_i32_expr_num(TCGv_i32 v)
 {
     return temp_tcgv_i64(temp_expr(tcgv_i32_temp(v)));
 }
 
-static inline TCGv tcgv_i64_expr_num(TCGv_i64 v)
+static inline TCGv_i64 tcgv_i64_expr_num(TCGv_i64 v)
 {
     return temp_tcgv_i64(temp_expr(tcgv_i64_temp(v)));
 }

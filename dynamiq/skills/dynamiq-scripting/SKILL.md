@@ -7,13 +7,15 @@ description: Use when implementing autonomous program analysis, testing, or secu
 
 Use this skill when building autonomous systems that need to control and analyze target programs programmatically. This is the Python scripting interface (not MCP).
 
+For additional directions, please see <symfit main source directory>/dynamiq/skills/symfit-field-notes/SKILL.md
+
 Examples below assume one of these setups:
 - dynamiq is installed into the active Python environment, or
 - you are running from the repo root with `PYTHONPATH=src`
 
 Repo-local example runner:
 ```bash
-cd /home/heng/git/dynamiq
+cd /path/to/dynamiq
 PYTHONPATH=src .venv/bin/python your_script.py
 ```
 
@@ -44,6 +46,18 @@ Inappropriate uses (concrete tools are better):
 - Checking what's in a specific memory region - just use read_memory
 - Confirming a function was called - a breakpoint is sufficient
 - Any question with a concrete, already-known answer
+
+Bear in mind that the concolic execution engine incorporated into Symfit is notably faster than classic symbolic execution tools such as Angr or Klee.
+There is likely to be significantly less speed penalty for any symbolic branches taken. If the situation calls for multiple points to be tainted, do
+not assume this will result in unmanageably slow execution speed. That being said, there's still a penalty associated with the Qemu tiny code generator.
+If you're booting a particularly resource-intensive environement in system-mode (i.e, a large Android build as opposed to an Alpine livecd or something
+ equally small), you may benefit from use of the snapshot feature to avoid having to wait for the image to boot.
+
+Also worth noting is that the execution engine can still be vulnerable to taint explosions in system builds. When aggressive or broad tainting
+strategies are required, it might benefit the performance and signal-to-noise level of the output to consider a PC filtering strategy.
+
+As of the current version, breakpoints are not yet implemented in system builds. In lieu of this, run_until_address() can be used as a functional
+equivalent.
 
 ## Quick Start
 
@@ -76,7 +90,9 @@ with ScriptSession.system(
 
 System-mode sessions use QMP plus the instrumentation RPC socket. They can read
 guest physical memory with `address_space="physical"` and do not expose stdin as
-a target process stream.
+a target process stream. Snapshots (`take_snapshot`/`restore_snapshot`) are dispatched via QMP
+`human-monitor-command` (`savevm`/`loadvm`) and require a writable qcow2 block
+device (see the snapshot note under Symbolic Execution Support).
 
 ## Core Concepts
 
@@ -93,11 +109,126 @@ with ScriptSession(target="/bin/ls", auto_start=True) as session:
 - **Lifecycle**: `start()`, `close()`, `capabilities()`
 - **Execution**: `step()`, `run()`, `pause()`, `advance_basic_blocks()`, `run_until_address()`, `run_until_any_address()`
 - **Breakpoints/watchpoints**: `bp_add()`, `bp_del()`, `bp_list()`, `bp_clear()`, `bp_run()`, `watch()`, `watch_clear()`
-- **Inspection**: `get_registers()`, `read_memory()`, `mem_search()`, `backtrace()`, `disassemble()`, `symbols()`, `list_memory_maps()`, `get_state()`
+- **Inspection**: `get_registers()`, `read_memory()`, `read_symbolic_memory()`, `mem_search()`, `backtrace()`, `disassemble()`, `symbols()`, `list_memory_maps()`, `get_state()`
 - **I/O**: `write_stdin()`, `write_stdin_and_advance()`, `read_stdout()`, `read_stderr()`
 - **Tracing**: `trace_start()`, `trace_stop()`, `trace_status()`, `trace_get()`, `get_recent_events()`
 - **Snapshots**: `take_snapshot()`, `restore_snapshot()`, `diff_snapshots()`
 - **Annotations**: `annotate()`, `list_annotations()`
+- **Constraints**: `get_path_constraint_evaluated()`, `get_path_constraint_smt2()`, `query_value_range()`, `query_value_eq()`, `begin_value_solver_capture()`, `begin_value_query_capture()`, `export_value_solver()`
+
+Please note that `get_path_constraint_evaluated()` and `get_path_constraint_smt2()` will *only* work on labels that are associated with branch constraints. You may wish to check and see if the PC value associated with a label corresponds to a conditional branch before use, or use in conjunction with a breakpoint at a conditional branch. Additionally, label must be a branch-condition label that was actually recorded as taken during execution — not merely a label of branch-condition shape. Labels sourced from get_symbolic_expression or constructed independently aren't guaranteed to satisfy this; labels from `recent_path_constraints()` or a prior successful `solve_path_constraint()` call are. Passing a shape-valid but unrecorded label returns an error ("label has no recorded branch history") rather than a partial result.
+
+Both functions require two arguments - a label as a hex string, and a boolean determining whether or not to flip the conditional branch in question when printing the constraints. The difference between the two is `get_path_constraint_evaluated()`, while retaining a format largely adhering to SMT2 output, will attempt to resolve concrete values associated with a label. This will produce output such as: (= (bvsgt (bvadd #xe0000efff2e90001 a!1) #x0000000000000010) true), which may prove to be more readable depending on your particular circumstance.
+
+The purpose of `query_value_range()` and `query_value_eq()` is to iterate over the cumulative constraints associated with a particular label (i.e., what constraints to get to that execution path were already in place before the label was created?) to get a range of acceptable input values. `query_value_eq()` can also return a true/false value rather than a range to indicate whether or not a value one seeks to introduce is permissible with a given set of constraints.
+
+All symbolic execution features — `query_value_range`, `query_value_eq`,
+`get_path_constraint_smt2`, `get_path_constraint_evaluated`,
+`begin_value_solver_capture`, `begin_value_query_capture`, and
+`export_value_solver` — are available in both system-mode and user-mode
+sessions.
+
+**User-mode constraint limit:** User-mode sessions store path constraints in a
+fixed 256-entry ring buffer. Once 256 constraints have been recorded, the oldest
+entries are overwritten. System-mode sessions use a dynamically growing array
+with no hard cap. If your user-mode analysis involves long execution paths with
+many branches, call `begin_value_solver_capture()` periodically to reset the
+recorded state and avoid silently losing older constraints.
+
+#### Choosing the right label
+
+The label passed to `query_value_range` or `query_value_eq` must be a **composite value label** — the label the CPU created when it loaded multiple symbolic bytes as a wider integer for comparison. Do **not** use the per-byte labels returned by `symbolize_memory` (e.g. 0x24–0x27 for a 4-byte symbolization). Those leaf labels have no connection to the branch-condition dependency graph, and the solver will return an unconstrained range (asserted=0).
+
+The reliable way to obtain the composite value label is from the `left_label` field of a path constraint entry:
+
+```python
+constraints = sess.recent_path_constraints(limit=8)["result"]["constraints"]
+# Pick a constraint whose left operand IS the value (not a derived subtraction).
+# For example, `number <= 60` has left_label = the loaded 32-bit number.
+entry = next(c for c in constraints if c["pc"] == "0x4011cb")
+vlabel = f"0x{entry['left_label']:x}"
+```
+
+Avoid using `left_label` from equality/inequality constraints where the compiler
+has transformed the comparison into a subtraction (e.g. `number - 45 != 0`),
+because the resulting label represents the subtraction expression, not the
+original value.
+
+#### Interpreting `query_value_range` results
+
+The solver returns `min` and `max` bounding the feasible range under the
+current path constraints. A discrete exclusion (like `number != 45`) does not
+change the reported min/max — the constraint is enforced but cannot be expressed
+as a contiguous range. Use `query_value_eq` to probe specific values within the
+range.
+
+Pass `hi=0` to let the solver use the label's full bit-width maximum rather than
+supplying an explicit upper bound.
+
+#### Interpreting `query_value_eq` with `relaxation: "auto"`
+
+With `relaxation: "auto"`, the solver tries progressively weaker constraint
+profiles until one returns `sat`:
+
+1. **`full-path-and-loads`** — all recorded path constraints plus load
+   dependencies. A `sat` here means the value is reachable on the current
+   execution path.
+2. **`path-without-branch-loads`** — path constraints without branch-load
+   assumptions.
+3. **`target-and-target-loads`** — only the target expression's own load
+   dependencies, ignoring all path constraints.
+
+The `selected_profile` field in the result tells you which level produced
+the `sat`. If only the most relaxed profile returns `sat`, the value is
+**not feasible on the current path** — it is only representable by the
+underlying bitvector. Check `relaxation_attempts[0].query_status` for the
+path-constrained answer:
+
+```python
+result = sess.query_value_eq(label=vlabel, target=69)["result"]
+# Was it satisfiable under the full path constraints?
+strict = result["relaxation_attempts"][0]
+if strict["query_status"] == "sat":
+    print("Value is reachable on the current path")
+else:
+    print(f"Value is infeasible on this path (relaxed to {result['selected_profile']})")
+```
+
+#### `read_symbolic_memory(address, size)`
+
+Returns the symbolic label state for a memory region without modifying it.
+The response contains a `bytes` array where each entry has `offset`,
+`symbolic` (bool), and `label` (hex string). This is useful for inspecting
+whether memory has been tainted and which labels are associated with it,
+without the side effects of `symbolize_memory`.
+
+#### Capture and export functions
+
+`begin_value_solver_capture()` and `begin_value_query_capture()` reset the
+solver's internal branch/constraint caches and recorded branch history. Call
+one of these before re-executing past new branches to build a fresh
+constraint set for subsequent value queries. Both return `{"status": "started"}`.
+
+`begin_value_query_capture()` calls `begin_value_solver_capture()` internally
+— the two are equivalent in the current implementation.
+
+`export_value_solver(label)` exports the Z3 solver state for a value label
+as a JSON object containing the SMT2 representation, target metadata (symbol
+name, bit-width, input offsets), and the path constraints that were active.
+The result includes `export_json` (string) and `export_json_len` (int).
+
+Because the capture functions clear all recorded state, call
+`export_value_solver` **before** `begin_value_solver_capture` if you want
+the export to include the current path constraints:
+
+```python
+# Export with constraints, then reset for a new capture
+export = sess.export_value_solver(label=vlabel)
+print(export["result"]["export_json_len"])
+
+# Now clear state for the next execution segment
+sess.begin_value_solver_capture()
+```
 
 ### 3. Symbolic Execution Support
 
@@ -114,7 +245,34 @@ Important:
 - Dynamiq does not symbolize argv, stack buffers, heap buffers, or derived parser buffers automatically.
 - For stdin-driven input, prefer `write_stdin(..., symbolic=True)`. When the runtime supports `queue_stdin_chunk`, dynamiq records each stdin write as an ordered concrete or symbolic chunk, and the consumed stdin bytes become symbolic automatically at the syscall boundary. `queue_stdin_chunk` itself only records chunk metadata (`size`, `symbolic`) and reserves a `stream_offset` for symbolic chunks — it does not push bytes into the target's stdin pipe; `write_stdin` handles both the queuing and the actual write. You generally won't call `queue_stdin_chunk` directly, but its bookkeeping is what `get_state()["pending_stdin_bytes"]` / `pending_symbolic_stdin_bytes` reflect.
 - Use explicit `symbolize_memory(...)` or `symbolize_register(...)` for non-stdin sources or when you want to symbolize a later derived buffer instead of the original stdin stream.
-- Snapshot API calls can be performed with a call such as scriptsesion_name.take_snapshot(name=snapshot_name). However, do be aware that QEMU Machine Protocol emulation will need to be enabled for this to work.
+- Snapshot API calls are dispatched via QMP `human-monitor-command` (HMP
+  `savevm`/`loadvm`), which runs in QEMU's main loop context. A QMP control
+  channel is required (system-mode sessions create one automatically).
+  In system-mode sessions, `take_snapshot()` and `restore_snapshot()` require a
+  writable block device for QEMU's `save_snapshot`/`load_snapshot` to store VM
+  state. For kernel-only VMs (no disk), add a scratch qcow2 drive:
+  ```python
+  # Create a scratch qcow2 for snapshot storage
+  import subprocess, tempfile, os
+  fd, snap_path = tempfile.mkstemp(suffix=".qcow2")
+  os.close(fd)
+  subprocess.check_call(["qemu-img", "create", "-f", "qcow2", snap_path, "64M"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+  with ScriptSession.system(
+      qemu_args=[
+          "-machine", "pc", "-m", "2048M",
+          "-kernel", "/path/to/bzImage", "-initrd", "/path/to/initramfs.cpio.gz",
+          "-drive", f"file={snap_path},format=qcow2,if=none,id=snap0",
+          # ... other args ...
+      ],
+      arch="x86_64",
+  ) as session:
+      session.take_snapshot(name="pre_exploit")
+      # ... do work ...
+      session.restore_snapshot("pre_exploit")
+  ```
+  The drive uses `if=none` so it is not visible to the guest as a boot disk.
 
 Typical symbolic stdin workflow:
 ```python

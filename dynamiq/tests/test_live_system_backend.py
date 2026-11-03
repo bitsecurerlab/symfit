@@ -182,7 +182,7 @@ def test_smp_support(system_session: ScriptSession) -> None:
     # Get CPU info to check CPU count
     result = backend.get_cpu_info()
     cpu_count = result["result"].get("cpu_count", 0)
-    
+
     if cpu_count <= 1:
         pytest.skip(f"Single CPU system (count={cpu_count}), SMP test not applicable")
 

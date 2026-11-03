@@ -1484,15 +1484,28 @@ static void do_tb_phys_invalidate(TranslationBlock *tb, bool rm_from_page_list)
     phys_pc = tb->page_addr[0] + (tb->pc & ~TARGET_PAGE_MASK);
     h = tb_hash_func(phys_pc, tb->pc, tb->flags, tb_cflags(tb) & CF_HASH_MASK,
                      tb->trace_vcpu_dstate);
-#ifdef CONFIG_2nd_CCACHE
+// Continue translation-block invalidation when the block is removed from either the symbolic or primary cache, preventing stale page-list and jump-cache references.
+//#ifdef CONFIG_2nd_CCACHE
     if (!(tb->cflags & CF_NOCACHE)) {
+#ifdef CONFIG_2nd_CCACHE
+    if (!qht_remove(&tb_ctx.htable2, tb, h) &&
+        !qht_remove(&tb_ctx.htable, tb, h)) {
+#else
+    if (!qht_remove(&tb_ctx.htable, tb, h)) {
+
+    /*
         qht_remove(&tb_ctx.htable2, tb, h);
     }
+    */
 #endif
+    /*
     if (!(tb->cflags & CF_NOCACHE) &&
         !qht_remove(&tb_ctx.htable, tb, h)) {
         return;
+    */
+        return;
     }
+}
 
     /* remove the TB from the page list */
     if (rm_from_page_list) {

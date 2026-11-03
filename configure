@@ -2086,10 +2086,22 @@ EOF
     fi
   fi
 
-  if compile_prog "-Werror -fno-pie" "-nopie"; then
+  if compile_prog "-Werror -fno-pie" "-no-pie"; then
     CFLAGS_NOPIE="-fno-pie"
-    LDFLAGS_NOPIE="-nopie"
   fi
+
+  # pc-bios/optionrom/Makefile passes LDFLAGS_NOPIE to $(LD) directly rather
+  # than through the compiler driver, so the flag has to be one the raw linker
+  # accepts -- probing it with the compiler proves nothing.  clang takes
+  # -nopie while GNU ld >= 2.36 rejects it as ambiguous ("did you mean
+  # --nopie?"), which broke the option ROM link.  Leaving this empty is safe:
+  # the ROMs are linked -m16/-m32 against a flat script where PIE cannot apply.
+  for qemu_nopie_flag in -no-pie -nopie; do
+    if "$ld" $qemu_nopie_flag --version >/dev/null 2>&1; then
+      LDFLAGS_NOPIE="$qemu_nopie_flag"
+      break
+    fi
+  done
 fi
 
 ##########################################

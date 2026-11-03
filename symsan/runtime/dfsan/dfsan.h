@@ -81,6 +81,7 @@ int dfsan_region_is_concrete(const void *addr, uptr size);
 dfsan_label dfsan_union(dfsan_label l1, dfsan_label l2, u16 op, u16 size,
                         u64 op1, u64 op2, u64 pc);
 dfsan_label dfsan_create_label(off_t offset);
+dfsan_label dfsan_create_label_with_value(off_t offset, u8 value);
 dfsan_label dfsan_get_label(const void *addr);
 dfsan_label_info* dfsan_get_label_info(dfsan_label label);
 int dfsan_is_branch_condition_label(dfsan_label label);
@@ -115,6 +116,50 @@ int dfsan_solve_path_constraint(dfsan_label label, u8 desired_taken,
                                 uptr assumption_capacity,
                                 uptr *assumption_count,
                                 char *error, uptr error_capacity);
+
+int dfsan_query_value_range(dfsan_label label, uint64_t lo_bound, uint64_t hi_bound,
+                            uint64_t base, uint64_t *out_seed,
+                            uint64_t *out_min, uint64_t *out_max,
+                            uptr *assumption_count,
+                            char *error, uptr error_capacity);
+
+int dfsan_query_value_candidate(dfsan_label label, u64 minimum, u64 maximum,
+                                u64 *out_value,
+                                dfsan_solve_assignment *assignments,
+                                uptr assignment_capacity,
+                                uptr *assignment_count,
+                                uptr *assumption_count,
+                                char *error, uptr error_capacity);
+
+int dfsan_query_value_eq(dfsan_label label, uint64_t target,
+                         dfsan_solve_assignment *assignments,
+                         uptr assignment_capacity, uptr *assignment_count,
+                         uptr *assumption_count,
+                         char *error, uptr error_capacity);
+
+// constraint PC filter — exclude branches from specified address ranges
+#define DFSAN_MAX_PC_FILTER_RANGES 64
+typedef struct { u64 start; u64 end; } dfsan_pc_range;
+int dfsan_set_constraint_pc_filter(const dfsan_pc_range *ranges, uptr count);
+int dfsan_is_constraint_pc_filtered(u64 pc);
+void dfsan_clear_constraint_pc_filter(void);
+uptr dfsan_get_constraint_pc_filter(dfsan_pc_range *out, uptr capacity);
+
+// taint-creation PC filter — suppress label creation from specified ranges
+int dfsan_set_taint_pc_filter(const dfsan_pc_range *ranges, uptr count);
+int dfsan_is_taint_pc_filtered(u64 pc);
+void dfsan_clear_taint_pc_filter(void);
+
+void dfsan_begin_value_solver_capture(void);
+void dfsan_begin_value_query_capture(void);
+int dfsan_set_value_query_relaxation_profile(unsigned profile);
+int dfsan_get_value_query_seed(dfsan_label label, u64 *out_value,
+                               dfsan_solve_assignment *assignments,
+                               uptr assignment_capacity,
+                               uptr *assignment_count,
+                               char *error, uptr error_capacity);
+int dfsan_export_value_solver(dfsan_label label, char *json_out, uptr json_capacity, uptr *json_len, 
+    char *error, uptr error_capacity);
 
 // taint source
 void taint_set_file(const char *filename, int fd);
@@ -227,7 +272,7 @@ enum operators {
   // higher-order
   fmemcmp   = last_llvm_op + 7,
   fsize     = last_llvm_op + 8,
-  /* last_llvm_op + 9 was previously reserved for LoadAddr */
+  LoadAddr  = last_llvm_op + 9,
   Ite       = last_llvm_op + 10,
 };
 

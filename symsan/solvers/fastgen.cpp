@@ -47,7 +47,7 @@ static u8 get_const_result(u64 c1, u64 c2, u32 predicate) {
   return 0;
 }
 
-static inline void __solve_cond(dfsan_label label, u8 result, u8 add_nested, u32 cid, void *addr) {
+static inline void __solve_cond(dfsan_label label, u8 result, u8 add_nested, u64 cid, void *addr) {
 
   u16 flags = 0;
   if (add_nested) flags |= F_ADD_CONS;
@@ -59,7 +59,7 @@ static inline void __solve_cond(dfsan_label label, u8 result, u8 add_nested, u32
     .instance_id = __instance_id,
     .addr = (uptr)addr,
     .context = __taint_trace_callstack,
-    .id = cid,
+    .id = (u32)cid,
     .label = label,
     .result = result
   };
@@ -69,14 +69,14 @@ static inline void __solve_cond(dfsan_label label, u8 result, u8 add_nested, u32
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
-                  u64 c1, u64 c2, u32 cid) {
+                  u64 c1, u64 c2, u64 cid) {
   if ((op1 == 0 && op2 == 0))
     return;
 
   void *addr = __builtin_return_address(0);
 
-  AOUT("solving cmp: %u %u %u %d %llu %llu 0x%x @%p\n",
-       op1, op2, size, predicate, c1, c2, cid, addr);
+  AOUT("solving cmp: %u %u %u %d %llu %llu 0x%llx @%p\n",
+       op1, op2, size, predicate, c1, c2, (unsigned long long)cid, addr);
 
   // save info to a union table slot
   u8 r = get_const_result(c1, c2, predicate);
@@ -87,14 +87,14 @@ __taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-__taint_trace_cond(dfsan_label label, u8 r, u32 cid) {
+__taint_trace_cond(dfsan_label label, u8 r, u64 cid) {
   if (label == 0)
     return;
 
   void *addr = __builtin_return_address(0);
 
-  AOUT("solving cond: %u %u 0x%x 0x%x %p\n",
-       label, r, __taint_trace_callstack, cid, addr);
+  AOUT("solving cond: %u %u 0x%x 0x%llx %p\n",
+       label, r, __taint_trace_callstack, (unsigned long long)cid, addr);
 
   // always add nested
   __solve_cond(label, r, 1, cid, addr);

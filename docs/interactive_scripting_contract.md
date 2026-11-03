@@ -108,6 +108,10 @@ Optional (recommended):
 - `get_symbolic_expression`
 - `get_path_constraints`
 - `get_recent_path_constraints`
+- `solve_path_constraint`
+- `query_value_range`
+- `query_value_eq`
+- `begin_value_query_capture`
 - `queue_stdin_chunk`
 - `start_trace`
 - `stop_trace`
@@ -310,6 +314,12 @@ Returns:
 - `op`: label op name
 - `size`: label bit width or boolean width marker
 - `left_label`, `right_label`, `op1`, `op2`: backend label metadata
+- `load`: present when `op` is `Load`; includes `kind` and `byte_count`.
+  `input_bytes` loads also include `first_input_offset`.
+  `symbolic_address` loads include the address label, concrete address/value,
+  and PC needed to reproduce the solver's concretized-load assumption.
+  `unresolved` means the backend cannot safely classify the load; consumers
+  must not infer solver semantics from the generic label fields.
 
 ### `get_path_constraints`
 
@@ -331,6 +341,139 @@ Returns:
 - `constraints`: array of symbolic-label objects for nested constraints
 - `count`: number of nested constraints returned
 
+### `solve_path_constraint`
+
+Behavior:
+
+- `label` must identify a branch-condition label, for example a root returned by
+  `get_recent_path_constraints`; any other label is rejected
+- `negate` selects the direction to solve for: with the default `true`, the solve
+  targets the opposite of the branch's recorded direction; with `false`, it solves
+  for the recorded direction
+- requires the `solve_path_constraints` capability, which is unavailable when the
+  active Symsan runtime does not provide path-constraint solving
+- returned assignments are solver candidates; replay them and verify the intended
+  path is reached before treating the result as a reachability proof
+- a `conditional` result depends on concretized symbolic-load assumptions that
+  must hold for the candidate to be valid
+
+Parameters:
+
+- `label`: branch-condition label encoded as a hex string
+- `negate`: optional boolean, default `true`; when `true`, solve for the opposite
+  of the recorded branch direction
+
+Returns:
+
+- `label`: normalized label hex string
+- `root_taken`: the direction the branch took on the recorded path
+- `desired_taken`: the direction solved for (`!root_taken` when `negate` is `true`)
+- `negate`: echoes the requested direction flag
+- `status`: `sat` when an assignment was found, otherwise `unsat`
+- `soundness`: `sound`, or `conditional` when the solve relied on concretized loads
+- `assignments`: array of the input-byte assignments that produce `desired_taken`,
+  each with `offset`, `value`, and `value_hex`
+- `assignment_count`: number of assignments returned
+- `assumptions`: array of concretized symbolic-load assumptions the result depends
+  on, each with `kind`, `load_label`, `addr_label`, `concrete_address`,
+  `concrete_value`, `pc`, and `size`
+- `assumption_count`: number of assumptions returned
+
+### `query_value_range`
+
+Behavior:
+
+- `label` may be any *value* label (an out-of-bounds offset, length, or payload
+  byte), not only a branch-condition label; this is the capability query that
+  `solve_path_constraint` cannot express
+- computes the unsigned minimum and maximum of the value expression and returns
+  endpoint input witnesses plus four sampled candidates
+- with `relaxation="auto"`, tries in order: full path and loads; path without
+  branch-load equalities; target plus target-load constraints; target with
+  observed loads concretized
+- a successful singleton does not stop the search; its endpoints and assumption
+  count remain in `relaxation_attempts`, and the first broader successful
+  profile supplies replay candidates. If every successful profile is a
+  singleton, the last successful profile is selected
+- records every failed profile; if none succeeds, returns a complete seed-only
+  result rather than turning solver inconsistency into an RPC failure
+- requires the `query_value_range` capability, which is unavailable when the
+  active Symsan runtime does not provide value-range querying
+- a `conditional` result depends on concretized symbolic-load assumptions that
+  must hold for the range to be valid; validate any capability number by
+  concrete replay before trusting it
+
+Parameters:
+
+- `label`: value label encoded as a hex string
+- `lo`: optional lower bound of the search window (integer or hex string),
+  default `0`
+- `hi`: optional upper bound of the search window (integer or hex string),
+  default `0`, which means the value's full bit-width maximum
+- `base`: optional value (integer or hex string) subtracted from the reported
+  `min`/`max`, default `0`; pass the object base to get reach directly (e.g. an
+  OOB offset relative to its allocation). Must be `<=` the true minimum.
+- `relaxation`: `"auto"` (the default and active workflow policy)
+
+Returns:
+
+- `label`: normalized label hex string
+- `status`: `complete`, including seed-only completion
+- `selected_profile`: the first successful non-singleton profile, or the last
+  successful singleton profile when no broader range is found
+- `relaxation_attempts`: ordered success/failure records; successful attempts
+  include `minimum`, `maximum`, and `assumption_count`
+- `candidates`: observed seed, endpoint witnesses, and four samples; every
+  assignment identifies its `symfit_input_N` symbol
+- `min`, `max`: compatibility fields for the unsigned endpoints
+- `min_hex`, `max_hex`: the same endpoints as hex strings
+- `soundness`: `sound`, or `conditional` when the query relied on concretized loads
+- `assumption_count`: number of concretized symbolic-load assumptions relied on
+
+### `query_value_eq`
+
+Behavior:
+
+- targeting query: is there an input, consistent with the recorded path
+  constraints, that makes the *value* label equal a concrete `target`? This is
+  the composition question (`can these writes produce value T`) that pairs with
+  `query_value_range`'s reach question
+- `label` may be any value label, not only a branch-condition label
+- requires the `query_value_eq` capability
+- on `sat`, the returned assignments are the input bytes producing the target;
+  replay them and verify before treating the result as a reachability proof
+- an `unsat` constrained profile does not stop automatic relaxation; the first
+  `sat` profile is selected, or the last completed `unsat` profile if none is
+  satisfiable
+- a `conditional` result depends on concretized symbolic-load assumptions
+- solver failures use the same ordered automatic relaxation and are returned as
+  structured attempts; they do not fail the RPC transport
+
+Parameters:
+
+- `label`: value label encoded as a hex string
+- `target`: the concrete value to hit (integer or, for full 64-bit addresses, a
+  hex string)
+- `relaxation`: `"auto"` (default)
+
+Returns:
+
+- `label`: normalized label hex string
+- `target`: normalized target hex string
+- `status`: `complete`; `query_status` is `sat`, `unsat`, or `seed-only`
+- `selected_profile`, `relaxation_attempts`, and `candidates` use the same
+  schema as the range query
+- `soundness`: `sound`, or `conditional` when the query relied on concretized loads
+- `assignments`: on `sat`, the input-byte assignments producing `target`, each
+  with `offset`, `value`, and `value_hex`
+- `assignment_count`: number of assignments returned
+
+### `begin_value_query_capture`
+
+Clears recorded value-query path state and concrete input seeds before the
+approved seed path is executed. The backend must be paused. Solver-export
+capture remains available as a debugging interface for archived workflows.
+
 ### `get_recent_path_constraints`
 
 Behavior:
@@ -338,7 +481,11 @@ Behavior:
 - returns recently observed symbolic path constraints from the current session
 - entries are returned newest first
 - a path constraint is recorded from the backend's symbolic condition handling
-- entries are suitable roots for `get_path_constraints(label)`
+- entries with `exportable: true` are suitable roots for
+  `get_path_constraints(label)` and path-text export
+- `exportable: false` preserves an observed branch whose direction was not
+  retained by the active solver runtime; clients must report this as incomplete
+  path context instead of asking the solver to assert it
 
 Parameters:
 
@@ -346,7 +493,8 @@ Parameters:
 
 Returns:
 
-- `constraints`: array of symbolic-label objects with additional `pc` and `taken`
+- `constraints`: array of symbolic-label objects with additional `pc`, `taken`,
+  and `exportable`
 - `count`: number of entries returned
 - `truncated`: whether older entries were omitted
 
@@ -422,6 +570,10 @@ Current v1 capability flags:
 - `read_symbolic_expression`
 - `read_path_constraints`
 - `read_recent_path_constraints`
+- `solve_path_constraints`
+- `query_value_range`
+- `query_value_eq`
+- `begin_value_query_capture`
 - `queue_stdin_chunk`
 - `symbolize_memory`
 - `symbolize_register`
@@ -562,6 +714,8 @@ Current stable error code strings:
 - `unsupported_arch`
 - `unsupported_feature`
 - `internal_error`
+- `solver_error`
+- `solver_unknown`
 
 ## Migration Notes
 

@@ -26,7 +26,7 @@ DFSAN_FLAG(
     "(e.g., when comparing strings, ignore the fact that the output of the"
     "comparison might be data-dependent on the content of the strings). This"
     "applies only to the custom functions defined in 'custom.c'.")
-DFSAN_FLAG(const char *, dump_labels_at_exit, "", "The path of the file where "
+DFSAN_FLAG(const char *, dump_labels_at_exit, "/home/aerwi002/labels.dmp", "The path of the file where "
                                                   "to dump the labels when the "
                                                   "program terminates.")
 DFSAN_FLAG(const char *, taint_file, "", "The path of the file which "

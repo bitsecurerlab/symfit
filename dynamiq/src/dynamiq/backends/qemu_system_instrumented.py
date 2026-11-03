@@ -27,6 +27,14 @@ class QemuSystemInstrumentedBackend:
 
     _RPC_PROTOCOL_VERSION = 1
 
+    _RESUME_FAMILY_METHODS = frozenset({
+        "resume",
+        "resume_until_address",
+        "resume_until_any_address",
+        "resume_until_basic_block",
+        "single_step",
+    })
+
     def __init__(
         self,
         qmp_client: QmpClient | None = None,
@@ -324,7 +332,11 @@ class QemuSystemInstrumentedBackend:
                 "pc": current_pc.lower(),
             }, refresh_live_status=False)
 
-        result = self._rpc_request("resume_until_address", {"address": address}, timeout=timeout)
+        result = self._rpc_request(
+            "resume_until_address",
+            {"address": address, "timeout_ms": max(1, int(timeout * 1000))},
+            timeout=timeout + 5.0,
+        )
         status = result.get("status")
         if isinstance(status, str):
             self._state["session_status"] = status
@@ -363,7 +375,11 @@ class QemuSystemInstrumentedBackend:
         before_pc = self._state.get("pc")
 
         try:
-            result = self._rpc_request("resume_until_any_address", {"addresses": normalized}, timeout=timeout)
+            result = self._rpc_request(
+                "resume_until_any_address",
+                {"addresses": normalized, "timeout_ms": max(1, int(timeout * 1000))},
+                timeout=timeout + 5.0,
+            )
         except Exception as exc:
             if "unknown instrumentation RPC method" in str(exc):
                 raise UnsupportedOperationError("backend RPC does not support resume_until_any_address") from exc
@@ -446,7 +462,11 @@ class QemuSystemInstrumentedBackend:
         before_status = self._state.get("session_status")
         before_pc = self._state.get("pc")
 
-        result = self._rpc_request("single_step", {"count": count}, timeout=timeout)
+        result = self._rpc_request(
+            "single_step",
+            {"count": count, "timeout_ms": max(1, int(timeout * 1000))},
+            timeout=timeout + 5.0,
+        )
         status = result.get("status")
         if isinstance(status, str):
             self._state["session_status"] = status
@@ -514,6 +534,12 @@ class QemuSystemInstrumentedBackend:
         result = MemoryReadResult.from_rpc_result(self._rpc_request("read_memory", params))
         return self._response(result.to_dict())
 
+    def read_symbolic_memory(self, address: str, size: int) -> dict[str, Any]:
+        self._require_started()
+        return self._response(
+            self._rpc_request("read_symbolic_memory", {"address": address, "size": size})
+        )
+
     def symbolize_memory(self, address: str, size: int, name: str | None = None) -> dict[str, Any]:
         self._require_started()
         params: dict[str, Any] = {"address": address, "size": size}
@@ -561,6 +587,98 @@ class QemuSystemInstrumentedBackend:
         self._require_started()
         return self._response(self._rpc_request("solve_path_constraint", {"label": label, "negate": negate}))
 
+    @staticmethod
+    def _u64(v: "int | str") -> str:
+        """Normalize a 64-bit value to a hex string so large kernel addresses
+        survive JSON (ints > 2**53 are not safe); the RPC side parses either."""
+        return v if isinstance(v, str) else hex(v)
+
+    def query_value_range(self, label: str, lo: "int | str" = 0, hi: "int | str" = 0,
+                          base: "int | str" = 0,
+                          relaxation: str = "auto") -> dict[str, Any]:
+        """Min/max of a *value* label (an OOB off/len/val) under the path
+        constraints -- the capability reach query the branch-flipper cannot do.
+        lo/hi bound the search window (hi=0 -> the value's full bit-width max);
+        base is subtracted from min/max so you get reach directly.
+        Returns {min, max, min_hex, max_hex, soundness}."""
+        self._require_started()
+        return self._response(self._rpc_request("query_value_range", {
+            "label": label,
+            "lo": self._u64(lo),
+            "hi": self._u64(hi),
+            "base": self._u64(base),
+            "relaxation": relaxation,
+        }))
+
+    def query_value_eq(self, label: str, target: "int | str",
+                       relaxation: str = "auto") -> dict[str, Any]:
+        """Targeting query: is there an input making the value label == target,
+        under the path constraints? Returns {status: 'sat'|'unsat', assignments,
+        soundness}; on sat the assignments are the input bytes for concrete replay."""
+        self._require_started()
+        return self._response(self._rpc_request("query_value_eq", {
+            "label": label,
+            "target": self._u64(target),
+            "relaxation": relaxation,
+        }))
+
+    def set_constraint_pc_filter(self, ranges: list[dict[str, str]]) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("set_constraint_pc_filter", {
+            "ranges": ranges,
+        }))
+
+    def clear_constraint_pc_filter(self) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("clear_constraint_pc_filter", {}))
+
+    def get_constraint_pc_filter(self) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("get_constraint_pc_filter", {}))
+
+    def get_path_constraint_smt2(self, label: str, negate: bool = True) -> dict[str, Any]:
+        """Raw SMT2 text for the path constraint at `label` -- the same
+        constraint set solve_path_constraint() would solve (root direction
+        negated by default, plus every nested condition on the path), but
+        rendered as the solver's own SMT2 dump instead of byte assignments.
+        Valid whether the result is sat or unsat -- unsat is a normal,
+        non-error outcome here, same as elsewhere in this client.
+        Returns {status: 'sat'|'unsat', smt2, root_taken, desired_taken}."""
+        self._require_started()
+        return self._response(self._rpc_request("get_path_constraint_smt2", {
+            "label": label,
+            "negate": negate,
+        }))
+
+    def get_path_constraint_evaluated(self, label: str, negate: bool = True) -> dict[str, Any]:
+        """Same constraint set as get_path_constraint_smt2(), plus a second
+        rendering: each assertion alongside its value under the solved model
+        (`assertion evaluates to value`), one per line. On unsat there is no
+        model, so `evaluated` comes back as an empty string while `smt2` is
+        still populated and `status` is 'unsat' -- not an error.
+        Returns {status: 'sat'|'unsat', smt2, evaluated, root_taken, desired_taken}."""
+        self._require_started()
+        return self._response(self._rpc_request("get_path_constraint_evaluated", {
+            "label": label,
+            "negate": negate,
+        }))
+
+    def begin_value_solver_capture(self) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("begin_value_solver_capture"))
+
+
+    def begin_value_query_capture(self) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("begin_value_query_capture"))
+
+
+    def export_value_solver(self, label: str) -> dict[str, Any]:
+        self._require_started()
+        return self._response(self._rpc_request("export_value_solver", {
+            "label": label,
+        }))
+
     def disassemble(self, address: str, count: int) -> dict[str, Any]:
         self._require_started()
         if not self._capabilities.disassemble:
@@ -573,16 +691,24 @@ class QemuSystemInstrumentedBackend:
         self._state["memory_maps"] = maps.to_dict()["regions"]
         return self._response({"maps": maps.to_dict()})
 
+    def _hmp_snapshot(self, hmp_cmd: str, snapshot_name: str) -> None:
+        """Run savevm/loadvm via QMP human-monitor-command (main-loop context)."""
+        if self._controller is None:
+            raise UnsupportedOperationError(
+                "snapshot support requires a QMP control channel")
+        resp = self._controller.monitor_command(f"{hmp_cmd} {snapshot_name}")
+        if isinstance(resp, str) and resp.strip():
+            msg = resp.strip()
+            if "Error" in msg or "error" in msg or "does not" in msg:
+                raise RuntimeError(f"{hmp_cmd} failed: {msg}")
+
     def take_snapshot(self, name: str | None = None) -> dict[str, Any]:
         self._require_started()
         if not self._capabilities.take_snapshot:
             raise UnsupportedOperationError("backend does not support snapshots")
 
-        if self._controller is None:
-            raise UnsupportedOperationError("snapshot support requires a backend control channel")
-
         snapshot_id = name or f"s-{len(self._snapshots) + 1}"
-        self._controller.save_snapshot(snapshot_id)
+        self._hmp_snapshot("savevm", snapshot_id)
 
         snapshot = {
             "snapshot_id": snapshot_id,
@@ -602,10 +728,7 @@ class QemuSystemInstrumentedBackend:
         if not self._capabilities.restore_snapshot:
             raise UnsupportedOperationError("backend does not support snapshot restore")
 
-        if self._controller is None:
-            raise UnsupportedOperationError("snapshot restore requires a backend control channel")
-
-        self._controller.load_snapshot(snapshot_id)
+        self._hmp_snapshot("loadvm", snapshot_id)
         snapshot = self._snapshots.get(snapshot_id, {"snapshot_id": snapshot_id})
         self._state["last_snapshot_id"] = snapshot_id
         return self._response(snapshot)
@@ -716,17 +839,29 @@ class QemuSystemInstrumentedBackend:
         """Read physical memory (convenience wrapper for read_memory with address_space='physical')."""
         return self.read_memory(address, size, address_space="physical")
 
-    def write_physical_memory(self, address: str, data: str | bytes) -> dict[str, Any]:
-        """Write to physical memory (system-mode specific)."""
+    def write_memory(self, address: str, data: str | bytes,
+                     address_space: str = "virtual") -> dict[str, Any]:
+        """Write to guest memory (virtual or physical)."""
         self._require_started()
         if not self._capabilities.read_memory:
             raise UnsupportedOperationError("backend does not support memory operations")
         params: dict[str, Any] = {
             "address": address,
             "data": data.hex() if isinstance(data, bytes) else data,
-            "address_space": "physical",
         }
+        if address_space == "physical":
+            params["address_space"] = "physical"
         result = self._rpc_request("write_memory", params)
+        return self._response(result)
+
+    def write_physical_memory(self, address: str, data: str | bytes) -> dict[str, Any]:
+        """Write to physical memory (system-mode specific)."""
+        return self.write_memory(address, data, address_space="physical")
+
+    def set_registers(self, registers: dict[str, str]) -> dict[str, Any]:
+        """Set CPU register values. registers is {name: hex_value_string}."""
+        self._require_started()
+        result = self._rpc_request("set_registers", {"registers": registers})
         return self._response(result)
 
     def get_machine_info(self) -> dict[str, Any]:
@@ -1044,6 +1179,72 @@ class QemuSystemInstrumentedBackend:
             raise UnsupportedOperationError("backend does not have an instrumentation RPC channel configured")
         return self._instrumentation_rpc
 
+    def reconnect_instrumentation_rpc(self) -> None:
+        """Reset the instrumentation RPC channel with a fresh socket+reader.
+
+        Public peer-surface helper for both Dynamiq callers and raw IA/RPC
+        users: call it after a resume-family SessionTimeoutError (or before an
+        explicit retry) so the next request does not hit the stale local
+        reader left behind by the timed-out resume. Test doubles exposing only
+        close()/connect() are supported.
+        """
+        rpc = self._require_rpc()
+        reconnect = getattr(rpc, "reconnect", None)
+        if callable(reconnect):
+            reconnect()
+            return
+        close = getattr(rpc, "close", None)
+        if callable(close):
+            close()
+        connect = getattr(rpc, "connect", None)
+        if not callable(connect):
+            raise InvalidStateError("instrumentation RPC client cannot be reset: no reconnect or connect method")
+        connect()
+
+    def _resync_rpc_after_resume_timeout(self, rpc: InstrumentationRpcClient) -> None:
+        """Best-effort channel reset + query_status after a resume-family timeout.
+
+        Never raises and never masks the original timeout: on resync failure the
+        running/timeout state is kept, but a successful reconnect still leaves the
+        next explicit caller retry with a fresh channel instead of a stale reader.
+        On a successful resync, session_status/pc follow the live guest.
+        """
+        try:
+            self.reconnect_instrumentation_rpc()
+        except Exception:
+            return
+        try:
+            status = rpc.request("query_status")
+        except Exception:
+            try:
+                self.reconnect_instrumentation_rpc()
+            except Exception:
+                pass
+            return
+        if not isinstance(status, dict) or "status" not in status:
+            return
+        live_status = status.get("status")
+        if isinstance(live_status, str):
+            self._state["session_status"] = live_status
+            self._state["last_rpc_status"] = live_status
+        pc = status.get("pc")
+        if isinstance(pc, str):
+            self._state["pc"] = pc
+        self._apply_runtime_status(status)
+        self._apply_trace_status(status)
+        resync_entry: dict[str, Any] = {
+            "ts": time.time(),
+            "method": "query_status",
+            "params": {"resync_after_timeout": True},
+            "timeout": None,
+            "ok": True,
+        }
+        if isinstance(live_status, str):
+            resync_entry["status"] = live_status
+        if isinstance(pc, str):
+            resync_entry["pc"] = pc
+        self._append_rpc_history(resync_entry)
+
     def _rpc_request(
         self,
         method: str,
@@ -1081,16 +1282,11 @@ class QemuSystemInstrumentedBackend:
         except SessionTimeoutError as exc:
             message = str(exc)
             self._state["last_rpc_error"] = message
-            if method in {
-                "resume",
-                "resume_until_address",
-                "resume_until_any_address",
-                "resume_until_basic_block",
-                "single_step",
-            }:
+            if method in self._RESUME_FAMILY_METHODS:
                 self._state["session_status"] = "running"
                 self._state["last_rpc_status"] = "timeout"
                 history_entry["status"] = "timeout"
+                self._resync_rpc_after_resume_timeout(rpc)
             history_entry["error"] = message
             self._append_rpc_history(history_entry)
             process_summary = None

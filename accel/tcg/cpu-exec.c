@@ -39,7 +39,11 @@
 #include "sysemu/replay.h"
 
 #ifdef CONFIG_2nd_CCACHE
+#ifdef CONFIG_USER_ONLY
 int second_ccache_flag = 0;
+#else
+__thread int second_ccache_flag = 0;
+#endif
 int sse_operation = 1;
 int fake_flag = 1;
 target_ulong symbolic_count = 0;
@@ -701,6 +705,12 @@ int cpu_exec(CPUState *cpu)
     /* replay_interrupt may need current_cpu */
     current_cpu = cpu;
 
+#if defined(CONFIG_2nd_CCACHE) && !defined(CONFIG_USER_ONLY)
+    /* Keep the symbolic cache selection with the vCPU across scheduling
+     * and EXCP_SWITCH exits, including a load not yet re-executed. */
+    second_ccache_flag = cpu->symfit_symbolic_mode;
+#endif
+
     if (cpu_handle_halt(cpu)) {
         return EXCP_HALTED;
     }
@@ -769,6 +779,9 @@ int cpu_exec(CPUState *cpu)
         }
     }
 
+#if defined(CONFIG_2nd_CCACHE) && !defined(CONFIG_USER_ONLY)
+    cpu->symfit_symbolic_mode = second_ccache_flag;
+#endif
     cc->cpu_exec_exit(cpu);
     rcu_read_unlock();
 
