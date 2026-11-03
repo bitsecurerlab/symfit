@@ -540,11 +540,6 @@ class QemuUserInstrumentedBackend:
             raise InvalidStateError("address_space must be either 'virtual' or 'physical'")
         if normalized_space != "virtual":
             params["address_space"] = normalized_space
-        # Old address space assignment code left commented out for potential rollback if necessary
-        '''
-        if address_space:
-            params["address_space"] = address_space
-        '''
         result = MemoryReadResult.from_rpc_result(self._rpc_request("read_memory", params))
         return self._response(result.to_dict())
 
