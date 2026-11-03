@@ -13,6 +13,16 @@
 #include <string>
 #include <sstream>
 #include <time.h>
+#include <pthread.h>
+
+// Branch recording, expression caches, and the Z3 context belong to one
+// process-wide session. Serialize all public entries, including nested queries.
+// Constant initialization is required: InitializeSolver runs from .preinit_array.
+static pthread_mutex_t solver_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+struct SolverLock {
+  SolverLock() { pthread_mutex_lock(&solver_mutex); }
+  ~SolverLock() { pthread_mutex_unlock(&solver_mutex); }
+};
 
 #define OPTIMISTIC 1
 
@@ -500,6 +510,7 @@ static size_t __pc_filter_count = 0;
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE int
 dfsan_set_constraint_pc_filter(const dfsan_pc_range *ranges, uptr count) {
+  SolverLock lock;
   if (count > DFSAN_MAX_PC_FILTER_RANGES) return -1;
   memcpy(__pc_filter_ranges, ranges, count * sizeof(dfsan_pc_range));
   __pc_filter_count = count;
@@ -508,11 +519,13 @@ dfsan_set_constraint_pc_filter(const dfsan_pc_range *ranges, uptr count) {
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 dfsan_clear_constraint_pc_filter(void) {
+  SolverLock lock;
   __pc_filter_count = 0;
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE uptr
 dfsan_get_constraint_pc_filter(dfsan_pc_range *out, uptr capacity) {
+  SolverLock lock;
   uptr n = __pc_filter_count < capacity ? __pc_filter_count : capacity;
   if (n > 0 && out) memcpy(out, __pc_filter_ranges, n * sizeof(dfsan_pc_range));
   return __pc_filter_count;
@@ -520,6 +533,7 @@ dfsan_get_constraint_pc_filter(dfsan_pc_range *out, uptr capacity) {
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE int
 dfsan_is_constraint_pc_filtered(u64 pc) {
+  SolverLock lock;
   for (size_t i = 0; i < __pc_filter_count; i++) {
     if (pc >= __pc_filter_ranges[i].start && pc < __pc_filter_ranges[i].end)
       return 1;
@@ -1348,6 +1362,7 @@ static void __solve_cond(dfsan_label label, z3::expr &result, bool add_nested, v
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE dfsan_label
 __taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
                   u64 c1, u64 c2, u64 cid) {
+  SolverLock lock;
   if ((op1 == 0 && op2 == 0))
     return 0;
 
@@ -1371,6 +1386,7 @@ __taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __taint_trace_cond(dfsan_label label, u8 r, u64 cid) {
+  SolverLock lock;
   if (label == 0)
     return;
 
@@ -1393,6 +1409,7 @@ __taint_trace_cond(dfsan_label label, u8 r, u64 cid) {
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 dfsan_begin_value_solver_capture(void) {
+  SolverLock lock;
   for (auto dep : __branch_deps) {
     delete dep;
   }
@@ -1407,11 +1424,13 @@ dfsan_begin_value_solver_capture(void) {
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 dfsan_begin_value_query_capture(void) {
+  SolverLock lock;
   dfsan_begin_value_solver_capture();
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE int
 dfsan_set_value_query_relaxation_profile(unsigned profile) {
+  SolverLock lock;
   if (profile > 3) {
     return 0;
   }
@@ -1427,6 +1446,7 @@ dfsan_get_value_query_seed(dfsan_label label, u64 *out_value,
                            dfsan_solve_assignment *assignments,
                            uptr assignment_capacity, uptr *assignment_count,
                            char *error, uptr error_capacity) {
+  SolverLock lock;
   std::vector<dfsan_solve_assignment> seed_assignments;
   if (assignment_count != nullptr) {
     *assignment_count = 0;
@@ -1498,6 +1518,7 @@ dfsan_get_value_query_seed(dfsan_label label, u64 *out_value,
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE size_t
 dfsan_get_nested_constraint_count(dfsan_label label) {
+  SolverLock lock;
   std::vector<dfsan_label> labels;
 
   if (!collect_nested_constraint_labels(label, labels)) {
@@ -1508,6 +1529,7 @@ dfsan_get_nested_constraint_count(dfsan_label label) {
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE int
 dfsan_get_branch_direction(dfsan_label label, uint8_t *taken) {
+  SolverLock lock;
   bool direction = false;
 
   if (!get_branch_direction(label, &direction)) {
@@ -1521,6 +1543,7 @@ dfsan_get_branch_direction(dfsan_label label, uint8_t *taken) {
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE size_t
 dfsan_get_nested_constraints(dfsan_label label, dfsan_label *out, size_t capacity) {
+  SolverLock lock;
   std::vector<dfsan_label> labels;
 
   if (!collect_nested_constraint_labels(label, labels)) {
@@ -1537,6 +1560,7 @@ dfsan_get_nested_constraints(dfsan_label label, dfsan_label *out, size_t capacit
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE size_t
 dfsan_get_nested_constraint_directions(dfsan_label label, uint8_t *out, size_t capacity) {
+  SolverLock lock;
   std::vector<dfsan_label> labels;
   std::vector<uint8_t> directions;
 
@@ -1554,6 +1578,7 @@ dfsan_get_nested_constraint_directions(dfsan_label label, uint8_t *out, size_t c
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE size_t
 dfsan_format_simplified_expression(dfsan_label label, char *out, size_t capacity) {
+  SolverLock lock;
   std::unordered_set<u32> deps;
   std::string rendered;
 
@@ -1649,6 +1674,7 @@ dfsan_solve_path_constraint(dfsan_label label, u8 desired_taken,
                             uptr assumption_capacity,
                             uptr *assumption_count,
                             char *error, uptr error_capacity) {
+  SolverLock lock;
   std::vector<dfsan_label> nested_labels;
   std::vector<uint8_t> nested_directions;
   std::vector<dfsan_solve_assignment> solved_assignments;
@@ -1862,6 +1888,7 @@ extern "C" SANITIZER_INTERFACE_ATTRIBUTE int
 dfsan_export_value_solver(dfsan_label label, char *json_out,
                           uptr json_capacity, uptr *json_len,
                           char *error, uptr error_capacity) {
+  SolverLock lock;
   if (json_len != nullptr) {
     *json_len = 0;
   }
@@ -2078,6 +2105,7 @@ dfsan_get_path_constraint_text(dfsan_label label, u8 desired_taken,
                                char *evaluated_out, uptr evaluated_capacity,
                                uptr *evaluated_len,
                                char *error, uptr error_capacity) {
+  SolverLock lock;
   if (smt2_len != nullptr) {
     *smt2_len = 0;
   }
@@ -2263,6 +2291,7 @@ dfsan_query_value_range(dfsan_label label, uint64_t lo_bound, uint64_t hi_bound,
                         uint64_t *out_min, uint64_t *out_max,
                         uptr *assumption_count, char *error,
                         uptr error_capacity) {
+  SolverLock lock;
   if (assumption_count != nullptr) {
     *assumption_count = 0;
   }
@@ -2587,6 +2616,7 @@ dfsan_query_value_eq(dfsan_label label, uint64_t target,
                      dfsan_solve_assignment *assignments,
                      uptr assignment_capacity, uptr *assignment_count,
                      uptr *assumption_count, char *error, uptr error_capacity) {
+  SolverLock lock;
   return query_value_interval(label, target, target, nullptr, assignments,
                               assignment_capacity, assignment_count,
                               assumption_count, error, error_capacity);
@@ -2599,6 +2629,7 @@ dfsan_query_value_candidate(dfsan_label label, u64 minimum,
                             uptr assignment_capacity, uptr *assignment_count,
                             uptr *assumption_count, char *error,
                             uptr error_capacity) {
+  SolverLock lock;
   return query_value_interval(label, minimum, maximum, out_value, assignments,
                               assignment_capacity, assignment_count,
                               assumption_count, error, error_capacity);
@@ -2606,6 +2637,7 @@ dfsan_query_value_candidate(dfsan_label label, u64 minimum,
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __taint_trace_indcall(dfsan_label label) {
+  SolverLock lock;
   if (label == 0)
     return;
 
@@ -2650,6 +2682,7 @@ static void __solve_gep(z3::expr &index, uint64_t lb, uint64_t ub, uint64_t step
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, int64_t index,
                   uint64_t num_elems, uint64_t elem_size, int64_t current_offset) {
+  SolverLock lock;
   if (index_label == 0)
     return;
 
@@ -2776,12 +2809,14 @@ static void __add_constraints(dfsan_label label) {
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __taint_trace_offset(dfsan_label offset_label, int64_t offset, unsigned size) {
+  SolverLock lock;
   dfsan_label_info *info = get_label_info(offset_label);
   dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, size, 0, offset, info->pc);
   __add_constraints(sc);
 }
 
 extern "C" void InitializeSolver() {
+  SolverLock lock;
   __output_dir = flags().output_dir;
   __instance_id = flags().instance_id;
   __session_id = flags().session_id;

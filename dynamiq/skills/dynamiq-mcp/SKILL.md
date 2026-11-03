@@ -7,6 +7,8 @@ description: 'Use when driving the Dynamiq MCP server (`dynamiq`) for live binar
 
 Use this skill when operating the `dynamiq` MCP tools for live binary analysis.
 
+For additional directions, please see <symfit main source directory>/dynamiq/skills/symfit-field-notes/SKILL.md
+
 ## Core Rules
 
 1. Use session data, not guesses.

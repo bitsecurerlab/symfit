@@ -14233,7 +14233,7 @@ static void aarch64_tr_tb_start(DisasContextBase *db, CPUState *cpu)
 {
 #if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
     #if defined(CONFIG_SOFTMMU)
-    if (atomic_read(&ia_instrumentation_active)) {
+    if (atomic_read(&ia_instrumentation_active) || second_ccache_flag) {
     #endif
         TCGv pc_temp = tcg_const_tl(db->pc_first);
         gen_helper_ia_tb_start(cpu_env, pc_temp);
@@ -14252,7 +14252,7 @@ static void aarch64_tr_insn_start(DisasContextBase *dcbase, CPUState *cpu)
     dc->insn_start = tcg_last_op();
 #if defined(CONFIG_USER_ONLY) || defined(CONFIG_SOFTMMU)
     #if defined(CONFIG_SOFTMMU)
-    if (atomic_read(&ia_instrumentation_active)) {
+    if (atomic_read(&ia_instrumentation_active) || second_ccache_flag) {
     #endif
         TCGv pc_temp = tcg_const_tl(dc->pc);
         gen_helper_ia_insn_start(cpu_env, pc_temp);

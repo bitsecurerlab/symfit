@@ -40,7 +40,7 @@ static target_ulong get_pc(CPUArchState *env)
     }
 #endif
 
-#ifdef CONFIG_USER_ONLY
+#if defined(CONFIG_USER_ONLY) || defined(TARGET_AARCH64)
     return ia_get_current_insn_pc(pc);
 #else
     return pc;
@@ -145,18 +145,21 @@ typedef struct SymLoadMetadata {
     uint64_t pc;
 } SymLoadMetadata;
 
+G_LOCK_DEFINE_STATIC(sym_load_metadata);
 static SymLoadMetadata sym_load_metadata[16384];
 static size_t sym_load_metadata_head;
 static size_t sym_load_metadata_count;
 
 void symsan_reset_load_metadata(void)
 {
+    G_LOCK(sym_load_metadata);
     if (sym_load_metadata_count > 0) {
         fprintf(stderr, "[ia-debug] resetting load metadata: %zu entries recorded (capacity %zu)\n",
                 sym_load_metadata_count, (size_t)G_N_ELEMENTS(sym_load_metadata));
     }
     sym_load_metadata_head = 0;
     sym_load_metadata_count = 0;
+    G_UNLOCK(sym_load_metadata);
 }
 
 static void symsan_record_load_metadata(dfsan_label addr_label,
@@ -168,11 +171,14 @@ static void symsan_record_load_metadata(dfsan_label addr_label,
 {
     size_t idx;
 
+    G_LOCK(sym_load_metadata);
+
     if (addr_label == 0 || load_label == 0) {
         if (addr_label != 0 && load_label == 0) {
             fprintf(stderr, "[ia-debug] load metadata dropped: addr_label=0x%x but load_label=0 pc=0x%" PRIx64 "\n",
                     addr_label, pc);
         }
+        G_UNLOCK(sym_load_metadata);
         return;
     }
 
@@ -189,6 +195,7 @@ static void symsan_record_load_metadata(dfsan_label addr_label,
         G_N_ELEMENTS(sym_load_metadata)) {
         sym_load_metadata_count++;
     }
+    G_UNLOCK(sym_load_metadata);
 }
 
 bool symsan_find_load_metadata(dfsan_label addr_label,
@@ -198,7 +205,10 @@ bool symsan_find_load_metadata(dfsan_label addr_label,
 {
     size_t i;
 
+    G_LOCK(sym_load_metadata);
+
     if (addr_label == 0) {
+        G_UNLOCK(sym_load_metadata);
         return false;
     }
 
@@ -217,8 +227,11 @@ bool symsan_find_load_metadata(dfsan_label addr_label,
         if (pc) {
             *pc = entry->pc;
         }
+        G_UNLOCK(sym_load_metadata);
         return true;
     }
+
+    G_UNLOCK(sym_load_metadata);
 
     return false;
 }
@@ -231,7 +244,10 @@ bool symsan_find_load_metadata_for_label(dfsan_label load_label,
 {
     size_t i;
 
+    G_LOCK(sym_load_metadata);
+
     if (load_label == 0) {
+        G_UNLOCK(sym_load_metadata);
         return false;
     }
 
@@ -256,8 +272,11 @@ bool symsan_find_load_metadata_for_label(dfsan_label load_label,
         if (pc) {
             *pc = entry->pc;
         }
+        G_UNLOCK(sym_load_metadata);
         return true;
     }
+
+    G_UNLOCK(sym_load_metadata);
 
     return false;
 }

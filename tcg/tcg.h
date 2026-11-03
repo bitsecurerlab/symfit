@@ -488,7 +488,11 @@ typedef TCGv_ptr TCGv_env;
 #define SYM_DEBUG 0
 #define sym_debug_print(fmt, ...) \
             do { if(SYM_DEBUG) printf(fmt, __VA_ARGS__); } while (0)
+#ifdef CONFIG_USER_ONLY
 extern int second_ccache_flag;
+#else
+extern __thread int second_ccache_flag;
+#endif
 extern int sse_operation;
 extern int noSymbolicData;
 extern int fake_flag;

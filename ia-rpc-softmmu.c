@@ -159,6 +159,12 @@ typedef struct IAState {
     int listen_fd;
     char *socket_path;
     CPUState *current_cpu;
+    /* CPU latched at a stop decision. current_cpu is overwritten by any
+     * vCPU still executing during the vm_stop() handshake, so it cannot
+     * identify which CPU stopped; paused-state queries use this instead.
+     * NULL when the pause did not originate from a stop decision. */
+    CPUState *stop_cpu;
+    CPUState *step_cpu;
     uint64_t block_budget;
     uint64_t instruction_budget;
     bool stop_address_enabled;
@@ -217,6 +223,13 @@ typedef struct IAState {
     uint64_t symbolic_value_next_offset;
     QemuThread server_thread;
 } IAState;
+
+static __thread uint64_t ia_insn_pc;
+
+uint64_t ia_get_current_insn_pc(uint64_t fallback_pc)
+{
+    return ia_insn_pc ? ia_insn_pc : fallback_pc;
+}
 
 static IAState ia_state = {
     .listen_fd = -1,
@@ -299,18 +312,16 @@ static bool ia_debug_path_constraints_enabled(void)
 static bool ia_symbolic_mode_active(void)
 {
 #ifdef CONFIG_2nd_CCACHE
-    return second_ccache_flag != 0;
+    return ia_state.current_cpu && ia_state.current_cpu->symfit_symbolic_mode != 0;
 #else
     return false;
 #endif
 }
 
-static void ia_ensure_symbolic_mode_active(void)
+static void ia_ensure_symbolic_mode_active(CPUState *cpu)
 {
 #ifdef CONFIG_2nd_CCACHE
-    if (!ia_symbolic_mode_active()) {
-        second_ccache_flag = 1;
-    }
+    cpu->symfit_symbolic_mode = 1;
     if (noSymbolicData != 0) {
         noSymbolicData = 0;
     }
@@ -377,9 +388,36 @@ static void ia_set_paused_locked(void)
     ia_state.stop_address_enabled = false;
     ia_state.stop_address_set_enabled = false;
     ia_state.stop_address_count = 0;
+    ia_state.stop_cpu = NULL;
     ia_state.exec_state = IA_EXEC_PAUSED;
     ia_update_active_flag_locked(); // For performance issue fix
     qemu_cond_broadcast(&ia_state.cond);
+}
+
+/* Execution deadlines belong to the server; a client socket timeout cannot
+ * cancel a handler occupying this single-client endpoint. */
+static int64_t ia_execution_deadline(QDict *params)
+{
+    int64_t ms = params ? qdict_get_try_int(params, "timeout_ms", 30000) : 30000;
+    ms = MAX(1, MIN(ms, 3600000));
+    return g_get_monotonic_time() + ms * 1000;
+}
+
+static bool ia_wait_execution_locked(int64_t deadline)
+{
+    int64_t remaining = deadline - g_get_monotonic_time();
+    if (remaining > 0) {
+        /* This QEMU version has no portable timed QemuCond wait. Poll only
+         * on the RPC thread, releasing the state mutex for the vCPUs. */
+        qemu_mutex_unlock(&ia_state.lock);
+        g_usleep(MIN(remaining, 10000));
+        qemu_mutex_lock(&ia_state.lock);
+        return false;
+    }
+    ia_state.exec_state = IA_EXEC_PAUSED;
+    ia_update_active_flag_locked();
+    qemu_cond_broadcast(&ia_state.cond);
+    return true;
 }
 
 static void ia_trace_emit_basic_block(CPUState *cpu, vaddr pc)
@@ -1301,6 +1339,7 @@ static QDict *ia_handle_resume(int64_t id)
     ia_state.stop_address_set_enabled = false;
     ia_state.stop_address_count = 0;
     ia_clear_watchpoint_match_locked();
+    ia_state.stop_cpu = NULL;
     ia_state.exec_state = IA_EXEC_RUNNING;
     ia_update_active_flag_locked(); // For performance issue fix
     fprintf(stderr, "[DIAG] resume: exec_state -> RUNNING\n");
@@ -1405,6 +1444,7 @@ static QDict *ia_handle_resume_until_basic_block(int64_t id, QDict *params)
     ia_state.stop_address_set_enabled = false;
     ia_state.stop_address_count = 0;
     ia_clear_watchpoint_match_locked();
+    ia_state.stop_cpu = NULL;
     ia_state.exec_state = IA_EXEC_RUNNING;
     ia_update_active_flag_locked(); // For performance issue fix
     qemu_mutex_unlock(&ia_state.lock);
@@ -1440,6 +1480,7 @@ static QDict *ia_handle_resume_until_basic_block(int64_t id, QDict *params)
     qemu_mutex_unlock(&ia_state.lock);
 
     if (strcmp(status, "paused") == 0) {
+        ia_softmmu_vm_stop();
         ia_current_cpu_pc(cpu, &stop_pc);
     }
 
@@ -1476,6 +1517,8 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
     CPUState *cpu;
     g_autofree char *pc_hex = NULL;
     QDict *result = qdict_new();
+    int64_t deadline = ia_execution_deadline(params);
+    bool timed_out = false;
 
     if (!params) {
         qobject_unref(result);
@@ -1510,8 +1553,10 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
     ia_state.stop_address_matched = false;
     ia_state.stop_address = 0;
     ia_state.last_matched_pc = 0;
+    ia_state.step_cpu = ia_state.current_cpu;
     ia_state.instruction_budget = (uint64_t)count + 1;
     ia_clear_watchpoint_match_locked();
+    ia_state.stop_cpu = NULL;
     ia_state.exec_state = IA_EXEC_RUNNING;
     ia_update_active_flag_locked(); // For performance issue fix
     qemu_mutex_unlock(&ia_state.lock);
@@ -1521,8 +1566,12 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
     qemu_mutex_lock(&ia_state.lock);
     while (ia_state.instruction_budget > 0 &&
            ia_state.exec_state != IA_EXEC_EXITED &&
+           ia_state.exec_state != IA_EXEC_PAUSED &&
            !ia_state.shutting_down) {
-        qemu_cond_wait(&ia_state.cond, &ia_state.lock);
+        if (ia_wait_execution_locked(deadline)) {
+            timed_out = true;
+            break;
+        }
     }
 
     budget_remaining = ia_state.instruction_budget;
@@ -1556,6 +1605,7 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
         }
     }
     if (strcmp(status, "paused") == 0) {
+        ia_softmmu_vm_stop();
         ia_current_cpu_pc(cpu, &stop_pc);
     }
 
@@ -1574,6 +1624,7 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
       qdict_put_str(watchpoint, "pc", wp_pc_hex);
       qdict_put(result, "watchpoint", watchpoint);
     }
+    qdict_put_bool(result, "timed_out", timed_out);
     qdict_put_str(result, "status", status);
     qdict_put_int(result, "count", count);
     qdict_put_int(result, "executed", executed);
@@ -1596,6 +1647,8 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
     g_autofree char *last_insn_hex = NULL;
     g_autofree char *matched_hex = NULL;
     QDict *result = qdict_new();
+    int64_t deadline = ia_execution_deadline(params);
+    bool timed_out = false;
 
     if (!params) {
         qobject_unref(result);
@@ -1631,6 +1684,7 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
         ia_state.instruction_budget = 0;
         ia_state.last_matched_pc = 0;
         ia_clear_watchpoint_match_locked();
+        ia_state.stop_cpu = NULL;
         ia_state.exec_state = IA_EXEC_RUNNING;
         ia_update_active_flag_locked(); // For performance issue fix
         qemu_mutex_unlock(&ia_state.lock);
@@ -1643,7 +1697,10 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
     while ((ia_state.stop_address_enabled || ia_state.stop_address_set_enabled) &&
            ia_state.exec_state != IA_EXEC_EXITED && ia_state.exec_state != IA_EXEC_PAUSED &&
            !ia_state.shutting_down) {
-        qemu_cond_wait(&ia_state.cond, &ia_state.lock);
+        if (ia_wait_execution_locked(deadline)) {
+            timed_out = true;
+            break;
+        }
     }
 
     stop_pc = ia_state.last_block_pc;
@@ -1670,6 +1727,7 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
     qemu_mutex_unlock(&ia_state.lock);
 
     if (strcmp(status, "paused") == 0) {
+        ia_softmmu_vm_stop();
         ia_current_cpu_pc(cpu, &stop_pc);
     }
 
@@ -1689,6 +1747,7 @@ static QDict *ia_handle_resume_until_address(int64_t id, QDict *params)
         qdict_put(result, "watchpoint", watchpoint);
     }
 
+    qdict_put_bool(result, "timed_out", timed_out);
     qdict_put_str(result, "status", status);
     qdict_put_bool(result, "matched", matched);
     pc_hex = g_strdup_printf("0x%" PRIx64, stop_pc);
@@ -1715,6 +1774,8 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
     g_autofree char *last_insn_hex = NULL;
     g_autofree char *matched_hex = NULL;
     QDict *result = qdict_new();
+    int64_t deadline = ia_execution_deadline(params);
+    bool timed_out = false;
 
     if (!params) {
         qobject_unref(result);
@@ -1765,6 +1826,7 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
     ia_state.instruction_budget = 0;
     ia_state.last_matched_pc = 0;
     ia_clear_watchpoint_match_locked();
+    ia_state.stop_cpu = NULL;
     ia_state.exec_state = IA_EXEC_RUNNING;
     ia_update_active_flag_locked(); // For performance issue fix
     qemu_mutex_unlock(&ia_state.lock);
@@ -1775,7 +1837,10 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
     while ((ia_state.stop_address_enabled || ia_state.stop_address_set_enabled) &&
            ia_state.exec_state != IA_EXEC_EXITED && ia_state.exec_state != IA_EXEC_PAUSED &&
            !ia_state.shutting_down) {
-        qemu_cond_wait(&ia_state.cond, &ia_state.lock);
+        if (ia_wait_execution_locked(deadline)) {
+            timed_out = true;
+            break;
+        }
     }
 
     stop_pc = ia_state.last_block_pc;
@@ -1802,6 +1867,7 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
     qemu_mutex_unlock(&ia_state.lock);
 
     if (strcmp(status, "paused") == 0) {
+        ia_softmmu_vm_stop();
         ia_current_cpu_pc(cpu, &stop_pc);
     }
 
@@ -1821,6 +1887,7 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
         qdict_put(result, "watchpoint", watchpoint);
     }
 
+    qdict_put_bool(result, "timed_out", timed_out);
     qdict_put_str(result, "status", status);
     qdict_put_bool(result, "matched", matched);
     pc_hex = g_strdup_printf("0x%" PRIx64, stop_pc);
@@ -1830,6 +1897,14 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
     matched_hex = g_strdup_printf("0x%" PRIx64, last_matched_pc);
     qdict_put_str(result, "matched_pc", matched_hex);
     return ia_make_ok_response(id, result);
+}
+
+/* The CPU a paused-state query must resolve against: the CPU latched when
+ * execution stopped, falling back to the last-seen CPU for pauses that did
+ * not come from a stop decision (explicit pause RPC, initial state). */
+static CPUState *ia_query_cpu(void)
+{
+    return ia_state.stop_cpu ? ia_state.stop_cpu : ia_state.current_cpu;
 }
 
 static QDict *ia_handle_get_registers(int64_t id, QDict *params)
@@ -1897,7 +1972,7 @@ static QDict *ia_handle_get_registers(int64_t id, QDict *params)
         return ia_make_error_response(id, "invalid_state",
                                       "registers are only available while paused");
     }
-    cpu = ia_state.current_cpu;
+    cpu = ia_query_cpu();
     qemu_mutex_unlock(&ia_state.lock);
 
     env = (CPUArchState *)cpu->env_ptr;
@@ -1995,7 +2070,7 @@ static bool ia_symbolize_guest_memory(CPUState *cpu, uint64_t addr, size_t size,
         }
         done += chunk;
     }
-    ia_ensure_symbolic_mode_active();
+    ia_ensure_symbolic_mode_active(cpu);
     return true;
 }
 
@@ -2062,7 +2137,7 @@ static QDict *ia_handle_read_memory(int64_t id, QDict *params)
         return ia_make_error_response(id, "invalid_state",
                                       "memory reads are only available while paused");
     }
-    cpu = ia_state.current_cpu;
+    cpu = ia_query_cpu();
     qemu_mutex_unlock(&ia_state.lock);
 
     buf = g_malloc0(size > 0 ? (size_t)size : 1);
@@ -2162,7 +2237,7 @@ static QDict *ia_handle_write_memory(int64_t id, QDict *params)
         return ia_make_error_response(id, "invalid_state",
                                       "memory writes are only available while paused");
     }
-    cpu = ia_state.current_cpu;
+    cpu = ia_query_cpu();
     qemu_mutex_unlock(&ia_state.lock);
 
     if (physical) {
@@ -2229,7 +2304,7 @@ static QDict *ia_handle_set_registers(int64_t id, QDict *params)
         return ia_make_error_response(id, "invalid_state",
                                       "register writes are only available while paused");
     }
-    cpu = ia_state.current_cpu;
+    cpu = ia_query_cpu();
     qemu_mutex_unlock(&ia_state.lock);
 
     env = (CPUArchState *)cpu->env_ptr;
@@ -2355,7 +2430,7 @@ static QDict *ia_handle_read_symbolic_memory(int64_t id, QDict *params)
         return ia_make_error_response(id, "invalid_state",
                                       "symbolic memory reads are only available while paused");
     }
-    cpu = ia_state.current_cpu;
+    cpu = ia_query_cpu();
     qemu_mutex_unlock(&ia_state.lock);
 
     ia_append_guest_memory_labels(bytes, cpu, addr, (size_t)size);
@@ -2443,7 +2518,7 @@ static QDict *ia_handle_symbolize_memory(int64_t id, QDict *params)
         return ia_make_error_response(id, "invalid_state",
                                       "symbolization is only available while paused");
     }
-    cpu = ia_state.current_cpu;
+    cpu = ia_query_cpu();
     env = (CPUArchState *)cpu->env_ptr;
     pc = get_pc(env);
     qemu_mutex_unlock(&ia_state.lock);
@@ -2502,7 +2577,7 @@ static QDict *ia_handle_symbolize_register(int64_t id, QDict *params)
         return ia_make_error_response(id, "invalid_state",
                                       "symbolization is only available while paused");
     }
-    cpu = ia_state.current_cpu;
+    cpu = ia_query_cpu();
     env = (CPUArchState *)cpu->env_ptr;
     if (!ia_lookup_register_binding(env, name, &shadow, &value, &width_bits)) {
         qemu_mutex_unlock(&ia_state.lock);
@@ -2521,7 +2596,7 @@ static QDict *ia_handle_symbolize_register(int64_t id, QDict *params)
                                       "failed to create symbolic register label");
     }
     *shadow = reg_label;
-    ia_ensure_symbolic_mode_active();
+    ia_ensure_symbolic_mode_active(cpu);
     value_hex = g_strdup_printf("0x%" PRIx64, value);
     label_hex = g_strdup_printf("0x%x", reg_label);
     qdict_put_str(result, "register", name);
@@ -4215,6 +4290,7 @@ void ia_rpc_init(CPUState *cpu)
     } else {
         g_array_set_size(ia_state.path_constraints, 0);
     }
+    ia_state.stop_cpu = NULL;
     ia_state.exec_state = IA_EXEC_PAUSED;
     ia_state.enabled = true;
     ia_state.shutting_down = false;
@@ -4353,8 +4429,12 @@ bool ia_rpc_check_read_watchpoint(CPUState *cpu, uint64_t address,
     }
 
     qemu_mutex_lock(&ia_state.lock);
-    ia_state.current_cpu = cpu;
-    current_pc = ia_state.last_insn_pc != 0 ? ia_state.last_insn_pc : pc;
+    if (ia_state.exec_state != IA_EXEC_RUNNING ||
+        (ia_state.instruction_budget && cpu != ia_state.step_cpu)) {
+        qemu_mutex_unlock(&ia_state.lock);
+        return false;
+    }
+    current_pc = pc;
     if (ia_state.exec_state == IA_EXEC_RUNNING &&
         ia_state.read_watchpoint_count > 0) {
         size_t i;
@@ -4389,10 +4469,12 @@ bool ia_rpc_check_read_watchpoint(CPUState *cpu, uint64_t address,
             ia_state.read_watchpoint_skip_pc = current_pc;
             ia_state.block_budget = 0;
             ia_state.instruction_budget = 0;
+            ia_state.stop_cpu = cpu;
             ia_state.stop_address_enabled = false;
             ia_state.stop_address_set_enabled = false;
             ia_state.stop_address_count = 0;
             ia_state.stop_address_matched = false;
+            ia_state.current_cpu = cpu;
             ia_state.exec_state = IA_EXEC_PAUSED;
             ia_update_active_flag_locked();
             qemu_cond_broadcast(&ia_state.cond);
@@ -4423,8 +4505,12 @@ bool ia_rpc_check_write_watchpoint(CPUState *cpu, uint64_t address,
     }
 
     qemu_mutex_lock(&ia_state.lock);
-    ia_state.current_cpu = cpu;
-    current_pc = ia_state.last_insn_pc != 0 ? ia_state.last_insn_pc : pc;
+    if (ia_state.exec_state != IA_EXEC_RUNNING ||
+        (ia_state.instruction_budget && cpu != ia_state.step_cpu)) {
+        qemu_mutex_unlock(&ia_state.lock);
+        return false;
+    }
+    current_pc = pc;
     if (ia_state.exec_state == IA_EXEC_RUNNING &&
         ia_state.write_watchpoint_count > 0) {
         size_t i;
@@ -4459,6 +4545,7 @@ bool ia_rpc_check_write_watchpoint(CPUState *cpu, uint64_t address,
             ia_state.write_watchpoint_skip_pc = current_pc;
             ia_state.block_budget = 0;
             ia_state.instruction_budget = 0;
+            ia_state.stop_cpu = cpu;
             ia_state.stop_address_enabled = false;
             ia_state.stop_address_set_enabled = false;
             ia_state.stop_address_count = 0;
@@ -4468,6 +4555,7 @@ bool ia_rpc_check_write_watchpoint(CPUState *cpu, uint64_t address,
             ia_state.run_requested = false;
             ia_state.pause_pending = true;
             */
+            ia_state.current_cpu = cpu;
             ia_state.exec_state = IA_EXEC_PAUSED;
             ia_update_active_flag_locked();
             qemu_cond_broadcast(&ia_state.cond);
@@ -4526,16 +4614,26 @@ void symsan_record_path_constraint(uint64_t pc, dfsan_label label, bool taken)
 
 bool ia_should_stop_before_instruction(CPUState *cpu, vaddr pc)
 {
+    ia_insn_pc = pc;
     if (!ia_state.enabled) {
         return false;
     }
 
-    ia_state.last_insn_pc = pc;
-    ia_state.current_cpu = cpu;
+    qemu_mutex_lock(&ia_state.lock);
 
+    /* A stop belongs to the CPU that hit it. Other vCPUs may still be
+     * winding down until the main loop completes vm_stop(). */
     if (ia_state.exec_state != IA_EXEC_RUNNING) {
+        bool paused = ia_state.exec_state == IA_EXEC_PAUSED;
+        qemu_mutex_unlock(&ia_state.lock);
+        return paused;
+    }
+    if (ia_state.instruction_budget && cpu != ia_state.step_cpu) {
+        qemu_mutex_unlock(&ia_state.lock);
         return false;
     }
+    ia_state.last_insn_pc = pc;
+    ia_state.current_cpu = cpu;
 
     bool address_match = false;
 
@@ -4560,7 +4658,6 @@ bool ia_should_stop_before_instruction(CPUState *cpu, vaddr pc)
     }
 
     if (address_match || budget_expired) {
-        qemu_mutex_lock(&ia_state.lock);
         ia_state.stop_address_enabled = false;
         if (address_match) {
             ia_state.stop_address_set_enabled = false;
@@ -4568,6 +4665,7 @@ bool ia_should_stop_before_instruction(CPUState *cpu, vaddr pc)
             ia_state.stop_address_matched = true;
             ia_state.last_matched_pc = pc;
         }
+        ia_state.stop_cpu = cpu;
         ia_state.exec_state = IA_EXEC_PAUSED;
         ia_update_active_flag_locked();
         qemu_cond_broadcast(&ia_state.cond);
@@ -4575,6 +4673,7 @@ bool ia_should_stop_before_instruction(CPUState *cpu, vaddr pc)
         return true;
     }
 
+    qemu_mutex_unlock(&ia_state.lock);
     return false;
 }
 
@@ -4587,12 +4686,19 @@ void ia_on_basic_block_executed(CPUState *cpu, vaddr pc)
     }
 
     qemu_mutex_lock(&ia_state.lock);
+    if (ia_state.exec_state != IA_EXEC_RUNNING ||
+        (ia_state.instruction_budget && cpu != ia_state.step_cpu)) {
+        qemu_mutex_unlock(&ia_state.lock);
+        return;
+    }
+            ia_state.stop_cpu = cpu;
     ia_state.current_cpu = cpu;
     ia_state.last_block_pc = pc;
     ia_trace_emit_basic_block(cpu, pc);
     if (ia_state.exec_state == IA_EXEC_RUNNING && ia_state.block_budget > 0) {
         ia_state.block_budget--;
         if (ia_state.block_budget == 0) {
+            ia_state.current_cpu = cpu;
             ia_state.exec_state = IA_EXEC_PAUSED;
             qemu_cond_broadcast(&ia_state.cond);
             request_stop = true;

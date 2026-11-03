@@ -332,7 +332,11 @@ class QemuSystemInstrumentedBackend:
                 "pc": current_pc.lower(),
             }, refresh_live_status=False)
 
-        result = self._rpc_request("resume_until_address", {"address": address}, timeout=timeout)
+        result = self._rpc_request(
+            "resume_until_address",
+            {"address": address, "timeout_ms": max(1, int(timeout * 1000))},
+            timeout=timeout + 5.0,
+        )
         status = result.get("status")
         if isinstance(status, str):
             self._state["session_status"] = status
@@ -371,7 +375,11 @@ class QemuSystemInstrumentedBackend:
         before_pc = self._state.get("pc")
 
         try:
-            result = self._rpc_request("resume_until_any_address", {"addresses": normalized}, timeout=timeout)
+            result = self._rpc_request(
+                "resume_until_any_address",
+                {"addresses": normalized, "timeout_ms": max(1, int(timeout * 1000))},
+                timeout=timeout + 5.0,
+            )
         except Exception as exc:
             if "unknown instrumentation RPC method" in str(exc):
                 raise UnsupportedOperationError("backend RPC does not support resume_until_any_address") from exc
@@ -454,7 +462,11 @@ class QemuSystemInstrumentedBackend:
         before_status = self._state.get("session_status")
         before_pc = self._state.get("pc")
 
-        result = self._rpc_request("single_step", {"count": count}, timeout=timeout)
+        result = self._rpc_request(
+            "single_step",
+            {"count": count, "timeout_ms": max(1, int(timeout * 1000))},
+            timeout=timeout + 5.0,
+        )
         status = result.get("status")
         if isinstance(status, str):
             self._state["session_status"] = status

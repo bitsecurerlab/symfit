@@ -370,6 +370,8 @@ struct CPUState {
     bool created;
     bool stop;
     bool stopped;
+    /* Runtime-only SymFit cache selection; symbolic metadata is not VMState. */
+    int symfit_symbolic_mode;
     bool unplug;
     bool crash_occurred;
     bool exit_request;

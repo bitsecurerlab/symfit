@@ -7,6 +7,8 @@ description: Use when implementing autonomous program analysis, testing, or secu
 
 Use this skill when building autonomous systems that need to control and analyze target programs programmatically. This is the Python scripting interface (not MCP).
 
+For additional directions, please see <symfit main source directory>/dynamiq/skills/symfit-field-notes/SKILL.md
+
 Examples below assume one of these setups:
 - dynamiq is installed into the active Python environment, or
 - you are running from the repo root with `PYTHONPATH=src`
