@@ -59,6 +59,281 @@ strategies are required, it might benefit the performance and signal-to-noise le
 As of the current version, breakpoints are not yet implemented in system builds. In lieu of this, run_until_address() can be used as a functional
 equivalent.
 
+## Usage Examples
+
+For the appropriate use cases, an example of all four is attached:
+
+# Constraint verification
+
+Constraint verification answers: "what values can a symbolic variable take on the current execution path?" The primary tool is `query_value_range()`, but the label you pass it, and how you phrase the query window, determine whether the result is meaningful.
+
+### Navigate to the site
+
+In system mode, use `run_until_address`. In user mode, `bp_add` + `bp_run` also works. Always verify arrival — `run_until_address` returning does not mean it matched:
+
+```python
+result = session.run_until_address("0xdeadbeef", timeout=100)
+stop = result.get("result", result)
+reached = (stop.get("matched")
+           or stop.get("matched_address") == "0xdeadbeef"
+           or stop.get("pc") == "0xdeadbeef")
+if not reached:
+    print(f"[!] Did not reach target: {stop}")
+    return None
+```
+
+### Obtain the right label
+
+The label passed to `query_value_range` must be a **composite value label** — the label the CPU created when it loaded symbolic bytes as a wider integer. Do not use the per-byte labels returned by `symbolize_memory` (e.g. 0x24–0x27 for a 4-byte field); those leaf labels are unconstrained and the solver returns the full bit-width range.
+
+The reliable source is a `recent_path_constraints()` entry's `left_label`:
+
+```python
+constraints = session.recent_path_constraints(limit=20)["result"]["constraints"]
+entry = next(c for c in constraints if c["pc"] == "0xdeadbeef")
+vlabel = f"0x{entry['left_label']:x}"
+```
+
+Each entry carries: `size` (bits), `left_label` / `right_label` (int), `op` (string, extended LLVM opcode), `op1` / `op2` (int operands), and `pc` (string, the address where the constraint was recorded). For Alloca operations, `op1`/`op2` are allocation bounds and `l1`/`l2` are the element-count and element-size labels.
+
+**Caveat — `csel` checks are invisible to `recent_path_constraints`.** On AArch64, `cmp`+`csel` sequences produce ICmp labels inside the engine but never emit a `brcond`, so no path constraint is recorded. A census built solely on `recent_path_constraints` will report "NO COMPARE" for every `csel`-based check — which is exactly how validation is typically written. Corroborate negatives with a concrete parameter sweep or with `labels.dmp` (see field notes for the labels.dmp recipe).
+
+### Phrase the bounded query correctly
+
+`query_value_range` is **seed-anchored**: the bounded query must include the current concrete value of the label, or it fails with `"bounded query excludes the seed endpoint"` and returns a meaningless `min = max = 0`. This is a false negative, not a proof of unreachability.
+
+Read the concrete value from the register before choosing bounds:
+
+```python
+regs = session.get_registers(["x0"])
+seed = int(regs["result"]["x0"], 16)
+
+r = session.query_value_range(label=vlabel, lo=0, hi=TARGET)["result"]
+# r["max"] == TARGET  -> TARGET is reachable
+# r["max"] <  TARGET  -> max IS the true upper bound
+```
+
+The bounded query returns richer results than a bare call: up to seven candidates (`seed`, `minimum`, `maximum`, `sample-1..4`), each with **per-byte assignments naming the contributing input bytes** (`symfit_input_24`, ...). That is byte-level provenance from a ~30 ms solver query.
+
+### Interpret the result
+
+The response includes: `seed` (int), `min` / `min_hex`, `max` / `max_hex`, `assumption_count` (int), and `soundness` (string — "unconditional" if `assumption_count == 0`, "conditional" otherwise). An unconditional result with `max >= TARGET` is the strongest confirmation.
+
+A discrete exclusion (like `number != 45`) does not shrink the min/max range — the constraint is enforced but cannot be expressed as a contiguous interval. Use `query_value_eq(label, target)` to probe specific values within the range.
+
+### Scope constraint collection on busy paths
+
+Unscoped constraint collection on a kernel or framework path can drive the engine to OOM (~49 GiB observed). Scope collection to the function under study before symbolizing:
+
+```python
+session.set_constraint_pc_filter([{"start": hex(FN), "end": hex(FN + 0x2000)}])
+# ... symbolize, navigate, query ...
+session.clear_constraint_pc_filter()
+```
+
+### Produce auditable artefacts
+
+`export_value_solver(label)` returns checkable SMT2 plus `constraint_count` and `recorded_branch_count`. This is the artefact worth putting in a report — it is independently verifiable.
+
+# Reachability questions
+
+Reachability answers: "does execution reach this address under these conditions?" The primary tools are **breakpoints** (not the symbolic solver). Symbolic execution answers "what *value* can this take", not "is this *reachable*".
+
+### Basic pattern: breakpoint + control breakpoint
+
+A breakpoint that does not fire proves nothing unless you verify the execution actually ran the expected path. Always set a **control breakpoint** at an address you know must execute (e.g. the function prologue, or a parse-path return that every valid input hits):
+
+```python
+TARGET = "0x1db1c"
+CONTROL = "0x1d7d8"   # known-good: magic check, always executes
+
+result = session.run_until_any_address([TARGET, CONTROL], timeout=120)
+stop = result.get("result", result)
+
+if stop.get("matched_address") == TARGET:
+    print("Target reached")
+elif stop.get("matched_address") == CONTROL:
+    # Control fired; now continue to see if target fires afterwards
+    session.step(1)  # step off the matched address
+    result2 = session.run_until_address(TARGET, timeout=120)
+    stop2 = result2.get("result", result2)
+    if stop2.get("matched"):
+        print("Target reached after control")
+    else:
+        print(f"Target NOT reached; terminal state: {stop2.get('termination_kind', 'unknown')}")
+```
+
+Report the terminal state (`termination_kind`) — "ran to completion without hitting the target" is a meaningful negative; "stopped early due to budget exhaustion" is not.
+
+### System-mode breakpoints
+
+In system mode, `bp_add` returns `unsupported: set_breakpoints is not supported in system mode`. Use `run_until_address` or `run_until_any_address` instead — they work because they are built on a different mechanism. Do not use `bp_add` + `bp_run` in system mode; `bp_add` mutates client-side state before the backend error escapes, leaving a phantom breakpoint that `bp_run` silently resolves via `run_until_any_address`.
+
+### Step off before re-running
+
+`run_until_address` returns immediately when the PC already sits on the target. A loop without an explicit step-off never progresses — the same address "fires" N times with identical registers, producing a wrong reachability conclusion:
+
+```python
+# After a breakpoint fires, step off before continuing
+session.step(1)
+result = session.run_until_address(NEXT_TARGET, timeout=120)
+```
+
+### Multi-site reachability
+
+To test whether any of several addresses are reached:
+
+```python
+sites = ["0x1db1c", "0x1dad0", "0x1d840"]
+control = "0x1d7d8"
+
+result = session.run_until_any_address(sites + [control], timeout=120)
+stop = result.get("result", result)
+matched = stop.get("matched_address")
+
+if matched in sites:
+    print(f"Reached site {matched}")
+    regs = session.get_registers(["x0", "x1", "x2"])
+    # Inspect registers at the reached site
+elif matched == control:
+    print("Control reached; none of the target sites were hit first")
+```
+
+### When breakpoints are preferable to taint
+
+Breakpoints need no taint, no shadow memory, no byte-copy mode, and no labels dump — they run at full engine speed. Prefer breakpoints when the question is about **values** or **reachability**. Use taint only when the question is about **provenance** (which input bytes reach a specific check on a parse path).
+
+# Arithmetic relationship recovery
+
+Arithmetic relationship recovery answers: "what formula relates the input bytes to this computed value?" The primary tools are `get_symbolic_expression` for the formula and `query_value_range` with bounds for per-byte provenance.
+
+### Recover the formula
+
+After reaching a site with a symbolic value in a register or memory location, symbolize it (if not already symbolic) and retrieve the expression:
+
+```python
+# Navigate to the site
+result = session.run_until_address("0x1dabc", timeout=120)
+
+# Read the symbolic label from the register
+sym = session.read_symbolic_memory(addr, 4)
+label = sym["result"]["bytes"][0]["label"]
+
+# Get the engine's symbolic expression
+expr = session.get_symbolic_expression(label=label)
+print(expr["result"]["expression"])
+# e.g.: "concat(input(63),input(62)) + (concat(input(55),input(54)) - 1) * concat(input(51),input(50))"
+# which decodes to: total = finalFrameBlocks + (totalFrames - 1) * blocksPerFrame
+```
+
+The expression names individual input bytes (`input(N)` where N is the 0-indexed byte offset in the tainted region). `concat` assembles multi-byte fields in the endianness the CPU loaded them.
+
+### Determine the feasible range
+
+Combine with a bounded `query_value_range` to determine what values the formula can produce under the current path constraints:
+
+```python
+r = session.query_value_range(label=label, lo=0, hi=0xFFFFFFFF)["result"]
+print(f"Range: [{r['min_hex']} .. {r['max_hex']}], assumptions: {r['assumption_count']}")
+# e.g.: Range: [0x0 .. 0xffffffff], assumptions: 0
+# meaning: the full 32-bit space is reachable with zero assumptions
+```
+
+An `assumption_count` of 0 and a max covering the full bit-width means the value is **unconstrained** — any 32-bit output is achievable by choosing the right inputs. This is the kind of finding that directly establishes an overflow is controllable.
+
+### Per-byte provenance without a taint census
+
+The bounded `query_value_range` result includes per-byte input assignments for each candidate (seed, minimum, maximum, samples). Each assignment names the input bytes that contribute — e.g. `symfit_input_50`, `symfit_input_51` for the `blocksPerFrame` field. This gives byte-level provenance in ~30 ms, compared to a full taint census that requires an entire run plus a labels dump.
+
+### Export auditable SMT2
+
+For a finding worth reporting, export the solver state:
+
+```python
+export = session.export_value_solver(label=label)
+result = export["result"]
+print(f"Constraints: {result['constraint_count']}, "
+      f"Branches: {result['recorded_branch_count']}")
+# The export_json field contains checkable SMT2
+```
+
+This produces an independently verifiable artefact: anyone can feed the SMT2 to Z3 and confirm the claimed range.
+
+### Test specific witnesses
+
+When the analysis claims a particular target value is reachable, verify with `query_value_eq`:
+
+```python
+r = session.query_value_eq(label=label, target=0x40000)["result"]
+if r["relaxation_attempts"][0]["query_status"] == "sat":
+    print("Value 0x40000 is reachable on the current path")
+    # The result includes concrete byte assignments that produce this value
+```
+
+**Caution:** a witness that satisfies the constraints at this point may be an **invalid input** overall — downstream validation (including `csel` checks not in the constraint set) may reject it. Always solve-then-verify through the actual target.
+
+# Differential path analysis
+
+Differential path analysis answers: "what constraints differ between two execution paths?" This is useful for understanding why one input is accepted and another rejected, or for finding the minimal change needed to flip a branch.
+
+### Compare constraints between two runs
+
+Run the same binary with two different inputs (or the same input through two code paths) and compare the recorded constraints:
+
+```python
+# Run A: the accepted input
+session_a.run_until_address(TARGET, timeout=120)
+constraints_a = session_a.recent_path_constraints(limit=50)["result"]["constraints"]
+pcs_a = {c["pc"] for c in constraints_a}
+
+# Run B: the rejected input
+session_b.run_until_address(TARGET, timeout=120)
+constraints_b = session_b.recent_path_constraints(limit=50)["result"]["constraints"]
+pcs_b = {c["pc"] for c in constraints_b}
+
+only_a = pcs_a - pcs_b   # branches taken only by the accepted input
+only_b = pcs_b - pcs_a   # branches taken only by the rejected input
+common = pcs_a & pcs_b   # shared branch points
+```
+
+### Reset state between runs
+
+Use `begin_value_solver_capture()` to clear the recorded branch and constraint history before the second run. Without this, the second run's constraints accumulate on top of the first:
+
+```python
+session.begin_value_solver_capture()
+# Now re-execute or restore a snapshot and run again
+```
+
+Note: in user-mode, the constraint ring buffer holds only 256 entries — call `begin_value_solver_capture()` periodically on long paths to avoid silently losing older constraints.
+
+### Generate alternative inputs with constraint negation
+
+`solve_path_constraint(label, negate=True)` asks the solver: "give me an input that takes the opposite branch." The label must be a branch-condition label from `recent_path_constraints`, not a value label from `symbolize_register`:
+
+```python
+constraints = session.recent_path_constraints(limit=20)["result"]["constraints"]
+# Find the branch you want to flip
+branch = next(c for c in constraints if c["pc"] == "0x1d7d8")
+branch_label = f"0x{branch['label']:x}" if isinstance(branch['label'], int) else branch['label']
+
+alt = session.solve_path_constraint(label=branch_label, negate=True)
+if alt["result"].get("status") == "sat":
+    # The result contains concrete byte values that take the other path
+    print("Alternative input found:", alt["result"])
+else:
+    print("Branch is infeasible to flip under current constraints")
+```
+
+### Differential analysis workflow
+
+A typical differential analysis session:
+
+1. **Identify the divergence point.** Run both inputs to the same target and compare which PCs appear in each constraint set.
+2. **Inspect the diverging branch.** Use `get_path_constraint_smt2(label, False)` on a branch unique to one path to see the full constraint in SMT2 form. Use `get_path_constraint_evaluated(label, False)` for a more readable version with concrete values resolved.
+3. **Attempt to flip it.** `solve_path_constraint(label, negate=True)` on the diverging branch yields the concrete bytes needed to take the other path.
+4. **Verify the flip.** Feed the witness back through the target and confirm the other path is actually taken — witnesses satisfy the constraints the solver knows about, but downstream checks (especially `csel`-based checks invisible to the constraint set) may still reject the input.
+
 ## Quick Start
 
 ```python
