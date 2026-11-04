@@ -63,8 +63,15 @@ std::unordered_map<uintptr_t, dfsan_label *> g_shadow_pages;
  * through dfsan_shadow_exists() to decide whether the concrete-mode taint
  * checks need to be emitted at all. */
 static volatile int g_shadow_any = 0;
-extern "C" void telemetry_send(const char *json);
-extern "C" char telemetry_enabled;
+// Defined only by the LLVM pass; QEMU uses sparse guest shadow memory.
+extern "C" SANITIZER_WEAK_ATTRIBUTE const int __dfsan_native_shadow;
+static bool g_native_shadow = false;
+// Standalone instrumented programs have no telemetry transport. SymFit
+// overrides these weak defaults with its optional telemetry implementation.
+extern "C" {
+SANITIZER_WEAK_ATTRIBUTE void telemetry_send(const char *) {}
+SANITIZER_WEAK_ATTRIBUTE char telemetry_enabled = 0;
+}
 
 using namespace __dfsan;
 
@@ -173,6 +180,9 @@ static __thread uintptr_t t_memo_page = 0;
 static __thread dfsan_label *t_memo_base = nullptr;
 
 dfsan_label *__dfsan::shadow_for(void *ptr) {
+    if (g_native_shadow)
+        return reinterpret_cast<dfsan_label *>(
+            (reinterpret_cast<uptr>(ptr) & ShadowMask()) * sizeof(dfsan_label));
     const uintptr_t page = pageStart(ptr);
     const u64 gen = __atomic_load_n(&g_shadow_gen, __ATOMIC_RELAXED);
     if (t_memo_gen == gen && t_memo_page == page) {
@@ -618,7 +628,7 @@ dfsan_label __taint_union_load(const dfsan_label *ls, const void *addr, uptr n) 
     }
   }
   if (shape) {
-    // if (n == 1) return label0;
+    if (g_native_shadow && n == 1) return label0;
     if (n == 1) {
       assert(get_label_info(label0)->size == 8);
       return __taint_union(label0, CONST_LABEL, ZExt, 64, 0, 0, __dfsan_label_info[label0].pc);
@@ -626,7 +636,7 @@ dfsan_label __taint_union_load(const dfsan_label *ls, const void *addr, uptr n) 
 
     AOUT("shape: label0: %d %d shadow addr: %p app_for %p\n", label0, n, ls, app_for(ls));
     // return __taint_union(label0, (dfsan_label)n, Load, n * 8, 0, 0);
-    if (n == 8) {
+    if (n == 8 || g_native_shadow) {
       return __taint_union(label0, (dfsan_label)n, Load, n * 8, 0, 0, __dfsan_label_info[label0].pc);
     } else {
       // symqemu: extend label to 64-bit
@@ -700,7 +710,8 @@ dfsan_label __taint_union_load(const dfsan_label *ls, const void *addr, uptr n) 
     }
   }
   AOUT("\n");
-  label = __taint_union(label, CONST_LABEL, ZExt, 64, 0, 0, __dfsan_label_info[label0].pc);
+  if (!g_native_shadow)
+    label = __taint_union(label, CONST_LABEL, ZExt, 64, 0, 0, __dfsan_label_info[label0].pc);
   return label;
 }
 
@@ -1033,7 +1044,8 @@ dfsan_is_branch_condition_label(dfsan_label label) {
   }
   dfsan_check_label(label);
   info = &__dfsan_label_info[label];
-  return (info->op & 0xff) == ICmp;
+  // LLVM can branch directly on an i1 conjunction, disjunction, or select.
+  return (info->op & 0xff) == ICmp || info->size == 1;
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE int
@@ -1212,7 +1224,7 @@ static void InitializeTaintFile() {
 
   if (tainted.fd != -1 && !tainted.is_stdin) {
     for (off_t i = 0; i < tainted.size; i++) {
-      dfsan_label label = dfsan_create_label(i);
+      dfsan_label label = dfsan_create_label_with_value(i, (u8)tainted.buf[i]);
       dfsan_check_label(label);
     }
   }
@@ -1277,8 +1289,11 @@ static void dfsan_init(int argc, char **argv, char **envp) {
   print_debug = flags().debug;
 
   ::InitializePlatformEarly();
-  // Disable direct shadow memopry mapping.
-  // MmapFixedSuperNoReserve(ShadowAddr(), UnionTableAddr() - ShadowAddr());
+  g_native_shadow = &__dfsan_native_shadow != nullptr;
+  if (g_native_shadow) {
+    MmapFixedSuperNoReserve(ShadowAddr(), HashTableAddr() - ShadowAddr());
+    g_shadow_any = 1;
+  }
   MmapFixedSuperNoReserve(HashTableAddr(), UnionTableAddr() - HashTableAddr());
   __dfsan_label_info = (dfsan_label_info *)UnionTableAddr();
 

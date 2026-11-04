@@ -39,3 +39,6 @@ DFSAN_FLAG(bool, debug, false, "Print debug output.")
 DFSAN_FLAG(const char *, output_dir, ".", "The path for output file.")
 DFSAN_FLAG(int, instance_id, 0, "instance id for multi-instance fuzzing.")
 DFSAN_FLAG(int, session_id, 0, "session/round id.")
+
+DFSAN_FLAG(bool, solve_on_branch, false,
+           "Generate inputs automatically on symbolic branches (standalone Z3 mode).")

@@ -112,15 +112,15 @@ for round in $(seq 1 $MAX_ROUNDS); do
         export SYMCC_INPUT_FILE="$WORK_DIR/testfile"
         export SYMCC_OUTPUT_DIR="$OUTPUT_DIR"
         export SYMCC_AFL_COVERAGE_MAP="$COVERAGE_MAP"
-        export TAINT_OPTIONS="taint_file=$WORK_DIR/testfile"
+        export TAINT_OPTIONS="taint_file=$WORK_DIR/testfile output_dir=$OUTPUT_DIR solve_on_branch=1"
 
         # Run symbolic execution (change to work dir so relative paths work)
         cd "$WORK_DIR"
         if [ "${DEBUG:-0}" = "1" ]; then
             echo "Running: $FGTEST $SYMFIT $TEST_BINARY (cwd: $WORK_DIR)"
-            "$FGTEST" "$SYMFIT" "$TEST_BINARY" || true
+            "$FGTEST" "$SYMFIT" "$TEST_BINARY"
         else
-            "$FGTEST" "$SYMFIT" "$TEST_BINARY" >/dev/null 2>&1 || true
+            "$FGTEST" "$SYMFIT" "$TEST_BINARY" >/dev/null 2>&1
         fi
         cd "$SCRIPT_DIR"
 

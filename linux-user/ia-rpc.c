@@ -2607,6 +2607,7 @@ static QDict *ia_handle_resume(int64_t id)
     } else {
         ia_state.exec_state = IA_EXEC_RUNNING;
     }
+    ia_update_active_flag_locked();
     qemu_cond_signal(&ia_state.cond);
     qemu_mutex_unlock(&ia_state.lock);
 
@@ -2671,9 +2672,7 @@ static QDict *ia_handle_close(int64_t id)
                                       "close is only supported during terminal pause");
     }
     ia_state.close_requested = true;
-    ia_state.start_paused = false;
-    ia_state.run_requested = true;
-    qemu_cond_signal(&ia_state.cond);
+    /* Wake the guest only after the server flushes this acknowledgement. */
     qemu_mutex_unlock(&ia_state.lock);
 
     return ia_make_ok_response(id, result);
@@ -3085,6 +3084,7 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
         ia_state.start_paused = false;
         ia_state.run_requested = true;
         ia_state.exec_state = IA_EXEC_RUNNING;
+        ia_update_active_flag_locked();
         qemu_cond_signal(&ia_state.cond);
     }
 
@@ -3158,6 +3158,7 @@ static QDict *ia_handle_resume_until_basic_block(int64_t id, QDict *params)
     ia_state.start_paused = false;
     ia_state.run_requested = true;
     ia_state.exec_state = IA_EXEC_RUNNING;
+    ia_update_active_flag_locked();
     qemu_cond_signal(&ia_state.cond);
 
     while ((ia_state.block_budget > 0 || ia_state.pause_pending) &&
@@ -3235,6 +3236,7 @@ static QDict *ia_handle_single_step(int64_t id, QDict *params)
     ia_state.start_paused = false;
     ia_state.run_requested = true;
     ia_state.exec_state = IA_EXEC_RUNNING;
+    ia_update_active_flag_locked();
     qemu_cond_signal(&ia_state.cond);
 
     while ((ia_state.instruction_budget > 0 || ia_state.pause_pending) &&
@@ -4059,6 +4061,13 @@ static void ia_handle_client(int fd)
         }
         resp = ia_dispatch_request(req);
         ia_write_response(io, resp);
+        qemu_mutex_lock(&ia_state.lock);
+        if (ia_state.close_requested) {
+            ia_state.start_paused = false;
+            ia_state.run_requested = true;
+            qemu_cond_signal(&ia_state.cond);
+        }
+        qemu_mutex_unlock(&ia_state.lock);
         qobject_unref(resp);
         qobject_unref(obj);
     }

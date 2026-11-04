@@ -1285,6 +1285,7 @@ static QDict *ia_handle_capabilities(int64_t id)
     qdict_put_int(result, "protocol_version", 1);
     qdict_put_bool(caps, "pause_resume", true);
     qdict_put_bool(caps, "read_registers", register_access);
+    qdict_put_bool(caps, "select_cpu", true);
     qdict_put_bool(caps, "write_registers", register_access);
     qdict_put_bool(caps, "read_memory", true);
     qdict_put_bool(caps, "write_memory", true);
@@ -1905,6 +1906,39 @@ static QDict *ia_handle_resume_until_any_address(int64_t id, QDict *params)
 static CPUState *ia_query_cpu(void)
 {
     return ia_state.stop_cpu ? ia_state.stop_cpu : ia_state.current_cpu;
+}
+
+/* Select the paused vCPU for register, memory, and stepping operations. */
+static QDict *ia_handle_select_cpu(int64_t id, QDict *params)
+{
+    int64_t index = params ? qdict_get_try_int(params, "cpu_index", -1) : -1;
+    CPUState *cpu;
+    QDict *result;
+
+    if (index < 0 || index > INT_MAX) {
+        return ia_make_error_response(id, "invalid_params", "cpu_index must be a nonnegative CPU index");
+    }
+    qemu_mutex_lock_iothread();
+    qemu_mutex_lock(&ia_state.lock);
+    if (!ia_state.attached || runstate_is_running()) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qemu_mutex_unlock_iothread();
+        return ia_make_error_response(id, "invalid_state", "CPU selection requires a paused VM");
+    }
+    cpu = qemu_get_cpu(index);
+    if (!cpu) {
+        qemu_mutex_unlock(&ia_state.lock);
+        qemu_mutex_unlock_iothread();
+        return ia_make_error_response(id, "invalid_params", "CPU index does not exist");
+    }
+    ia_state.current_cpu = cpu;
+    ia_state.stop_cpu = cpu;
+    qemu_mutex_unlock(&ia_state.lock);
+    qemu_mutex_unlock_iothread();
+
+    result = qdict_new();
+    qdict_put_int(result, "cpu_index", index);
+    return ia_make_ok_response(id, result);
 }
 
 static QDict *ia_handle_get_registers(int64_t id, QDict *params)
@@ -4059,6 +4093,9 @@ static QDict *ia_dispatch_request(QDict *request)
     }
     if (strcmp(method, "resume_until_any_address") == 0) {
         return ia_handle_resume_until_any_address(id, params);
+    }
+    if (strcmp(method, "select_cpu") == 0) {
+        return ia_handle_select_cpu(id, params);
     }
     if (strcmp(method, "get_registers") == 0 ||
         strcmp(method, "read_registers") == 0 ||

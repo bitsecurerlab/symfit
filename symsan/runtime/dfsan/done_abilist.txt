@@ -411,3 +411,13 @@ fun:__taint_*=discard
 fun:LLVMFuzzerTestOneInput=uninstrumented
 fun:__afl_manual_init=uninstrumented
 fun:__afl_manual_init=discard
+
+# Explicit value-query API uses concrete C arguments and returns.
+fun:dfsan_begin_value_*=uninstrumented
+fun:dfsan_begin_value_*=discard
+fun:dfsan_query_value_*=uninstrumented
+fun:dfsan_query_value_*=discard
+fun:dfsan_set_value_query_*=uninstrumented
+fun:dfsan_set_value_query_*=discard
+fun:dfsan_get_value_query_seed=uninstrumented
+fun:dfsan_get_value_query_seed=discard

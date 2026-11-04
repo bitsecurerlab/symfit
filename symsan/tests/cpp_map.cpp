@@ -1,3 +1,4 @@
+// REQUIRES: instrumented-libcxx
 // RUN: rm -rf %t.out
 // RUN: mkdir -p %t.out
 // RUN: clang++ -o %t.uninstrumented %s

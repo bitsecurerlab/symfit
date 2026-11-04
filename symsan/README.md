@@ -78,6 +78,9 @@ $ cd your_build_dir
 $ lit tests
 ```
 
+C++ tests require the optional instrumented libc++ archives described above;
+without them, lit reports those tests as unsupported.
+
 ### Environment Options
 
 * `KO_CC` specifies the clang to invoke, if the default version isn't clang-12,
@@ -90,6 +93,10 @@ $ lit tests
   so SymSan will only perform symbolic constraint collection without solving.
   SymSan also supports out-of-process solving, which provides better compatiblility.
   Check [FastGen](https://github.com/R-Fuzz/fastgen).
+
+* `TAINT_OPTIONS="... solve_on_branch=1"` enables automatic input generation
+  with the in-process Z3 solver. The default keeps branch recording available
+  for explicit value and path queries without generating files.
 
 * `KO_USE_NATIVE_LIBCXX` enables using the native uninstrumented libc++ and libc++abi.
 

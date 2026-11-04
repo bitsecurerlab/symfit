@@ -79,3 +79,27 @@ def test_qmp_client_preserves_list_return(monkeypatch) -> None:
     client.close()
 
     assert result == [{"cpu-index": 0, "qom-path": "/machine/unattached/device[0]"}]
+
+
+def test_qmp_controller_preserves_cpu_selection_across_hmp_commands() -> None:
+    from dynamiq.qmp.controller import QmpController
+
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        def execute(self, command: str, arguments: dict) -> str:
+            self.calls.append((command, arguments))
+            return ""
+
+    client = RecordingClient()
+    controller = QmpController(client)
+    controller.select_cpu(2)
+    controller.monitor_command("info registers")
+    controller.monitor_command("info cpus")
+
+    assert client.calls == [
+        ("human-monitor-command", {"command-line": "info cpus", "cpu-index": 2}),
+        ("human-monitor-command", {"command-line": "info registers", "cpu-index": 2}),
+        ("human-monitor-command", {"command-line": "info cpus", "cpu-index": 2}),
+    ]

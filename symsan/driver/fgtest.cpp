@@ -135,8 +135,11 @@ void send_task(int ip_addr, unsigned short port, std::string message) {
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
     server_addr.sin_addr.s_addr = ip_addr;
-    connect(socket_desc, (struct sockaddr *)&server_addr, sizeof(server_addr));
-    send(socket_desc, buf.data(), buf.size(), 0);
+    if (connect(socket_desc, (struct sockaddr *)&server_addr, sizeof(server_addr)) != 0) {
+        close(socket_desc);
+        return;
+    }
+    send(socket_desc, buf.data(), buf.size(), MSG_NOSIGNAL);
     close(socket_desc);
 }
 
@@ -1061,6 +1064,22 @@ static void __handle_gep(dfsan_label ptr_label, uptr ptr,
 
 }
 
+// Keep the standalone TAINT_OPTIONS interface alongside SymFit's SYMCC_* API.
+static std::string taint_option_value(const char *name) {
+  const char *options = getenv("TAINT_OPTIONS");
+  if (!options) return {};
+  std::string text(options);
+  for (char &c : text) if (c == ':') c = ' ';
+  std::istringstream tokens(text);
+  std::string token;
+  const std::string prefix = std::string(name) + "=";
+  while (tokens >> token) {
+    if (token.compare(0, prefix.size(), prefix) == 0)
+      return token.substr(prefix.size());
+  }
+  return {};
+}
+
 int main(int argc, char* const argv[]) {
 
   if (argc < 3) {
@@ -1072,19 +1091,15 @@ int main(int argc, char* const argv[]) {
   char *target = argv[2];
   //char *input = argv[3];
 
-  // setup output dir
-  char *options = getenv("TAINT_OPTIONS");
-  //char *output = strstr(options, "output_dir=");
-  char *output = getenv("SYMCC_OUTPUT_DIR"); // Reverted to older method of invocation
-  char *input = getenv("SYMCC_INPUT_FILE");
-  if (output) {
-    output += 11; // skip "output_dir="
-    char *end = strchr(output, ':'); // try ':' first, then ' '
-    if (end == NULL) end = strchr(output, ' ');
-    size_t n = end == NULL? strlen(output) : (size_t)(end - output);
-    __output_dir = strndup(output, n);
-  }
-  
+  // SYMCC_* values are complete paths, not TAINT_OPTIONS key/value tokens.
+  const std::string output_option = taint_option_value("output_dir");
+  const std::string input_option = taint_option_value("taint_file");
+  const char *output = getenv("SYMCC_OUTPUT_DIR");
+  const char *input = getenv("SYMCC_INPUT_FILE");
+  if (!output && !output_option.empty()) output = output_option.c_str();
+  if (!input && !input_option.empty()) input = input_option.c_str();
+  if (output && *output) __output_dir = output;
+
   const char* pc_config = getenv("SYMSAN_PC_CONFIG");
 
   if (input == NULL) {
@@ -1151,18 +1166,23 @@ int main(int argc, char* const argv[]) {
     exit(1);
   }
 
+  // Remove the shared segment once the last attached process exits.
+  shmctl(shmid, IPC_RMID, NULL);
+
   int pipefds[2];
   if (pipe(pipefds) != 0) {
     fprintf(stderr, "Failed to create pipe fds: %s\n", strerror(errno));
     exit(1);
   }
 
-  // prepare the env and fork
-  int length = snprintf(NULL, 0, "taint_file=%s:shm_id=%d:pipe_fd=%d:debug=1",
-                        input, shmid, pipefds[1]);
-  options = (char *)malloc(length + 1);
-  snprintf(options, length + 1, "taint_file=%s:shm_id=%d:pipe_fd=%d:debug=1",
-           input, shmid, pipefds[1]);
+  // Preserve solver/output options while overriding the transport settings.
+  const char *base_options = getenv("TAINT_OPTIONS");
+  if (!base_options) base_options = "";
+  int length = snprintf(NULL, 0, "%s:taint_file=%s:output_dir=%s:shm_id=%d:pipe_fd=%d",
+                        base_options, input, __output_dir, shmid, pipefds[1]);
+  char *options = (char *)malloc(length + 1);
+  snprintf(options, length + 1, "%s:taint_file=%s:output_dir=%s:shm_id=%d:pipe_fd=%d",
+           base_options, input, __output_dir, shmid, pipefds[1]);
 
   int pid = fork();
   if (pid < 0) {
@@ -1186,7 +1206,8 @@ int main(int argc, char* const argv[]) {
     }
     args[argc-1] = NULL;
     execv(program, args);
-    exit(0);
+    perror(program);
+    _exit(127);
   }
 
   close(pipefds[1]);
@@ -1204,7 +1225,7 @@ int main(int argc, char* const argv[]) {
         //__solve_cond(msg.label, msg.result, msg.flags & F_ADD_CONS, (void*)msg.addr);
         //__solve_cond(msg.label, msg.result, msg.flags & F_ADD_CONS, msg.id);
         // TO DO: Uncomment the C-style comments for the uninteresting branch filtering
-        if (solved_branches.insert(msg.id).second) { // This should return true only if it's a new branch
+        if (solved_branches.insert((uint64_t(msg.id) << 32) | msg.label).second) { // This should return true only if it's a new branch
             __solve_cond(msg.label, msg.result, msg.flags & F_ADD_CONS, msg.id);
         }
         else {
@@ -1263,6 +1284,12 @@ int main(int argc, char* const argv[]) {
     }
   }
 
-  wait(NULL);
-  exit(0);
+  int status = 0;
+  if (waitpid(pid, &status, 0) < 0) {
+    perror("waitpid");
+    return 1;
+  }
+  if (WIFEXITED(status)) return WEXITSTATUS(status);
+  if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+  return 1;
 }

@@ -116,9 +116,9 @@ static z3::expr serialize(dfsan_label label, std::unordered_set<u32> &deps,
                           SerializeMode mode);
 static z3::expr direction_expr(const z3::expr &cond, bool taken);
 
-static bool matches_observed_value(const z3::expr &expr,
-                                   const std::unordered_set<u32> &deps,
-                                   u64 observed) {
+static bool evaluate_seed_value(const z3::expr &expr,
+                                const std::unordered_set<u32> &deps,
+                                uint64_t *out) {
   z3::expr_vector from(__z3_context);
   z3::expr_vector to(__z3_context);
   for (u32 offset : deps) {
@@ -126,17 +126,21 @@ static bool matches_observed_value(const z3::expr &expr,
     if (it == input_seed.end()) {
       return false;
     }
-    std::string name = "symfit_input_" + std::to_string(offset);
     from.push_back(__z3_context.constant(
-        __z3_context.str_symbol(name.c_str()), __z3_context.bv_sort(8)));
+        __z3_context.int_symbol(offset), __z3_context.bv_sort(8)));
     to.push_back(__z3_context.bv_val(it->second, 8));
   }
   z3::expr candidate = expr;
   z3::expr concrete = candidate.substitute(from, to).simplify();
-  uint64_t value = 0;
   return concrete.is_bv() && concrete.is_numeral() &&
-         Z3_get_numeral_uint64(__z3_context, concrete, &value) &&
-         value == observed;
+         Z3_get_numeral_uint64(__z3_context, concrete, out);
+}
+
+static bool matches_observed_value(const z3::expr &expr,
+                                   const std::unordered_set<u32> &deps,
+                                   u64 observed) {
+  uint64_t value = 0;
+  return evaluate_seed_value(expr, deps, &value) && value == observed;
 }
 
 static inline expr_set_t take_load_expr_deps() {
@@ -1380,7 +1384,12 @@ __taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
        op1, op2, size, predicate, c1, c2, (unsigned long long)cid, addr);
 
   dfsan_label temp = dfsan_union(op1, op2, (predicate << 8) | ICmp, size, c1, c2, cid);
-  record_branch_inputs(temp, eval_cmp_taken(predicate, size, c1, c2), cid);
+  bool taken = eval_cmp_taken(predicate, size, c1, c2);
+  record_branch_inputs(temp, taken, cid);
+  if (flags().solve_on_branch) {
+    z3::expr result = __z3_context.bool_val(taken);
+    __solve_cond(temp, result, taken, addr);
+  }
   return temp;
 }
 
@@ -1405,6 +1414,10 @@ __taint_trace_cond(dfsan_label label, u8 r, u64 cid) {
        itr->second);
 
   record_branch_inputs(label, r != 0, cid);
+  if (flags().solve_on_branch) {
+    z3::expr result = __z3_context.bool_val(r != 0);
+    __solve_cond(label, result, true, addr);
+  }
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
@@ -1472,9 +1485,8 @@ dfsan_get_value_query_seed(dfsan_label label, u64 *out_value,
                           std::to_string(offset)).c_str(), error, error_capacity);
         return -1;
       }
-      std::string name = "symfit_input_" + std::to_string(offset);
       z3::expr input = __z3_context.constant(
-          __z3_context.str_symbol(name.c_str()), __z3_context.bv_sort(8));
+          __z3_context.int_symbol(offset), __z3_context.bv_sort(8));
       __z3_solver.add(input == __z3_context.bv_val(found->second, 8));
       dfsan_solve_assignment assignment = {};
       assignment.offset = offset;
@@ -1988,9 +2000,8 @@ dfsan_export_value_solver(dfsan_label label, char *json_out,
         copy_solve_error(message.c_str(), error, error_capacity);
         return -1;
       }
-      std::string name = "symfit_input_" + std::to_string(offset);
       z3::expr input = __z3_context.constant(
-          __z3_context.str_symbol(name.c_str()), __z3_context.bv_sort(8));
+          __z3_context.int_symbol(offset), __z3_context.bv_sort(8));
       __z3_solver.add(input == __z3_context.bv_val(seed->second, 8));
     }
     z3::check_result seed_result = __z3_solver.check();
@@ -2362,7 +2373,7 @@ dfsan_query_value_range(dfsan_label label, uint64_t lo_bound, uint64_t hi_bound,
       }
     }
 
-    // 3. Anchor on a concrete model of the constrained value (KOOBE getValue).
+    // 3. Check feasibility, then anchor the search on the recorded input seed.
     fprintf(stderr, "[QVRANGE-DIAG] label=%u assertions=%u calling anchor check()\n",
             label, __z3_solver.assertions().size());
 
@@ -2379,10 +2390,12 @@ dfsan_query_value_range(dfsan_label label, uint64_t lo_bound, uint64_t hi_bound,
     fprintf(stderr, "[QVRANGE-DIAG] label=%u anchor_check=%.1fms\n",
             label, vr_anchor_ms);
     z3::expr v64 = (width < 64) ? z3::zext(val, 64 - width) : val;
-    z3::model model = __z3_solver.get_model();
-    z3::expr cexpr = model.eval(v64, true);
     uint64_t concrete = 0;
-    Z3_get_numeral_uint64(cexpr.ctx(), cexpr, &concrete);
+    if (!evaluate_seed_value(v64, inputs, &concrete)) {
+      take_solve_assumptions();
+      copy_solve_error("cannot evaluate concrete seed target", error, error_capacity);
+      return -1;
+    }
 
     uint64_t width_max = (width >= 64) ? UINT64_MAX : ((1ULL << width) - 1ULL);
     if ((hi_bound != 0 && lo_bound > hi_bound) || concrete < lo_bound ||

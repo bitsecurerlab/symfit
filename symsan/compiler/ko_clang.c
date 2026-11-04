@@ -125,6 +125,8 @@ static void add_runtime() {
     cc_params[cc_par_cnt++] = alloc_printf("%s/../lib/symsan/libZ3Solver.a", obj_path);
     cc_params[cc_par_cnt++] = "-Wl,--no-whole-archive";
     cc_params[cc_par_cnt++] = "-lz3";
+    // Z3Solver is built against the toolchain's libstdc++.
+    cc_params[cc_par_cnt++] = "-lstdc++";
   }
 
   if (getenv("KO_USE_FASTGEN")) {
@@ -234,6 +236,8 @@ static void edit_params(u32 argc, char **argv) {
   cc_params[cc_par_cnt++] = "-pie";
   cc_params[cc_par_cnt++] = "-fpic";
   cc_params[cc_par_cnt++] = "-Qunused-arguments";
+  cc_params[cc_par_cnt++] = alloc_printf("-I%s/../include", obj_path);
+  cc_params[cc_par_cnt++] = "-I" SYMSAN_LLVM_INCLUDE_DIR;
   cc_params[cc_par_cnt++] = "-fno-vectorize";
   cc_params[cc_par_cnt++] = "-fno-slp-vectorize";
 #if 0

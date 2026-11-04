@@ -770,9 +770,8 @@ class QemuSystemInstrumentedBackend:
         result = self._controller.execute("query-cpus-fast")
         if isinstance(result, list):
             self._state["cpu_count"] = len(result)
-            for cpu in result:
-                if cpu.get("cpu-index") == 0:
-                    self._state["current_cpu_id"] = cpu.get("qom-path")
+            if result and self._state.get("current_cpu_id") is None:
+                self._state["current_cpu_id"] = result[0].get("cpu-index")
         return self._response({"cpus": result, "cpu_count": len(result) if isinstance(result, list) else 0})
 
     def set_current_cpu(self, cpu_index: int) -> dict[str, Any]:
@@ -780,7 +779,13 @@ class QemuSystemInstrumentedBackend:
         self._require_started()
         if self._controller is None:
             raise UnsupportedOperationError("CPU selection requires QMP controller")
-        result = self._controller.monitor_command(f"cpu {cpu_index}")
+        if self._state.get("rpc_capabilities", {}).get("select_cpu"):
+            self._rpc_request("select_cpu", {"cpu_index": cpu_index})
+        select_cpu = getattr(self._controller, "select_cpu", None)
+        if callable(select_cpu):
+            result = select_cpu(cpu_index)
+        else:
+            result = self._controller.monitor_command(f"cpu {cpu_index}")
         self._state["current_cpu_id"] = cpu_index
         return self._response({"cpu_index": cpu_index, "qmp_result": result})
 

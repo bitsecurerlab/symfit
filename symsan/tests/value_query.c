@@ -28,6 +28,11 @@ int main(int argc, char **argv) {
   value = (uint8_t)(input + 1);
 
   dfsan_label label = dfsan_read_label(&value, sizeof(value));
+  rc = dfsan_get_value_query_seed(label, &seed, assignments, 8, &count,
+                                  error, sizeof(error));
+  // CHECK: seed=1 value=6 count=1 input=5
+  printf("seed=%d value=%llu count=%zu input=%u\n", rc,
+         (unsigned long long)seed, count, assignments[0].value);
   dfsan_set_value_query_relaxation_profile(0);
   rc = dfsan_query_value_range(label, 0, 0, 0, &seed, &minimum, &maximum,
                                &assumptions, error, sizeof(error));

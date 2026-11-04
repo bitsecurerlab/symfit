@@ -7,7 +7,9 @@ Run with:
 from __future__ import annotations
 
 import os
+import re
 import socket
+import subprocess
 import time
 from pathlib import Path
 
@@ -70,15 +72,24 @@ def _wait_for_socket(socket_path: Path, timeout: float = 5.0) -> None:
 
 
 @pytest.fixture
-def system_session(symfit_system_path: Path):
+def system_session(symfit_system_path: Path, request: pytest.FixtureRequest):
     """Create a system-mode session with proper socket waiting."""
     import tempfile
     tmpdir = tempfile.mkdtemp(prefix="dynamiq-system-test-")
     qmp_socket = Path(tmpdir) / "qmp.sock"
+    cpu_count = getattr(request, "param", 1)
+
+    # savevm needs a writable disk that supports internal snapshots.
+    disk = Path(tmpdir) / "snapshots.qcow2"
+    qemu_img = symfit_system_path.parent.parent / "qemu-img"
+    subprocess.run([str(qemu_img), "create", "-f", "qcow2", str(disk), "8M"],
+                   check=True, stdout=subprocess.DEVNULL)
 
     session = ScriptSession.system(
         qemu_system_path=str(symfit_system_path),
         qemu_args=["-machine", "pc", "-display", "none", "-S",
+                    "-smp", str(cpu_count),
+                    "-drive", f"file={disk},format=qcow2",
                     "-qmp", f"unix:{qmp_socket},server,nowait"],
         arch="x86_64",
         qemu_config={"launch": True, "qmp_socket_path": str(qmp_socket)},
@@ -173,22 +184,41 @@ def test_get_cpu_info(system_session: ScriptSession) -> None:
 
 
 @pytest.mark.live_qemu
-def test_smp_support(system_session: ScriptSession) -> None:
-    """Test SMP (multi-CPU) support if available."""
+@pytest.mark.parametrize("system_session", [2, 4], indirect=True,
+                         ids=["2-vcpu", "4-vcpu"])
+def test_smp_support(system_session: ScriptSession, request: pytest.FixtureRequest) -> None:
+    """Exercise CPU discovery, non-bootstrap CPU selection, and VM run control."""
     backend = system_session._backend
-    if not hasattr(backend, "set_current_cpu"):
-        pytest.skip("SMP methods not available")
+    expected_count = request.node.callspec.params["system_session"]
+    result = backend.get_cpu_info()["result"]
+    assert result["cpu_count"] == expected_count
+    assert {cpu["cpu-index"] for cpu in result["cpus"]} == set(range(expected_count))
+    assert len({cpu["thread-id"] for cpu in result["cpus"]}) == expected_count
 
-    # Get CPU info to check CPU count
-    result = backend.get_cpu_info()
-    cpu_count = result["result"].get("cpu_count", 0)
+    original_rax = {}
+    for cpu_index in reversed(range(expected_count)):
+        selected = backend.set_current_cpu(cpu_index)
+        assert selected["result"]["cpu_index"] == cpu_index
+        assert selected["state"]["current_cpu_id"] == cpu_index
+        # Check QEMU's actual monitor selection, not only the backend's cache.
+        cpus = backend._controller.monitor_command("info cpus")
+        current = re.search(r"^\s*\*\s*CPU #(\d+):", cpus, re.MULTILINE)
+        assert current is not None, cpus
+        assert int(current.group(1)) == cpu_index
+        original_rax[cpu_index] = backend.get_registers(["rax"])["result"]["registers"]["rax"]
+        backend.set_registers({"rax": hex(0x12340000 + cpu_index)})
 
-    if cpu_count <= 1:
-        pytest.skip(f"Single CPU system (count={cpu_count}), SMP test not applicable")
+    for cpu_index in range(expected_count):
+        backend.set_current_cpu(cpu_index)
+        registers = backend.get_registers(["rax"])["result"]["registers"]
+        assert int(registers["rax"], 16) == 0x12340000 + cpu_index
+        backend.set_registers({"rax": original_rax[cpu_index]})
+        assert backend.get_cpu_info()["state"]["current_cpu_id"] == cpu_index
+    backend.set_current_cpu(0)
 
-    # Test setting current CPU
-    result = backend.set_current_cpu(0)
-    assert result["result"]["cpu_index"] == 0
+    assert system_session.resume(timeout=2.0)["state"]["session_status"] == "running"
+    assert system_session.pause(timeout=2.0)["state"]["session_status"] == "paused"
+    assert backend.get_cpu_info()["result"]["cpu_count"] == expected_count
 
 
 @pytest.mark.live_qemu

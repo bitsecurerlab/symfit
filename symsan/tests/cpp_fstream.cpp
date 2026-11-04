@@ -1,3 +1,4 @@
+// REQUIRES: instrumented-libcxx
 // RUN: rm -rf %t.out
 // RUN: mkdir -p %t.out
 // RUN: python -c'print("A"*20)' > %t.bin
