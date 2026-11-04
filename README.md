@@ -18,7 +18,9 @@ SymFit now carries its companion projects in this repository:
 - `docs/interactive_scripting_contract.md` - IA/RPC contract for interactive analysis
 
 Generated Symsan installs and libc++ build outputs are intentionally not tracked.
-They are produced under `build/` by `build.sh`.
+`build.sh` produces the runtime and solver install under `build/`. Instrumented
+libc++ archives are optional and require the separate build described in
+[symsan/README.md](symsan/README.md#libcxx).
 
 ## MCP Servers for LLM Agents
 
@@ -77,8 +79,8 @@ The main build artifacts are:
 - `build/symsan-build/` - Symsan build tree
 - `build/symfit/` - SymFit QEMU binaries
 
-By default, `build.sh` builds user-mode and system-mode targets for i386,
-x86_64, and AArch64:
+By default, `build.sh` builds i386, x86_64, and AArch64 user-mode targets,
+plus x86_64 and AArch64 system-mode targets:
 
 - `x86_64-linux-user/symfit-x86_64` (for x86_64 binaries)
 - `i386-linux-user/symfit-i386` (for i386 binaries)
@@ -115,6 +117,40 @@ The smoke test also launches the generated guests with `IA_RPC_SOCKET` and
 checks the direct system-mode IA/RPC surface for capabilities, paused status,
 register reads, memory reads, symbolic-register expression lookup, and recent
 path-constraint retrieval.
+
+### SymFit Regression Tests
+
+Run the user-mode RPC smoke tests from the repository root:
+
+```bash
+tests/symfit/interactive/run_ia_rpc_smoke.sh
+tests/symfit/interactive/run_ia_rpc_trace_smoke.sh
+tests/symfit/interactive/run_ia_rpc_expr_smoke.sh
+```
+
+The additional `ia_rpc_*_smoke.py` scripts in that directory take
+`--symfit "$PWD/build/symfit/x86_64-linux-user/symfit-x86_64"`; the anagram
+script instead requires the i386 runtime and its external target binary.
+
+For Dynamiq unit tests and live 2-/4-vCPU regression checks:
+
+```bash
+cd dynamiq
+.venv/bin/python -m pytest -q
+RUN_LIVE_QEMU=1 .venv/bin/python -m pytest -q -rs \
+  tests/test_live_system_backend.py tests/test_qemu_system_smp.py \
+  tests/test_qmp_client.py
+```
+
+Create the Dynamiq environment first using its [setup instructions](dynamiq/README.md#quick-setup).
+The live SMP checks launch actual multi-CPU guests and verify CPU discovery,
+selection, isolated register values, and VM resume/pause. Local Unix sockets
+must be permitted. See [Dynamiq's live test instructions](dynamiq/README.md#live-qemu-integration-tests-opt-in)
+for user-mode endpoint settings and the separate Alpine boot test.
+
+The standalone Symsan suite uses lit against `build/symsan-build/tests`; its
+C++ tests require optional instrumented libc++ archives. Upstream QEMU
+`make check` targets are broader tests, not the SymFit regression suite.
 
 ## Using SymFit
 
@@ -322,7 +358,8 @@ To manually run SymFit on a program:
 export SYMCC_INPUT_FILE=/path/to/input
 export SYMCC_OUTPUT_DIR=/path/to/output
 export SYMCC_AFL_COVERAGE_MAP=/path/to/covmap
-export TAINT_OPTIONS="taint_file=/path/to/input"
+export TAINT_OPTIONS="taint_file=/path/to/input output_dir=/path/to/output solve_on_branch=1"
+mkdir -p "$SYMCC_OUTPUT_DIR"
 
 # Run SymFit
 build/symsan/bin/fgtest \
@@ -338,21 +375,32 @@ build/symsan/bin/fgtest \
   /path/to/aarch64-program
 ```
 
+With the in-tree Z3 runtime, `solve_on_branch=1` opts into automatic input
+generation. Without it, symbolic branches are recorded for explicit queries.
+Interactive IA/RPC workflows normally leave automatic generation disabled.
+
 ## Understanding the Output
 
-SymFit generates:
+With automatic generation enabled, SymFit can produce:
+
 - **New test cases** in `$SYMCC_OUTPUT_DIR` - Each file is a generated input that explores different execution paths
 - **Coverage map** at `$SYMCC_AFL_COVERAGE_MAP` - AFL-style bitmap showing code coverage
 
 ## Docker Usage
 
-The Docker image provides a pre-built environment with all dependencies:
+Prepare `/path/to/workdir/testfile` and `/path/to/workdir/output` first. The
+image must contain a SymFit build compatible with these runtime options:
 
 ```bash
 # Run SymFit in Docker
 docker run --rm \
   -v /path/to/your/binary:/binary:ro \
   -v /path/to/workdir:/workdir \
+  -w /workdir \
+  -e SYMCC_INPUT_FILE=/workdir/testfile \
+  -e SYMCC_OUTPUT_DIR=/workdir/output \
+  -e SYMCC_AFL_COVERAGE_MAP=/workdir/covmap \
+  -e "TAINT_OPTIONS=taint_file=/workdir/testfile output_dir=/workdir/output solve_on_branch=1" \
   ghcr.io/bitsecurerlab/symfit:latest \
   /workspace/build/symsan/bin/fgtest \
   /workspace/build/symfit/x86_64-linux-user/symfit-x86_64 \

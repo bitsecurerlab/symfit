@@ -3,7 +3,7 @@
 # SymSan: Time and Space Efficient Concolic Execution via Dynamic Data-Flow Analysis
 
 SymSan (Symbolic Sanitizer) is an efficient concolic execution engine based on the
-Data-Floow Sanitizer (DFSan) framework. By modeling forward symbolic execution as
+Data-Flow Sanitizer (DFSan) framework. By modeling forward symbolic execution as
 a dynamic data-flow analysis and leveraging the time and space efficient data-flow
 tracking infrastructure from DFSan, SymSan imposes much lower runtime overhead
 than previous symbolic execution engines.
@@ -31,17 +31,16 @@ tested.
 Create a `build` directory and execute the following commands in it:
 
 ```shell
-$ CC=clang-12 CXX=clang-12 cmake -DCMAKE_INSTALL_PREFIX=/path/to/install -DCMAKE_BUILD_TYPE=Release /path/to/symsan/source
+$ CC=clang-12 CXX=clang++-12 cmake -DCMAKE_INSTALL_PREFIX=/path/to/install -DCMAKE_BUILD_TYPE=Release /path/to/symsan/source
 $ make
 $ make install
 ```
 
 ### Build in Docker
 
-```
-docker build -t symsan .
-docker run  --rm --ulimit core=0 symsan bash -c 'cd /workdir/symsan && ./check.sh 2>/dev/null'
-```
+From `symsan/`, build the standalone image with `docker build -t symsan .`.
+The old `check.sh` expects a historical test-directory layout; use the lit
+suite below to validate the current checkout.
 
 To produce a reusable `install/` tree (binaries, libs, headers) for downstream
 projects:
@@ -54,17 +53,23 @@ Set `SYMSAN_DOCKER_IMAGE` to override the default image tag (`symsan-build:local
 
 ### LIBCXX
 
-The repo contains instrumented libc++ and libc++abi to support C++ programs.
-To rebuild these libraries from source, execute the `rebuild.sh` script in the
-`libcxx` directory.
+Instrumented libc++, libc++abi, and libunwind archives are optional generated
+artifacts; they are not shipped in this checkout or built by the root
+`build.sh`. To build them, follow `libcxx/rebuild.sh` from `symsan/libcxx/`,
+passing the installed `ko-clang` path. CMake installs archives already present
+in `libcxx/build_taint/lib/` when the Symsan install step is run again.
 
-**NOTE**: because the in-process solving module (`solver/z3.cpp`) uses Z3's C++ API
+**NOTE**: because the in-process solving module (`solvers/z3.cpp`) uses Z3's C++ API
 and STL containers, so itself depends on the C++ libs. Due to such dependencies,
 you'll see linking errors when building C++ targets when using this module.
 Though it's possible to resolve these errors by not instrumenting the dependencies
 (adding them to the [ABIList](https://clang.llvm.org/docs/DataFlowSanitizer.html#abi-list),
  then rebuild the C++ libs), we don't recommend using it for C++ targets.
-Instead, it's much cleaner to use ann out-of-process solving module like Fastgen.
+Instead, it's much cleaner to use an out-of-process solving module like Fastgen.
+
+When using an extracted LLVM toolchain, put its `bin/` on `PATH` and ensure
+its shared libraries are discoverable by the dynamic loader (for example via
+`LD_LIBRARY_PATH`). The compiler and LLVM headers must both come from LLVM 12.
 
 ## Test
 
@@ -89,14 +94,22 @@ without them, lit reports those tests as unsupported.
 * `KO_CXX` specifies the clang++ to invoke, if the default version isn't clang++-12,
   set this variable to allow the compiler wrapper to find the correct clang++.
 
-* `KO_USE_Z3` enables the in-process Z3-based solver. By default, it is disabled,
-  so SymSan will only perform symbolic constraint collection without solving.
-  SymSan also supports out-of-process solving, which provides better compatiblility.
+* `KO_USE_Z3=1` links the in-process Z3-based solver into a compiler-instrumented
+  target. It is not selected by default by `ko-clang`. With Z3 linked, branch
+  recording and explicit queries are available; automatic file generation is
+  controlled separately by `solve_on_branch`.
+  SymSan also supports out-of-process solving, which provides better compatibility.
   Check [FastGen](https://github.com/R-Fuzz/fastgen).
 
 * `TAINT_OPTIONS="... solve_on_branch=1"` enables automatic input generation
   with the in-process Z3 solver. The default keeps branch recording available
   for explicit value and path queries without generating files.
+
+* `KO_USE_FASTGEN` links the out-of-process client. Run such a binary through
+  the installed `fgtest` driver. Set `SYMCC_INPUT_FILE` and `SYMCC_OUTPUT_DIR`,
+  or supply `taint_file` and `output_dir` through `TAINT_OPTIONS`. The driver
+  preserves those paths/options, adds its IPC settings, and propagates the
+  child's exit status.
 
 * `KO_USE_NATIVE_LIBCXX` enables using the native uninstrumented libc++ and libc++abi.
 
@@ -107,9 +120,19 @@ without them, lit reports those tests as unsupported.
 SymSan needs a driver to perform hybrid fuzzing, like [FastGen](https://github.com/R-Fuzz/fastgen).
 It could also be used as a custom mutator for [AFL++](https://github.com/AFLplusplus/AFLplusplus).
 
-## Documentation
+## Runtime Memory Models
 
-Still under construction, unfortunately.
+Compiler-instrumented programs declare `__dfsan_native_shadow` and use the
+linear shadow layout emitted by the LLVM pass. SymFit's emulator uses sparse
+shadow pages instead. Native loads keep their source bit width; emulator
+loads retain the register-width extension expected by translated helpers.
+CPU objects can use distinct heap allocations, so vCPUs do not alias a single
+fixed mapping. Native programs do not require SymFit's telemetry transport;
+the runtime supplies disabled weak defaults.
+
+The regression entry points and IA/RPC semantics are documented in the
+[root README](../README.md#symfit-regression-tests) and
+[interactive contract](../docs/interactive_scripting_contract.md).
 
 ## Reference
 

@@ -1,7 +1,9 @@
 # Live Backend Contract
 
-This document defines the minimum phase-1 contract for real `qemu-user` and
-`qemu-system` backend integrations.
+This is the Dynamiq integration summary for SymFit user-mode and system-mode
+backends. The [SymFit IA/RPC contract](../../docs/interactive_scripting_contract.md)
+defines current method semantics and mode-specific capabilities. The original
+phase-1 design is historical; it does not limit current system-mode support.
 
 ## Overview
 
@@ -29,7 +31,7 @@ a QMP argument.
 
 ## Transport
 
-Phase 1 uses newline-delimited JSON over a Unix socket.
+IA/RPC v1 uses newline-delimited JSON over a Unix socket.
 
 ### RPC channel
 
@@ -56,7 +58,7 @@ Error response:
 {"id":1,"ok":false,"error":{"code":"unknown_method","message":"unsupported method"}}
 ```
 
-## Required RPC Methods
+## Common RPC Methods
 
 ### `resume`
 
@@ -69,7 +71,7 @@ Request:
 Response:
 
 ```json
-{"id":1,"result":{}}
+{"id":1,"ok":true,"result":{}}
 ```
 
 ### `pause`
@@ -81,10 +83,10 @@ Same envelope as `resume`.
 Response:
 
 ```json
-{"id":1,"result":{"status":"paused"}}
+{"id":1,"ok":true,"result":{"status":"paused"}}
 ```
 
-Allowed status values for phase 1:
+Status values:
 
 - `idle`
 - `running`
@@ -96,7 +98,7 @@ Allowed status values for phase 1:
 Response:
 
 ```json
-{"id":1,"result":{"registers":{"rip":"0x401000","rsp":"0x7fffffffe000"}}}
+{"id":1,"ok":true,"result":{"registers":{"rip":"0x401000","rsp":"0x7fffffffe000"}}}
 ```
 
 Rules:
@@ -122,21 +124,24 @@ System-mode physical memory reads use `address_space`:
 Response:
 
 ```json
-{"id":1,"result":{"address":"0x401000","size":16,"bytes":"554889e5..."}}
+{"id":1,"ok":true,"result":{"address":"0x401000","size":16,"bytes":"554889e5909090909090909090909090"}}
 ```
 
 Rules:
 
 - `bytes` is a lowercase hex string
-- max size in phase 1 is 256 bytes
+- maximum read size is 256 bytes
 
-### `list_memory_maps`
+### `list_memory_maps` (user mode only)
+
+System mode advertises `list_memory_maps: false`.
 
 Response:
 
 ```json
 {
   "id": 1,
+  "ok": true,
   "result": {
     "regions": [
       {
@@ -167,25 +172,26 @@ Current v1 scope for SymFit is basic-block tracing.
 If the runtime is in launch mode:
 
 1. it starts `qemu-user` or `qemu-system`
-2. it expects the instrumentation side to create the RPC socket
-3. it then connects an RPC client to that socket
-4. for system mode, it also waits for QMP and negotiates QMP capabilities
+2. for system mode, it first waits for QMP and negotiates QMP capabilities
+3. it waits for the instrumentation RPC socket and connects the RPC client
+4. it negotiates RPC capabilities and queries the initial state
 
 If the runtime is in attach mode:
 
 1. the instrumentation RPC endpoint already exists
 2. the runtime only connects to it
 
-## Minimal Success Criteria
+## Integration Checks
 
-A valid live backend integration for phase 1 should support:
+A live integration should negotiate capabilities and exercise supported methods:
 
 - `resume`
 - `pause`
 - `query_status`
 - `get_registers`
 - `read_memory`
-- `list_memory_maps`
+- `list_memory_maps` in user mode
+- `select_cpu` in system mode when advertised
 - `start_trace`
 - `stop_trace`
 - one or more useful trace event types such as `basic_block`
@@ -193,4 +199,25 @@ A valid live backend integration for phase 1 should support:
 ## Readiness
 
 Socket availability plus a successful `capabilities` or `query_status` call is
-the readiness handshake for phase 1.
+the readiness handshake. A socket appearing alone does not establish readiness.
+
+## SMP and Snapshots
+
+System sessions use QMP for CPU discovery and VM lifecycle, plus IA/RPC
+`select_cpu` for the paused inspection context. Dynamiq preserves HMP CPU
+selection by passing `cpu-index` on each monitor command. Per-CPU stop/continue
+is unsupported; VM-wide resume/pause remains available.
+
+Live regression cases launch 2 and 4 vCPUs and verify distinct CPU/thread
+identities, persistent selection, and independent register values. Snapshots
+need a writable disk that supports them, such as qcow2; a capability flag alone
+does not make a diskless VM snapshot-capable.
+
+## Timeout Recovery
+
+Run-control timeouts leave execution in progress. Dynamiq reconnects the RPC
+channel and attempts one status resync without retrying execution. The original
+timeout still reaches the caller. If resync fails, cached status remains
+running; inspect output and explicitly decide the next operation. See the
+[timeout contract](../../docs/interactive_scripting_contract.md#timeouts-and-reconnection)
+for raw-client recovery.

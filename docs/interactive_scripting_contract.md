@@ -76,19 +76,20 @@ Current v1 behavior:
 - the backend starts in `paused` state
 - clients should wait for the Unix socket to appear before issuing RPCs
 - `query_status` reports one of: `idle`, `running`, `paused`, `exited`
-- normal `exit`/`exit_group` and fatal synchronous crash delivery pause first when
+- in Linux user mode, normal `exit`/`exit_group` and fatal synchronous crash delivery pause first when
   IA/RPC is active, so clients can inspect registers, memory, path constraints,
   and backtrace-relevant state before teardown
 - while such a terminal pause is active, `query_status.status` remains `paused`
   and `pending_termination: true` describes the queued terminal condition
 - `resume` finalizes a pending terminal condition
-- `close` explicitly tears down a pending terminal condition without further guest
-  inspection
+- user-mode `close` acknowledges the request before releasing a pending terminal
+  condition; system-mode `close` requests VM shutdown and does not require a
+  user-mode terminal pause
 - `exit_code` is reported when available in the `query_status` result
 
 ## Core Interactive Methods (v1)
 
-Required for interactive mode:
+Common interactive methods (availability is advertised by `capabilities`):
 
 - `capabilities`
 - `query_status`
@@ -96,15 +97,21 @@ Required for interactive mode:
 - `pause`
 - `get_registers`
 - `read_memory`
-- `list_memory_maps`
 
-Optional (recommended):
+User-mode-only inspection methods:
+
+- `list_memory_maps`
+- `disassemble` (requires Capstone)
+
+Additional capability-gated methods:
 
 - `single_step`
 - `resume_until_address`
 - `resume_until_basic_block`
 - `resume_until_any_address`
-- `disassemble`
+- `select_cpu` (system mode)
+- `set_registers` and `write_memory` (system mode)
+- `close`
 - `get_symbolic_expression`
 - `get_path_constraints`
 - `get_recent_path_constraints`
@@ -112,11 +119,29 @@ Optional (recommended):
 - `query_value_range`
 - `query_value_eq`
 - `begin_value_query_capture`
-- `queue_stdin_chunk`
+- `begin_value_solver_capture`
+- `export_value_solver`
+- `queue_stdin_chunk` (user mode)
 - `start_trace`
 - `stop_trace`
 
 ## Method Semantics
+
+### Mode-specific capabilities
+
+| Feature | Linux user mode | System mode |
+| --- | --- | --- |
+| Register/memory inspection and symbolization | Supported on implemented architectures | Supported on implemented architectures |
+| CPU selection (`select_cpu`) | Not advertised | Paused vCPU selection |
+| Memory maps and disassembly | Supported; disassembly needs Capstone | Not advertised |
+| Physical memory (`address_space="physical"`) | Not supported | Supported |
+| Symbolic stdin chunks | Supported | Not advertised |
+| Snapshots | Not advertised | Requires a snapshot-capable VM configuration |
+| Basic-block tracing | Supported | Supported |
+
+Always query the actual binary: optional solver functions and architecture
+support determine the advertised flags. The protocol version does not imply
+that every feature is present.
 
 ### `capabilities`
 
@@ -130,7 +155,7 @@ Returns:
 Returns:
 
 - `status`: `idle`, `running`, `paused`, or `exited`
-- `exit_code`: optional integer when the target has exited
+- `exit_code`: optional integer when known, including a user-mode terminal pause
 - `pending_termination`: boolean indicating that exit or fatal crash delivery has
   been converted into an inspectable pause
 - `termination_kind`: optional string: `exit`, `exit_group`, or `signal`
@@ -139,6 +164,9 @@ Returns:
 - `termination_fault_address`: optional hex string when `termination_kind == "signal"`
 - `pending_stdin_bytes`: queued stdin bytes not yet consumed by the guest
 - `pending_symbolic_stdin_bytes`: queued symbolic stdin bytes not yet consumed
+
+The `pending_termination`, termination-detail, and pending-stdin fields above
+are user-mode lifecycle/input fields. System mode uses VM stop/shutdown semantics.
 
 ### `resume`
 
@@ -160,19 +188,44 @@ Returns:
 
 Behavior:
 
-- valid during a terminal pause (`pending_termination: true`)
-- finalizes the queued terminal condition and tears the backend down
+- in user mode, valid during a terminal pause (`pending_termination: true`);
+  flushes the acknowledgement before finalizing the queued termination
+- in system mode, requests VM shutdown; it is not limited to terminal pauses
 
 Returns:
 
 - an empty result object on success
+
+### `select_cpu` (system mode)
+
+Requires the `select_cpu` capability and a paused VM. The selected vCPU becomes
+the context for register, memory, and stepping operations. An invalid index
+returns `invalid_params`; selection while running returns `invalid_state`.
+Run control still starts or pauses the VM as a whole. A later stop can latch
+the CPU that triggered it; select again while paused to inspect another CPU.
+
+Request:
+
+```json
+{"id":2,"method":"select_cpu","params":{"cpu_index":1}}
+```
+
+Response:
+
+```json
+{"id":2,"ok":true,"result":{"cpu_index":1}}
+```
+
+Dynamiq also supplies `cpu-index` on subsequent QMP
+`human-monitor-command` requests. Sending HMP `cpu 1` alone does not persist
+selection across those temporary monitor instances.
 
 ### `get_registers`
 
 Behavior:
 
 - valid while paused
-- if `names` is omitted, a default x86 register set is returned
+- if `names` is omitted, the architecture-specific default register set is returned
 - unknown register names are ignored rather than rejected
 
 Parameters:
@@ -182,6 +235,17 @@ Parameters:
 Returns:
 
 - `registers`: object mapping register names to hex strings
+
+### `set_registers` (system mode)
+
+Requires `write_registers` and a paused VM. Pass a nonempty `registers` object
+mapping supported register names to hex strings. Operations use the selected
+vCPU. General-purpose register writes clear that register's symbolic label.
+The result contains `registers` for the values written and their `count`.
+
+```json
+{"id":3,"method":"set_registers","params":{"registers":{"rax":"0x1234"}}}
+```
 
 ### `read_memory`
 
@@ -193,6 +257,7 @@ Parameters:
 
 - `address`: hex string
 - `size`: integer from 0 to 256
+- `address_space`: system-mode-only optional `"virtual"` (default) or `"physical"`
 
 Returns:
 
@@ -205,7 +270,8 @@ Returns:
 Behavior:
 
 - valid while paused
-- current implementation is derived from `/proc/self/maps`
+- user-mode only; derived from `/proc/self/maps`
+- system mode advertises `list_memory_maps: false`
 
 Returns:
 
@@ -286,7 +352,8 @@ Returns:
 Behavior:
 
 - valid while paused
-- requires capstone support in the backend build
+- user-mode only; requires Capstone support in the backend build
+- system mode advertises `disassemble: false`
 
 Parameters:
 
@@ -326,7 +393,8 @@ Returns:
 Behavior:
 
 - valid while paused
-- `label` must identify a branch-condition label
+- `label` must identify a recorded branch-condition label, including an LLVM
+  `i1` conjunction/disjunction used directly as a condition
 - returns the nested path-constraint closure associated with that root label
 - the returned `constraints` list excludes the root label itself
 - constraint ordering is deterministic but does not imply execution order
@@ -425,6 +493,8 @@ Returns:
   include `minimum`, `maximum`, and `assumption_count`
 - `candidates`: observed seed, endpoint witnesses, and four samples; every
   assignment identifies its `symfit_input_N` symbol
+- the seed candidate uses the recorded concrete input bytes, rather than an
+  arbitrary satisfying model
 - `min`, `max`: compatibility fields for the unsigned endpoints
 - `min_hex`, `max_hex`: the same endpoints as hex strings
 - `soundness`: `sound`, or `conditional` when the query relied on concretized loads
@@ -471,8 +541,16 @@ Returns:
 ### `begin_value_query_capture`
 
 Clears recorded value-query path state and concrete input seeds before the
-approved seed path is executed. The backend must be paused. Solver-export
+chosen seed path is executed. The backend must be paused. Solver-export
 capture remains available as a debugging interface for archived workflows.
+
+### `begin_value_solver_capture` and `export_value_solver`
+
+These optional debugging/export interfaces are separate from automatic file
+generation. `begin_value_solver_capture` clears recorded solver context while
+paused. `export_value_solver` takes a value `label` and returns the target,
+selected path context, concretized-load assumptions, and SMT2 representation.
+Gate each method on its matching capability flag.
 
 ### `get_recent_path_constraints`
 
@@ -481,20 +559,21 @@ Behavior:
 - returns recently observed symbolic path constraints from the current session
 - entries are returned newest first
 - a path constraint is recorded from the backend's symbolic condition handling
-- entries with `exportable: true` are suitable roots for
-  `get_path_constraints(label)` and path-text export
-- `exportable: false` preserves an observed branch whose direction was not
-  retained by the active solver runtime; clients must report this as incomplete
-  path context instead of asking the solver to assert it
+- system-mode entries include `exportable`: `true` identifies a retained
+  solver root; `false` preserves an observed branch with incomplete solver
+  context that must not be asserted as a retained path constraint
+- user-mode entries do not currently include `exportable`; handle solver
+  errors explicitly instead of assuming that every observed label is exportable
 
 Parameters:
 
-- `limit`: optional integer from 1 to 256, default `16`
+- `limit`: optional positive integer, default `16`; user mode accepts up to
+  256, while system mode accepts larger limits for its retained history
 
 Returns:
 
-- `constraints`: array of symbolic-label objects with additional `pc`, `taken`,
-  and `exportable`
+- `constraints`: array of symbolic-label objects with `pc` and `taken`;
+  system mode also reports `exportable`
 - `count`: number of entries returned
 - `truncated`: whether older entries were omitted
 
@@ -502,6 +581,7 @@ Returns:
 
 Behavior:
 
+- user-mode only; system mode advertises this capability as false
 - records metadata for a pending stdin write
 - does not itself write bytes into the target stdin pipe
 - entries are consumed in order by successful `read(fd=0, ...)` syscalls
@@ -556,7 +636,19 @@ Returns:
 
 ## Capability Flags
 
-Current v1 capability flags:
+Current v1 capability flags include:
+
+- `select_cpu` (system mode)
+- `write_registers` (system mode)
+- `write_memory` (system mode)
+- `watchpoints`
+- `close`
+- `take_snapshot`
+- `restore_snapshot`
+- `begin_value_solver_capture`
+- `export_value_solver`
+- `get_path_constraint_smt2`
+- `get_path_constraint_evaluated`
 
 - `pause_resume`
 - `read_registers`
@@ -599,6 +691,21 @@ Current event types implemented by the backend:
 
 Future event types must be additive and gated by capabilities when applicable.
 
+## Timeouts and Reconnection
+
+A client timeout on a run-control request does not cancel guest execution.
+Do not automatically replay `resume`, `single_step`, or `resume_until_*`:
+execution is forward-only. A timed-out socket reader must be replaced before
+it can safely read another response.
+
+Dynamiq's user and system backends reconnect and make one best-effort
+`query_status` call after a run-control timeout, while preserving the original
+timeout for the caller. Successful resync updates live status and PC. If it
+also times out, cached state remains running and the channel is reset again.
+Output reads do not issue extra status requests. Raw RPC clients must perform
+their own reconnect; `InstrumentationRpcClient.reconnect()` and the backend's
+`reconnect_instrumentation_rpc()` helper are available for explicit recovery.
+
 ## Client Integration Notes
 
 For `dynamiq`, the expected integration model is:
@@ -626,7 +733,7 @@ stop_trace
 
 Minimal example request sequence:
 
-```json
+```jsonl
 {"id":1,"method":"capabilities"}
 {"id":2,"method":"query_status"}
 {"id":3,"method":"start_trace","params":{"basic_block":true}}

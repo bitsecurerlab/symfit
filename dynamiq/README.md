@@ -1,6 +1,8 @@
 # Interactive Dynamic Analysis
 
-Python runtime for interactive userspace binary analysis, using instrumented `qemu-user` as the first backend.
+Python runtime for interactive binary analysis with instrumented SymFit
+user-mode and system-mode backends. User mode uses IA/RPC; system mode uses
+IA/RPC for inspection and QMP for VM lifecycle and monitor operations.
 
 This project is analysis-first: it focuses on controllable execution plus structured state/event inspection for human and LLM workflows.
 
@@ -19,12 +21,15 @@ This project is analysis-first: it focuses on controllable execution plus struct
 Requirements:
 
 - Python 3.10+
-- (for demos) `gcc` and `qemu-x86_64`
+- `gcc` for tests that compile target binaries
+- instrumented SymFit binaries for live IA/RPC tests; stock QEMU can run basic
+  emulation demos but does not provide the SymFit RPC endpoint
 
-Create a local environment and install dev dependencies:
+From the monorepo root, enter `dynamiq/`, then create a local environment:
 
 ```bash
-python -m venv .venv
+cd dynamiq
+python3 -m venv .venv
 . .venv/bin/activate
 .venv/bin/python -m pip install -e '.[dev]'
 ```
@@ -39,7 +44,7 @@ PYTHONPATH=src .venv/bin/python your_script.py
 
 ### Build Instrumented Runtime Binaries
 
-Build both supported dynamiq runtimes into the monorepo build tree:
+From `dynamiq/`, the helper builds the two default x86 user-mode runtimes:
 
 ```bash
 ./scripts/build_qemu_toolchain.sh
@@ -62,6 +67,9 @@ Common overrides:
   --clean
 ```
 
+For AArch64 and system-mode targets, use `./build.sh` from the monorepo root.
+Its default target list is documented in the [root README](../README.md#building-symfit).
+
 ## Tests
 
 Run the default test suite:
@@ -77,12 +85,12 @@ Live tests are marked `live_qemu` and require a real backend/instrumentation env
 For `qemu-user` live tests, set:
 
 - `RUN_LIVE_QEMU=1`
-- `IA_LIVE_EVENT_SOCKET`
 - `IA_LIVE_RPC_SOCKET`
 - `IA_LIVE_TARGET`
 
 Optional:
 
+- `IA_LIVE_EVENT_SOCKET` (a separate event sidecar, if used)
 - `IA_LIVE_QMP_SOCKET`
 - `IA_LIVE_ARGS`
 - `IA_LIVE_CWD`
@@ -98,12 +106,51 @@ PYTHONPATH=src .venv/bin/pytest -q -m live_qemu
 
 `IA_LIVE_LAUNCH=1` tells the backend to launch `qemu-user` using the runtime launch contract. If unset, tests assume endpoints already exist.
 
+For a self-contained local run from `dynamiq/` after building SymFit:
+
+```bash
+RUN_LIVE_QEMU=1 IA_LIVE_LAUNCH=1 \
+IA_LIVE_RPC_SOCKET=/tmp/symfit-live-tests.sock \
+IA_LIVE_TARGET=/bin/sleep IA_LIVE_ARGS=30 \
+IA_LIVE_QEMU_USER_PATH="$PWD/../build/symfit/x86_64-linux-user/symfit-x86_64" \
+.venv/bin/python -m pytest -q -rs tests/test_live_qemu_integration.py \
+  tests/test_live_qemu_regressions.py tests/test_live_qemu_stdin_roundtrip.py \
+  tests/test_live_solve_for.py
+```
+
+Some live tests create their own targets and sockets; the shared `IA_LIVE_*`
+settings above are required by `test_live_qemu_integration.py`.
+
 System-mode live tests launch an instrumented `qemu-system` VM through
 `ScriptSession.system(...)` and use QMP plus `IA_RPC_SOCKET` for control.
-Set `RUN_LIVE_QEMU=1` and, if auto-discovery cannot find the binary, set:
+Set `RUN_LIVE_QEMU=1`. Binary-path overrides are test-specific:
 
-- `IA_LIVE_QEMU_SYSTEM_X86_64_PATH=/path/to/symfit-system-x86_64`
-- or `DYNAMIQ_SYMFIT_SYSTEM_PATH=/path/to/symfit-system-x86_64`
+- `IA_LIVE_QEMU_SYSTEM_X86_64_PATH` is used by `test_live_qemu_system.py`.
+- `DYNAMIQ_SYMFIT_SYSTEM_PATH` is used by `test_live_system_backend.py` and the
+  Alpine boot test. Set both variables to the same binary when overriding
+  discovery for the whole system-mode test set.
+
+Run the system and SMP regression checks separately from image-based boot tests:
+
+```bash
+RUN_LIVE_QEMU=1 .venv/bin/python -m pytest -q -rs \
+  tests/test_live_system_backend.py tests/test_live_qemu_system.py \
+  tests/test_qemu_system_smp.py tests/test_qmp_client.py
+```
+
+The SMP cases launch 2 and 4 vCPUs, assert distinct CPU identities and threads,
+select every CPU, verify independent register values, and exercise VM-wide
+resume/pause. They do not skip because the default fixture uses one CPU.
+These checks do not establish concurrency safety for all symbolic workloads.
+The snapshot fixture also needs `qemu-img` in the SymFit build directory and
+creates a temporary writable qcow2 disk.
+
+For multi-CPU system sessions, `session._backend.set_current_cpu(index)` selects
+an existing CPU while the VM is paused. Dynamiq carries the selection into
+subsequent HMP commands and uses the `select_cpu` IA/RPC capability for register,
+memory, and stepping context. Run control remains VM-wide; `stop_cpu(index)` and
+`cont_cpu(index)` reject per-CPU requests. Re-select after a stop if a particular
+CPU is needed for inspection.
 
 The Alpine Linux boot test uses the pinned Alpine virt ISO
 `alpine-virt-3.19.0-x86_64.iso`. If the ISO is not present, the test downloads
@@ -386,7 +433,7 @@ custom loader root:
   "target": "/mnt/f/ffmpeg-cve-2025-9951/android_root/lib64/toybox",
   "args": ["echo", "test"],
   "cwd": "/mnt/f/ffmpeg-cve-2025-9951/android_root",
-  "qemu_user_path": "/mnt/d/git/symfit/build/symfit-symsan/aarch64-linux-user/symfit-aarch64",
+  "qemu_user_path": "/path/to/symfit/build/symfit/aarch64-linux-user/symfit-aarch64",
   "qemu_args": ["-L", "."],
   "env": {
     "QEMU_LD_PREFIX": ".",
@@ -400,7 +447,10 @@ custom loader root:
 - `send_bytes` appears stuck:
   Call includes neither `data` nor `data_hex`. Send `{"data":"...\\n"}` for text or `{"data_hex":"..."}` for raw bytes.
 - `advance` returns timeout:
-  This is often expected for interactive flows (waiting for input or breakpoint condition). Treat as non-fatal and immediately check `stdout`, `stderr`, and `state`.
+  A run-control timeout does not stop the guest or retry execution. The backend
+  reconnects the RPC channel and makes one best-effort status query. Read
+  `stdout`/`stderr` and check `state`; if resync also timed out, the cached state
+  remains running. Choose an explicit retry only after checking progress.
 - Session is `idle` and target is not running:
   Use `start` (defaults to launch mode), then `advance {"mode":"continue"}`.
 - Trace start rejects unsupported filters:

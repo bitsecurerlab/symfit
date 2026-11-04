@@ -1,5 +1,10 @@
 # SymFit MCP Server Examples
 
+See the [runtime compatibility note](README.md#runtime-compatibility) before
+using these examples. Generated-case outputs assume a compatible backend with
+automatic generation enabled; the current local Node launcher does not set
+`solve_on_branch=1` for the in-tree Z3 runtime.
+
 This document provides practical examples of using the SymFit MCP server for binary analysis tasks.
 
 ## Example 1: Basic Binary Analysis
@@ -219,11 +224,12 @@ suggesting different control flow or additional branches.
 
 ### Issue: No new cases after round 1
 
-**Solution**: Try more diverse seeds
+**Solution**: First verify that automatic generation is enabled for the chosen
+backend (see the compatibility note above), then try more diverse seeds
 
 ```json
 {
-  "seeds": ["", "a", "abc", "test123", "\x00\x01\x02"]
+  "seeds": ["", "a", "abc", "test123", "\u0000\u0001\u0002"]
 }
 ```
 
@@ -233,7 +239,7 @@ suggesting different control flow or additional branches.
 
 ```json
 {
-  "timeout": 5000  // 5 seconds per execution
+  "timeout": 5000
 }
 ```
 

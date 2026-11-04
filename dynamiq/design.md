@@ -1,5 +1,11 @@
 # Interactive Binary Analysis Runtime
 
+This document preserves the original user-mode-first phase-1 design. Current
+Dynamiq also supports SymFit system-mode sessions with QMP and IA/RPC. For
+implemented behavior and setup, use the [README](README.md) and
+[live backend contract](docs/live_backend_contract.md). Statements below about
+future system-mode support describe that original plan.
+
 ## 1. Goal
 
 Build a Python runtime for interactive userspace binary analysis using instrumented `qemu-user` as the first backend.

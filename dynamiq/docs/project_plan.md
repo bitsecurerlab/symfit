@@ -1,5 +1,12 @@
 # Project Plan
 
+This is the original phase-1 plan, retained for design history. The current
+repository contains SymFit, Symsan, and Dynamiq together, and both user-mode
+and system-mode integrations are implemented. Repository-split recommendations
+and uncompleted phase descriptions below are historical; use the
+[current README](../README.md) and [live contract](live_backend_contract.md)
+for implementation and testing instructions.
+
 ## 1. Scope Split
 
 Treat this effort as two coupled projects plus one shared contract layer.

@@ -1,6 +1,9 @@
 # Stdin Input Mode Usage Guide
 
-SymFit MCP Server now supports analyzing binaries that read from stdin instead of files!
+The campaign server can pipe seed bytes to a target's stdin. This transport is
+separate from Dynamiq's interactive `queue_stdin_chunk`/symbolic-input API.
+See the [runtime compatibility note](README.md#runtime-compatibility): piping
+bytes and a successful process exit do not establish that new cases were generated.
 
 ## Overview
 
@@ -20,7 +23,7 @@ Binary reads from: /workdir/testfile
 SymFit tracks: /workdir/testfile
 ```
 
-### Stdin Mode (New!)
+### Stdin Mode
 ```
 Input written to: /workdir/testfile
 SymFit tracks: /workdir/testfile
@@ -28,7 +31,10 @@ Input piped to: binary's stdin
 Binary reads from: stdin
 ```
 
-**Important**: Even in stdin mode, SymFit still needs a file to track symbolic bytes. The file is created, tracked by SymFit, then piped to the binary's stdin.
+The campaign server creates a seed file even in stdin mode, then pipes it to
+the target. Symbolization and case generation depend on the selected runtime
+and its options. For interactive symbolic stdin, use
+[Dynamiq](../dynamiq/README.md) to queue symbolic bytes before the guest reads them.
 
 ## Usage Examples
 
@@ -116,6 +122,10 @@ For stdin mode:
 ```
 
 ## Docker Command Details
+
+These examples mirror the current campaign launcher and do not enable
+`solve_on_branch`. For generation with the in-tree Z3 runtime, use the
+[root manual workflow](../README.md#manual-execution).
 
 ### Without Stdin (File Mode)
 ```bash

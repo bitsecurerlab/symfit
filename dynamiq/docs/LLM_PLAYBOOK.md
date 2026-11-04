@@ -46,7 +46,10 @@ This playbook defines the required operating pattern for LLM-driven analysis ses
 - `advance` uses one of four modes: `continue`, `insn`, `bb`, or `return`.
 - `advance` timeout is non-fatal:
   - treat as `timed_out` (waiting for input/condition), not session failure
-  - always follow with `stdout` + `stderr` + `state` before deciding recovery
+  - execution may still be running; never blindly repeat the advance
+  - the backend reconnects and makes one best-effort status query
+  - read `stdout` + `stderr` + `state` before deciding recovery; failed resync
+    leaves cached state running
 - `pause` is independent and can be called anytime during an active session.
 
 ## Memory/Register Safety Rules
@@ -74,3 +77,16 @@ If behavior is inconsistent, stale, or unexpected:
 - Do not compute `base + offset` manually when `syms` is available.
 - Do not send multiple blind inputs without reading output between steps.
 - Do not infer stack addresses from patterns (`0x7fff...` etc.); always use live `regs`.
+
+## System-Mode CPU Context
+
+Use a multi-CPU guest (`-smp 2` or `-smp 4`) to exercise SMP. CPU selection
+requires a paused VM and the `select_cpu` IA/RPC capability; system-backend
+`set_current_cpu(index)` keeps monitor and inspection contexts aligned. A stop
+may identify a different triggering CPU, so select the intended CPU again before
+inspection. Resume and pause affect the VM as a whole.
+
+Raw user-mode `close` is valid during a pending terminal pause and flushes its
+acknowledgement before guest teardown. Raw system-mode `close` requests VM
+shutdown. The higher-level session/MCP `close` also manages launched-process
+cleanup; do not confuse it with a request to inspect a terminal guest.
